@@ -1,3 +1,40 @@
+//! Database table definitions for the Rostra client.
+//!
+//! # Data Model Overview
+//!
+//! The database stores a local view of the distributed event DAG that forms the
+//! Rostra social network. All data in Rostra propagates as cryptographically
+//! signed [`Event`]s, which form a DAG structure where each event references
+//! parent events.
+//!
+//! ## Key Concepts
+//!
+//! - **Event**: A signed, immutable unit of data. Events form a DAG where each
+//!   event references one or two parent events.
+//! - **Event Content**: The payload of an event, stored separately for
+//!   efficiency. Content can be pruned while keeping the event structure.
+//! - **RostraId**: A user's public identity (derived from their Ed25519 public
+//!   key).
+//! - **ShortEventId**: A truncated event ID used for storage efficiency.
+//! - **Singleton Events**: Events where only the latest instance matters (e.g.,
+//!   profile updates).
+//! - **Head Events**: Events with no known children - the current "tips" of the
+//!   DAG for an identity.
+//!
+//! ## Table Categories
+//!
+//! ### Identity Tables (`ids_*`)
+//! Store information about identities (users) and their relationships.
+//!
+//! ### Event Tables (`events_*`)
+//! Store the event DAG structure, content, and various indices.
+//!
+//! ### Social Tables (`social_*`)
+//! Store derived social data extracted from events (profiles, posts, etc.).
+//!
+//! [`Event`]: rostra_core::event::Event
+
+
 mod events_content_missing_ops;
 mod id_nodes_ops;
 mod migration_ops;
