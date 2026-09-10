@@ -5,7 +5,10 @@ source rows across total replay. These are independent of disposable receipt
 indexes. Older events retain unknown origins; replay and duplicate delivery do
 not invent or refresh them. Quota decisions constrain envelope replay before
 shared content can materialize, with signed deletion remaining stronger. No
-production quota transition or GC worker is enabled yet. See the
+production quota transition or GC worker is enabled yet. Schema 28 adds checked
+accounting and a bounded quota-only collector with no production nominations.
+All databases require explicit accounting rebuild/readiness before totals or
+collection are usable. See the
 [database retention checkpoint](../../../docs/payload-retention-database.md)
 and [SPEC-event-content-lifecycle](../specs/SPEC-event-content-lifecycle.md).
 
@@ -47,6 +50,10 @@ New ingestion and total replay enforce the exclusive maximum described below.
 | `events` | `ShortEventId` | Main event storage (envelope only) |
 | `content_store` | `ContentHash` | Content storage (deduplicated by hash) |
 | `content_rc` | `ContentHash` | Reference count per content hash |
+| `content_accounting_state` | `()` | Partial/ready global logical and unique-byte totals with bounded rebuild cursor |
+| `content_accounting_authors` | `RostraId` | Event-derived current logical usage checked against per-author usage |
+| `content_accounting_hashes` | `ContentHash` | Expected RC and historical local/non-SocialPost collision guard |
+| `content_quota_gc` | `ContentHash` | Quota-only nominations; no production writer yet |
 | `events_content_state` | `ShortEventId` | Per-event processing state |
 | `events_content_missing` | `(Timestamp, ShortEventId)` | Events waiting for content, sorted by next fetch time |
 | `social_posts_by_received_at` | `(Timestamp, u64)` | Social posts ordered by effective local receipt time |
@@ -77,6 +84,15 @@ Replay retains typed decoding and payload commitment checks but does not repeat
 Ed25519 authentication or claim to audit the database. Failure rolls back the
 complete replay transaction and leaves the separately committed stash for the
 next open.
+
+Accounting and quota nominations are disposable across total replay. An explicit
+bounded rebuild derives expected RC (including Missing), logical/unique totals
+and historical shared-hash guards, validates RC and author usage, and publishes
+readiness only on completion. Ordinary ingestion maintains cursor-covered
+contributions transactionally during backfill. Existing replay may omit
+unreferenced Deleted bytes; physical accounting describes the actual rebuilt
+store. Canonical edit lineage survives independently of payload bytes.
+Accounting readiness does not establish future policy-index readiness.
 
 Replay does not retain the event graph or per-event commit hooks. Application
 and codec code transiently hold the current record, a decoded below-limit
@@ -147,8 +163,8 @@ successfully processed. This is the normal state for most events.
 
 ## Reference Counting
 
-RC tracks how many events want a particular content hash. This enables garbage
-collection when no events need the content.
+RC tracks how many Processed and Missing events want a particular content hash.
+Zero RC is necessary, but not sufficient, for quota garbage collection.
 
 ### RC Rules
 
@@ -162,7 +178,14 @@ collection when no events need the content.
 - RC is managed at **event insertion time**, not when content arrives
 - Content is stored in `content_store` when first processed (or immediately
   for `content_len == 0` events that do not start in Deleted)
-- When RC reaches 0, content *can* be garbage collected (not automatic)
+- Zero RC does not nominate content or authorize removal. Only quota-nominated
+  hashes with complete accounting readiness and no historical protected
+  collision may be collected after transactional RC/guard rechecks.
+- Retained local-authored and non-SocialPost headers guard a colliding nominated
+  hash even after releasing RC. These guards are not current logical usage.
+- Physical removal, exact unique-byte decrement and queue consumption commit
+  atomically. Blocked nominations are consumed without removal; a later eligible
+  release must nominate again. No production path nominates hashes yet.
 
 ## Detailed Flows
 
@@ -333,7 +356,8 @@ social-post fields. The database also checks already-retained hash-keyed bytes
 when a predeleted envelope arrives, but it never schedules or requests Deleted
 content. Total replay preserves the immutable forward row and reconstructs the
 reverse index without depending on zero-RC payload bytes; already-retained
-bytes remain independently GC-eligible. Deleted content never becomes visible
+bytes do not require an edit-lineage pin, but still require quota nomination,
+readiness and RC/history checks before collection. Deleted content never becomes visible
 or retrievable and does not update RC, queues, usage, time/reception indexes,
 reply/reaction counts, news, mentions, votes, singletons, or notifications.
 
@@ -369,7 +393,7 @@ replacement lineage follows its separate, Deleted-state exception above.
 3. Content arrives, process A: A side effects, A content processed
 4. Process B (same content): B side effects, B content processed
 5. Delete A's content: RC(H) = 1, content still available for B
-6. Delete B's content: RC(H) = 0, content can be GC'd
+6. Delete B's content: RC(H) = 0; bytes remain unless a separate authorized quota nomination and GC checks permit removal
 ```
 
 ### Flow 6: Invalid Content
@@ -536,20 +560,27 @@ fetch work.
 
 ### 1. No Automatic Garbage Collection
 
-When RC reaches 0, content remains in `content_store`. A separate GC process
-should periodically clean up content with RC=0. (Future work)
+When RC reaches 0, content remains in `content_store`. The bounded quota
+collector only handles internally nominated hashes and has no production
+nominator or worker yet. It does not collect general signed-deleted, invalid or
+legacy-pruned garbage. Row limits do not bound total bytes or database-file
+allocation. See the [retention checkpoint](../../../docs/payload-retention-database.md)
+for its accounting/readiness and replay boundary.
 
 ### 2. Missing Events / Missing RC
 
-These abnormal internal conditions are detected and logged:
+These abnormal internal conditions are rejected or diagnosed:
 
 - **Calling `process_event_content_tx` for a non-existent event**:
   `debug_assert!` + `error!` log, then silently skipped in release mode. The
   public `process_event_content` boundary inserts the carried envelope first.
-- **Decrementing RC with no RC entry**: `debug_assert!` + `error!` log, then
-  defaults to 1 to avoid underflow.
+- **Decrementing RC with no RC entry**: returns an invariant error and aborts
+  the transaction. RC and usage overflow/underflow fail rather than clamping or
+  fabricating ownership.
 
-Both cases indicate bugs in the calling code and will panic in debug builds.
+The nonexistent-event condition panics in debug builds. Missing-RC decrement
+fails transactionally in all builds; neither case authorizes fabricated
+ownership or partial lifecycle bookkeeping.
 
 ## Test Coverage
 
@@ -699,14 +730,21 @@ Both cases indicate bugs in the calling code and will panic in debug builds.
 
 ### Property and Shuffled-Order Tests
 
+The property interventions use the legacy pruning helper and simulated
+test-only store removal. They cover per-author lifecycle usage, not schema-28
+global/unique accounting, readiness/cursors, historical guards or the real quota
+collector. `payload_accounting_tests` covers that separate local transactional
+contract; `deleted_replacement_tests` exercises actual collection before
+reopen/replay without losing canonical edit lineage.
+
 - [`property-testing.md`](property-testing.md) documents the shared two-replica
   schedule runner, semantic models, exclusions, runtime budget, and soak command
 - `prop_author_scoped_event_graph_converges` - Envelope graph indexes and
   unresolved canonical deletion attribution converge
 - `prop_live_raw_content_lifecycle_converges` - Live RAW content bytes, RC,
-  queue termination, and complete usage accounting converge
+  queue termination, and per-author lifecycle usage accounting converge
 - `prop_terminal_content_lifecycle_converges` - Generated shared payloads,
-  direct deletion, explicit pruning, eligible zero-RC byte collection, and
+  direct deletion, explicit pruning, simulated zero-RC byte collection, and
   usage buckets converge under one semantic oracle that ignores permitted
   physical residue
 - `prop_replacement_projection_reversion_converges` - Deleting-post chains
@@ -734,6 +772,8 @@ The content lifecycle model handles:
 - Empty content (processed immediately at insertion unless already Deleted)
 - Invalid content (failed validation, RC decremented, bytes discarded)
 - Content deletion and pruning (with double-decrement prevention)
+- Checked counters, global logical/unique-byte accounting, and explicit bounded
+  accounting readiness; a quota-only collector without a production nominator
 - Fetch scheduling (exponential backoff for missing content, event-driven wake-up)
 
 The `Missing` state is the key to idempotency - it ensures content side

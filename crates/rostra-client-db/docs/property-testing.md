@@ -5,8 +5,8 @@ generated delivery schedules. Each case materializes deterministic signed input,
 copies one closed database template to two replicas, and varies permutation,
 duplicates, transaction batches, aborted transactions, split versus atomic
 envelope/content delivery (including content carrying an absent envelope), and
-intermediate reopen points. Lifecycle properties also schedule explicit pruning
-and eligible zero-reference byte collection through the same batching, abort,
+intermediate reopen points. Legacy lifecycle properties also schedule explicit
+pruning and simulated zero-reference byte collection through the same batching, abort,
 duplicate, and reopen machinery. Property-specific snapshots verify immediately
 that aborted batches retain no modeled lifecycle or projection state. A final
 envelope retry, payload retry, intervention retry, and reopen form the
@@ -21,7 +21,7 @@ and
 - author-scoped envelope graph state, including cross-author raw parent matches
   and canonical deletion attribution for unresolved parents;
 - live RAW payload state, exact content bytes, normalized nonzero reference
-  counts, terminal queue emptiness, and complete usage accounting;
+  counts, terminal queue emptiness, and per-author lifecycle usage accounting;
 - deletion, explicit pruning, and eligible byte collection, using effective
   per-event state and availability rather than zero-reference store residue.
   Successful zero-reference removal is intentionally not itself an oracle;
@@ -42,6 +42,15 @@ absent-versus-zero vote sum rows. Terminal fetch-queue emptiness and semantic
 availability after eligible collection are covered. The excluded values either
 are intentionally local, require a different concurrency oracle, or are
 permitted physical representations of the same lifecycle state.
+
+These legacy interventions call the initial-ingestion prune helper and simulate
+collection with direct test-only store removal. They do **not** exercise the
+schema-28 quota collector or model global logical/unique-byte accounting,
+accounting readiness/cursors, or historical shared-hash guards. Focused
+`payload_accounting_tests` cover that separate transactional contract, including
+interleaved backfill, rollback, replay, shared Missing/Processed references and
+protected historical collisions. The real collector's Deleted-edit lineage
+regression lives in `deleted_replacement_tests`.
 
 The append-only SocialPost materialization feed is schedule-local rather than a
 convergent projection and is therefore covered by focused transaction, cursor,

@@ -43,6 +43,19 @@ impl Database {
         source: EventReceivedSource,
         tx: &WriteTransactionCtx,
     ) -> DbResult<(InsertEventOutcome, ProcessEventState)> {
+        let before = self.payload_before_tx(tx, event)?;
+        let result = self.process_event_inner_tx_with_source(event, now, source, tx)?;
+        self.payload_after_tx(tx, before)?;
+        Ok(result)
+    }
+
+    fn process_event_inner_tx_with_source(
+        &self,
+        event: &VerifiedEvent,
+        now: Timestamp,
+        source: EventReceivedSource,
+        tx: &WriteTransactionCtx,
+    ) -> DbResult<(InsertEventOutcome, ProcessEventState)> {
         let mut events_tbl = tx.open_table(&events::TABLE)?;
         let mut events_content_state_tbl = tx.open_table(&events_content_state::TABLE)?;
         let mut content_store_tbl = tx.open_table(&content_store::TABLE)?;

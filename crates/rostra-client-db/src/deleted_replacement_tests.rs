@@ -667,12 +667,27 @@ async fn retained_deleted_edit_lineage_survives_reopen_gc_and_total_replay() -> 
         );
         assert_expected_bookkeeping(&snapshot, &chain);
 
+        while !db
+            .rebuild_payload_accounting(std::num::NonZeroUsize::new(1).unwrap())
+            .await?
+            .ready
+        {}
+        // Test-only nomination exercises the real physical lifecycle owner.
+        // Canonical replacement rows already preserve lineage independently
+        // of these bytes; an additional edit-source pin is not necessary.
         db.write_with(|tx| {
-            tx.open_table(&content_store::TABLE)?
-                .remove(&chain.events[1].content_hash())?;
+            tx.open_table(&crate::content_quota_gc::TABLE)?
+                .insert(&chain.events[1].content_hash(), &())?;
             Ok(())
         })
         .await?;
+        let collected = db
+            .collect_quota_payload_garbage(std::num::NonZeroUsize::new(1).unwrap())
+            .await?;
+        assert_eq!(
+            collected.removed_bytes,
+            u64::from(chain.events[1].content_len())
+        );
         snapshot
     };
     let reopened = {

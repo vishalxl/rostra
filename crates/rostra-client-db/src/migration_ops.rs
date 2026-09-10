@@ -78,7 +78,9 @@ pub(crate) struct LegacyEventReceivedRecord {
 /// schema changes. Version 26 adds the empty append-only SocialPost
 /// materialization feed without backfill. Version 27 adds durable retention
 /// source tables without inventing historical receipt or materialization times.
-const DB_VER: u64 = 27;
+/// Version 28 adds disposable payload accounting with explicit bounded
+/// readiness.
+const DB_VER: u64 = 28;
 
 /// Versions older than this require a total migration.
 ///
@@ -156,6 +158,10 @@ impl Database {
 
     /// Initialize all current schema tables.
     pub(crate) fn init_tables_tx(tx: &WriteTransactionCtx) -> DbResult<()> {
+        tx.open_table(&crate::content_accounting_state::TABLE)?;
+        tx.open_table(&crate::content_accounting_authors::TABLE)?;
+        tx.open_table(&crate::content_accounting_hashes::TABLE)?;
+        tx.open_table(&crate::content_quota_gc::TABLE)?;
         tx.open_table(&db_version::TABLE)?;
         tx.open_table(&crate::db_init_time::TABLE)?;
         tx.open_table(&crate::reception_order_next::TABLE)?;

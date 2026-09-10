@@ -149,6 +149,14 @@ Quota decisions constrain envelope replay before payload projection, even when
 the bytes survive for another event. Replay never treats its synthetic receipt
 times as retention observations.
 
+Schema 28 adds disposable global logical/unique-byte accounting, event-derived
+RC checks and shared historical replay guards, plus a quota-only GC queue with
+no production nominator yet. Incremental upgrades and total replay require an
+explicit bounded accounting rebuild before totals or physical reclamation are
+usable; ordinary ingestion maintains cursor-covered changes transactionally.
+This readiness is separate from future retention policy-index generations.
+The collector is not a general legacy garbage collector and starts no worker.
+
 Replay trusts that retained rows crossed the authentication boundary during
 normal ingestion; it is not a cryptographic integrity scrub. Typed decoding and
 the payload hash-and-length check required to construct verified content still
@@ -263,6 +271,9 @@ backup; an older binary cannot open the database.
   their payload lifecycle. Every accepted payload contributes once to total
   usage and exactly one of current, missing, deleted, pruned, or invalid usage,
   including payloads whose envelopes arrive already Deleted.
+- Payload counter arithmetic and reference ownership fail closed. Global
+  logical current bytes and actual unique stored bytes remain distinct; shared
+  bytes and historical protected references can prevent physical reclamation.
 - Total migration rebuilds reception-order indexes and their sequence from
   retained event envelopes and available retained content. It preserves
   acquisition source and semantic membership, not historical reception

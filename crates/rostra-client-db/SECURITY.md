@@ -48,6 +48,40 @@ metadata foundation. A future worker must fail closed for unknown origins and
 unreliable clocks rather than treating stored wall-clock readings as proof of
 elapsed time.
 
+Schema 28 adds disposable global logical/unique-byte accounting and a quota-only
+physical collector. All databases start unready; totals remain unavailable and
+collection fails closed until an explicit bounded rebuild finishes. The rebuild
+derives expected RC (including Missing references) and current logical usage
+from retained events, checks expected/actual RC and both author indexes, and
+counts actual unique store values. It rejects mismatches and absent Processed
+bytes. Cursor-covered ingestion deltas, cursor advancement and partial totals
+commit transactionally, so batches can interleave with normal writes and resume
+after interruption without exposing partial readiness.
+
+For a quota-nominated hash, a retained local-authored or non-SocialPost header is
+a conservative historical protection guard even after it releases event RC.
+Under the current protected-kind policy the guard has no release operation.
+It is not RC or current logical usage; it can prevent physical reclamation
+indefinitely. Before removing any nominated bytes, the collector rechecks
+readiness, expected/actual RC, zero references and the historical guard inside
+the write transaction. Store removal, unique-byte decrement and nomination
+consumption are atomic. Blocked nominations are consumed without removal and
+must be nominated again by a later eligible release.
+
+There is no production nominator or worker in this checkpoint. General garbage
+from signed deletion, invalidation and legacy size pruning is outside this
+collector's scope. Total replay drops disposable accounting and the nomination
+queue, then requires another explicit rebuild. Existing replay may omit
+unreferenced Deleted bytes; rebuilt totals describe the actual store. Canonical
+SocialPost replacement lineage survives independently of those bytes. Rebuilt
+historical guards protect surviving or reintroduced shared collisions, not a
+promise that deleted bytes survive replay.
+
+Maintenance limits bound visited rows, not payload bytes, aggregate retained
+storage, index overhead or redb file allocation. Accounting readiness does not
+prove readiness of a future policy candidate generation, and neither stored
+wall-clock observations nor static ranking keys authorize quota pruning.
+
 Replay runs before the database is published, suppresses incremental hooks and
 materialization-feed emission, and refreshes current-state watches after commit.
 Total migration preserves a feed from schema 26 or newer byte-for-byte; older

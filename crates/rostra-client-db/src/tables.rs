@@ -261,6 +261,26 @@ def_table! {
     ids_data_usage: RostraId => IdsDataUsageRecord
 }
 
+def_table! {
+    /// Disposable payload accounting totals and bounded rebuild cursor.
+    content_accounting_state: () => crate::payload_accounting::AccountingRecord
+}
+
+def_table! {
+    /// Event-derived current logical bytes, checked against per-author usage.
+    content_accounting_authors: RostraId => u64
+}
+
+def_table! {
+    /// Event-derived expected RC and historical shared replay guard.
+    content_accounting_hashes: ContentHash => crate::payload_accounting::HashAccounting
+}
+
+def_table! {
+    /// Quota-lifecycle nominations only; no production writer until quota pruning.
+    content_quota_gc: ContentHash => ()
+}
+
 /// Aggregate data usage record for an identity.
 ///
 /// Tracks event metadata and content/payload sizes and counts,
@@ -393,8 +413,8 @@ def_table! {
     /// Value: The actual content bytes
     ///
     /// This enables identical content (e.g., same image posted by multiple
-    /// users) to be stored only once. Content is removed when its reference
-    /// count in `content_rc` reaches zero.
+    /// users) to be stored only once. Only the lifecycle-owned quota collector
+    /// removes bytes, after checking nomination, readiness, RC and replay guards.
     content_store: ContentHash => ContentStoreRecordOwned
 }
 
@@ -407,8 +427,9 @@ def_table! {
     /// **Important**: RC is managed at event insertion time, not when content
     /// arrives. When an event is inserted, its content_hash RC is incremented
     /// (unless the event is already deleted/pruned). When content is deleted
-    /// or pruned, RC is decremented. When RC reaches zero, content can be
-    /// garbage collected from `content_store`.
+    /// or pruned, RC is decremented. Zero RC is necessary but not sufficient
+    /// for physical removal: quota nomination and historical replay guards
+    /// are checked separately.
     content_rc: ContentHash => u64
 }
 

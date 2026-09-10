@@ -8,6 +8,9 @@ mod migration_ops;
 mod models;
 pub mod news;
 mod paginate;
+mod payload_accounting;
+#[cfg(test)]
+mod payload_accounting_tests;
 mod process_event_content_ops;
 mod process_event_ops;
 mod reception_order_ops;
@@ -50,6 +53,7 @@ pub use self::extension::{
     EXTENSION_RESERVED_TABLE_PREFIXES, ExtensionReadTransaction, ExtensionTableDefinition,
     ExtensionWriteTransaction,
 };
+pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, PayloadUsage};
 pub use self::self_followee::SelfFollowee;
 pub use self::social_post_materialization::{
     SOCIAL_POST_MATERIALIZATION_SCAN_MAX, SocialPostMaterialization,
@@ -224,6 +228,12 @@ pub type TableDumpResult<T> = std::result::Result<T, TableDumpError>;
 
 #[derive(Debug, Snafu)]
 pub enum DbError {
+    #[snafu(display("Payload accounting does not match retained lifecycle sources"))]
+    PayloadAccountingInvariant,
+    #[snafu(display("Payload accounting and replay guards are not ready"))]
+    PayloadAccountingNotReady,
+    #[snafu(display("Payload maintenance limit exceeds the supported maximum"))]
+    PayloadMaintenanceLimit,
     #[snafu(display("Database error"))]
     Database {
         source: redb::DatabaseError,
@@ -1126,6 +1136,17 @@ impl Database {
     /// The `now` parameter should be `Timestamp::now()` for normal operation,
     /// but can be set to a specific value for testing or migration.
     pub(crate) fn process_event_content_tx(
+        &self,
+        event_content: &VerifiedEventContent,
+        now: Timestamp,
+        tx: &WriteTransactionCtx,
+    ) -> DbResult<()> {
+        let before = self.payload_before_tx(tx, &event_content.event)?;
+        self.process_event_content_inner_tx(event_content, now, tx)?;
+        self.payload_after_tx(tx, before)
+    }
+
+    fn process_event_content_inner_tx(
         &self,
         event_content: &VerifiedEventContent,
         now: Timestamp,

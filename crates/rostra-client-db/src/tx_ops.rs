@@ -11,12 +11,13 @@ use rostra_core::event::{
 };
 use rostra_core::id::{RostraId, ToShort as _};
 use rostra_core::{ContentHash, ExternalEventId, ShortEventId, Timestamp};
+use snafu::OptionExt as _;
 use tables::EventRecord;
 use tables::event::{
     ContentStoreRecord, EventContentResult, EventContentState, EventsMissingRecord,
 };
 use tables::ids::IdsFolloweesRecord;
-use tracing::{debug, error};
+use tracing::debug;
 
 use super::event_order::EventOrder;
 use super::id_self::IdSelfAccountRecord;
@@ -1077,10 +1078,14 @@ impl Database {
     ) -> DbResult<u64> {
         let current_count = content_rc_table
             .get(&content_hash)?
-            .map(|g| g.value())
-            .unwrap_or(0); // Default to 0 if missing (first reference)
+            .map(|g| g.value_try())
+            .transpose()?;
+        if current_count == Some(0) {
+            return crate::PayloadAccountingInvariantSnafu.fail();
+        }
+        let current_count = current_count.unwrap_or(0);
 
-        let new_count = current_count + 1;
+        let new_count = current_count.checked_add(1).context(crate::OverflowSnafu)?;
         content_rc_table.insert(&content_hash, &new_count)?;
         Ok(new_count)
     }
@@ -1094,34 +1099,19 @@ impl Database {
         content_hash: ContentHash,
         content_rc_table: &mut content_rc::Table,
     ) -> DbResult<u64> {
-        let current_count = match content_rc_table.get(&content_hash)?.map(|g| g.value()) {
-            Some(count) => count,
-            None => {
-                // RC entry missing - this shouldn't happen in normal operation.
-                // It means decrement was called without a corresponding increment.
-                debug_assert!(
-                    false,
-                    "Decrementing RC for content with no RC entry: {content_hash}"
-                );
-                error!(
-                    target: LOG_TARGET,
-                    %content_hash,
-                    "Decrementing RC for content with no RC entry - possible bug"
-                );
-                // Default to 1 to avoid underflow, will result in RC=0
-                1
-            }
-        };
+        let current_count = content_rc_table
+            .get(&content_hash)?
+            .map(|g| g.value_try())
+            .transpose()?
+            .context(crate::PayloadAccountingInvariantSnafu)?;
+        let new_count = current_count.checked_sub(1).context(crate::OverflowSnafu)?;
 
-        if current_count <= 1 {
+        if new_count == 0 {
             // Count reached 0, remove the RC entry
             // (content_store cleanup is separate)
             content_rc_table.remove(&content_hash)?;
             Ok(0)
         } else {
-            let new_count = current_count
-                .checked_sub(1)
-                .expect("Reference count should never underflow");
             content_rc_table.insert(&content_hash, &new_count)?;
             Ok(new_count)
         }
@@ -1153,7 +1143,8 @@ impl Database {
     ) -> DbResult<IdsDataUsageRecord> {
         Ok(ids_data_usage_table
             .get(&author)?
-            .map(|g| g.value())
+            .map(|g| g.value_try())
+            .transpose()?
             .unwrap_or_default())
     }
 
@@ -1166,10 +1157,22 @@ impl Database {
     ) -> DbResult<()> {
         let mut usage = Self::get_usage_mut(author, ids_data_usage_table)?;
 
-        usage.current_metadata_size += Self::EVENT_METADATA_SIZE;
-        usage.total_metadata_size += Self::EVENT_METADATA_SIZE;
-        usage.current_metadata_num += 1;
-        usage.total_metadata_num += 1;
+        usage.current_metadata_size = usage
+            .current_metadata_size
+            .checked_add(Self::EVENT_METADATA_SIZE)
+            .context(crate::OverflowSnafu)?;
+        usage.total_metadata_size = usage
+            .total_metadata_size
+            .checked_add(Self::EVENT_METADATA_SIZE)
+            .context(crate::OverflowSnafu)?;
+        usage.current_metadata_num = usage
+            .current_metadata_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
+        usage.total_metadata_num = usage
+            .total_metadata_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
 
         ids_data_usage_table.insert(&author, &usage)?;
         Ok(())
@@ -1188,10 +1191,22 @@ impl Database {
         let len = u64::from(content_len);
         let mut usage = Self::get_usage_mut(author, ids_data_usage_table)?;
 
-        usage.total_content_size += len;
-        usage.total_payload_num += 1;
-        usage.missing_payload_size += len;
-        usage.missing_payload_num += 1;
+        usage.total_content_size = usage
+            .total_content_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.total_payload_num = usage
+            .total_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
+        usage.missing_payload_size = usage
+            .missing_payload_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.missing_payload_num = usage
+            .missing_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
 
         ids_data_usage_table.insert(&author, &usage)?;
         Ok(())
@@ -1209,10 +1224,22 @@ impl Database {
         let len = u64::from(content_len);
         let mut usage = Self::get_usage_mut(author, ids_data_usage_table)?;
 
-        usage.total_content_size += len;
-        usage.total_payload_num += 1;
-        usage.deleted_payload_size += len;
-        usage.deleted_payload_num += 1;
+        usage.total_content_size = usage
+            .total_content_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.total_payload_num = usage
+            .total_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
+        usage.deleted_payload_size = usage
+            .deleted_payload_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.deleted_payload_num = usage
+            .deleted_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
 
         ids_data_usage_table.insert(&author, &usage)?;
         Ok(())
@@ -1230,10 +1257,22 @@ impl Database {
         let len = u64::from(content_len);
         let mut usage = Self::get_usage_mut(author, ids_data_usage_table)?;
 
-        usage.missing_payload_size = usage.missing_payload_size.saturating_sub(len);
-        usage.missing_payload_num = usage.missing_payload_num.saturating_sub(1);
-        usage.current_content_size += len;
-        usage.current_payload_num += 1;
+        usage.missing_payload_size = usage
+            .missing_payload_size
+            .checked_sub(len)
+            .context(crate::OverflowSnafu)?;
+        usage.missing_payload_num = usage
+            .missing_payload_num
+            .checked_sub(1)
+            .context(crate::OverflowSnafu)?;
+        usage.current_content_size = usage
+            .current_content_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.current_payload_num = usage
+            .current_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
 
         ids_data_usage_table.insert(&author, &usage)?;
         Ok(())
@@ -1250,10 +1289,22 @@ impl Database {
         let len = u64::from(content_len);
         let mut usage = Self::get_usage_mut(author, ids_data_usage_table)?;
 
-        usage.missing_payload_size = usage.missing_payload_size.saturating_sub(len);
-        usage.missing_payload_num = usage.missing_payload_num.saturating_sub(1);
-        usage.invalid_payload_size += len;
-        usage.invalid_payload_num += 1;
+        usage.missing_payload_size = usage
+            .missing_payload_size
+            .checked_sub(len)
+            .context(crate::OverflowSnafu)?;
+        usage.missing_payload_num = usage
+            .missing_payload_num
+            .checked_sub(1)
+            .context(crate::OverflowSnafu)?;
+        usage.invalid_payload_size = usage
+            .invalid_payload_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.invalid_payload_num = usage
+            .invalid_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
 
         ids_data_usage_table.insert(&author, &usage)?;
         Ok(())
@@ -1277,27 +1328,59 @@ impl Database {
 
         match old_state {
             Some(EventContentState::Missing { .. }) => {
-                usage.missing_payload_size = usage.missing_payload_size.saturating_sub(len);
-                usage.missing_payload_num = usage.missing_payload_num.saturating_sub(1);
+                usage.missing_payload_size = usage
+                    .missing_payload_size
+                    .checked_sub(len)
+                    .context(crate::OverflowSnafu)?;
+                usage.missing_payload_num = usage
+                    .missing_payload_num
+                    .checked_sub(1)
+                    .context(crate::OverflowSnafu)?;
             }
             Some(EventContentState::Invalid) => {
-                usage.invalid_payload_size = usage.invalid_payload_size.saturating_sub(len);
-                usage.invalid_payload_num = usage.invalid_payload_num.saturating_sub(1);
+                usage.invalid_payload_size = usage
+                    .invalid_payload_size
+                    .checked_sub(len)
+                    .context(crate::OverflowSnafu)?;
+                usage.invalid_payload_num = usage
+                    .invalid_payload_num
+                    .checked_sub(1)
+                    .context(crate::OverflowSnafu)?;
             }
             Some(EventContentState::Pruned) => {
-                usage.pruned_payload_size = usage.pruned_payload_size.saturating_sub(len);
-                usage.pruned_payload_num = usage.pruned_payload_num.saturating_sub(1);
+                usage.pruned_payload_size = usage
+                    .pruned_payload_size
+                    .checked_sub(len)
+                    .context(crate::OverflowSnafu)?;
+                usage.pruned_payload_num = usage
+                    .pruned_payload_num
+                    .checked_sub(1)
+                    .context(crate::OverflowSnafu)?;
             }
             None => {
-                usage.current_content_size = usage.current_content_size.saturating_sub(len);
-                usage.current_payload_num = usage.current_payload_num.saturating_sub(1);
+                usage.current_content_size = usage
+                    .current_content_size
+                    .checked_sub(len)
+                    .context(crate::OverflowSnafu)?;
+                usage.current_payload_num = usage
+                    .current_payload_num
+                    .checked_sub(1)
+                    .context(crate::OverflowSnafu)?;
             }
             // Already deleted -- should not happen (caller guards against it)
-            Some(EventContentState::Deleted { .. }) => {}
+            Some(EventContentState::Deleted { .. }) => {
+                return crate::PayloadAccountingInvariantSnafu.fail();
+            }
         }
 
-        usage.deleted_payload_size += len;
-        usage.deleted_payload_num += 1;
+        usage.deleted_payload_size = usage
+            .deleted_payload_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.deleted_payload_num = usage
+            .deleted_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
 
         ids_data_usage_table.insert(&author, &usage)?;
         Ok(())
@@ -1319,18 +1402,36 @@ impl Database {
 
         match old_state {
             Some(EventContentState::Missing { .. }) => {
-                usage.missing_payload_size = usage.missing_payload_size.saturating_sub(len);
-                usage.missing_payload_num = usage.missing_payload_num.saturating_sub(1);
+                usage.missing_payload_size = usage
+                    .missing_payload_size
+                    .checked_sub(len)
+                    .context(crate::OverflowSnafu)?;
+                usage.missing_payload_num = usage
+                    .missing_payload_num
+                    .checked_sub(1)
+                    .context(crate::OverflowSnafu)?;
             }
             None => {
-                usage.current_content_size = usage.current_content_size.saturating_sub(len);
-                usage.current_payload_num = usage.current_payload_num.saturating_sub(1);
+                usage.current_content_size = usage
+                    .current_content_size
+                    .checked_sub(len)
+                    .context(crate::OverflowSnafu)?;
+                usage.current_payload_num = usage
+                    .current_payload_num
+                    .checked_sub(1)
+                    .context(crate::OverflowSnafu)?;
             }
-            _ => {}
+            _ => return crate::PayloadAccountingInvariantSnafu.fail(),
         }
 
-        usage.pruned_payload_size += len;
-        usage.pruned_payload_num += 1;
+        usage.pruned_payload_size = usage
+            .pruned_payload_size
+            .checked_add(len)
+            .context(crate::OverflowSnafu)?;
+        usage.pruned_payload_num = usage
+            .pruned_payload_num
+            .checked_add(1)
+            .context(crate::OverflowSnafu)?;
 
         ids_data_usage_table.insert(&author, &usage)?;
         Ok(())

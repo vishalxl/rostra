@@ -178,6 +178,13 @@ Total payload size and count equal the sums of the current, missing, deleted,
 pruned, and invalid buckets. A payload whose envelope starts in Deleted enters
 the total and deleted buckets directly; it never enters Missing, changes
 content reference counts, or fabricates lifecycle transition side effects.
+Counter overflow, underflow, and missing reference ownership abort the
+transaction rather than silently clamping or manufacturing ownership.
+
+Global current logical usage sums processed event lengths, counting shared
+payloads once per event. Unique stored-byte usage counts actual hash-store values
+once, including unreferenced bytes. Neither measure includes database overhead
+or promises a bound on physical disk allocation.
 
 ## Local retention source metadata
 
@@ -203,8 +210,27 @@ storage and replay contract, not a production quota-mutation API.
 
 Content bytes are keyed by hash and may satisfy multiple events, but each
 event's content-derived effects are processed independently. Reference counts
-track how many events still want a hash. A zero count makes bytes eligible for
-garbage collection; reaching zero does not itself require immediate removal.
+track how many events still want a hash, including Missing events. A zero count
+alone does not authorize physical deletion. The bounded quota collector requires
+a lifecycle nomination, complete accounting/replay-guard readiness, and a
+transactional recheck of both actual RC and retained-header protection. Historical
+local-authored or non-SocialPost references protect a colliding nominated hash
+even after their event RC is released. These guards do not count as current
+logical payload usage and cannot be released while the headers remain protected.
+Canonical edit lineage is already durable independently of payload bytes.
+
+No production lifecycle currently nominates GC candidates; general garbage from
+signed deletion, invalidation and legacy size pruning is not collected. Physical
+removal, unique-byte accounting and nomination consumption commit atomically.
+Blocked nominations are consumed without removal; a later eligible lifecycle
+release must nominate again. Reported reclaimed bytes measure unique values
+actually removed, not logical releases.
+
+Accounting upgrades and total replay start unready. Bounded resumable backfill
+derives totals, expected RC and historical guards from retained sources, checks
+RC and per-author current usage, and applies interleaved ingestion changes on
+the already-scanned side of its cursors. Partial totals cannot authorize GC.
+Accounting readiness does not establish policy candidate-index readiness.
 
 Missing payloads are ordered by their next fetch time. New work is eligible
 immediately and wakes the client fetcher after commit. Failed attempts update

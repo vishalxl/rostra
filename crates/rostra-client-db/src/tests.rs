@@ -2745,7 +2745,7 @@ async fn test_follow_unfollow_refollow_flow() -> BoxedErrorResult<()> {
             &mut content_store_table,
             &mut content_rc_table,
             &mut events_content_missing_table,
-            None,
+            Some(&mut tx.open_table(&crate::ids_data_usage::TABLE)?),
         )?;
 
         Ok(())
@@ -2811,7 +2811,7 @@ async fn test_follow_unfollow_refollow_flow() -> BoxedErrorResult<()> {
             &mut content_store_table,
             &mut content_rc_table,
             &mut events_content_missing_table,
-            None,
+            Some(&mut tx.open_table(&crate::ids_data_usage::TABLE)?),
         )?;
 
         Ok(())
@@ -2884,7 +2884,7 @@ async fn test_follow_unfollow_refollow_flow() -> BoxedErrorResult<()> {
             &mut content_store_table,
             &mut content_rc_table,
             &mut events_content_missing_table,
-            None,
+            Some(&mut tx.open_table(&crate::ids_data_usage::TABLE)?),
         )?;
 
         Ok(())
@@ -3388,7 +3388,7 @@ async fn test_total_migration() -> BoxedErrorResult<()> {
         let db_ver_table = tx.open_table(&db_version::TABLE)?;
         let current_ver = db_ver_table.first()?.map(|g| g.1.value());
         info!("DB version after migration: {:?}", current_ver);
-        assert_eq!(current_ver, Some(27), "DB version should be updated");
+        assert_eq!(current_ver, Some(28), "DB version should be updated");
         assert_eq!(
             tx.open_table(&EXTENSION_TABLE)?
                 .get(&1)?
@@ -3941,7 +3941,7 @@ async fn too_new_version_precedes_identity_decode() -> BoxedErrorResult<()> {
     {
         let db = redb_bincode::Database::from(redb::Database::open(&db_path)?);
         let tx = db.begin_write()?;
-        tx.open_table(&db_version::TABLE)?.insert(&(), &28)?;
+        tx.open_table(&db_version::TABLE)?.insert(&(), &29)?;
         let mut ids_self_raw = tx.as_raw().open_table(ids_self::TABLE.as_raw())?;
         ids_self_raw.insert(&[][..], &[0xff][..])?;
         drop(ids_self_raw);
@@ -3951,8 +3951,8 @@ async fn too_new_version_precedes_identity_decode() -> BoxedErrorResult<()> {
     assert!(matches!(
         Database::open(&db_path, self_id).await,
         Err(DbError::DbVersionTooHigh {
-            db_ver: 28,
-            code_ver: 27,
+            db_ver: 29,
+            code_ver: 28,
             ..
         })
     ));
@@ -4835,7 +4835,11 @@ async fn test_prune_then_delete() -> BoxedErrorResult<()> {
             &mut events_content_state_table,
             &mut content_rc_table,
             &mut events_content_missing_table,
-            None,
+            Some((
+                user,
+                post_event.content_len(),
+                &mut tx.open_table(&crate::ids_data_usage::TABLE)?,
+            )),
         )?;
         Ok(())
     })
