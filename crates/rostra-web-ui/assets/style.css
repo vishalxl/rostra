@@ -1582,15 +1582,15 @@ emoji-picker {
 }
 
 .o-mainBarTimeline__tabIcon.-followees {
-  background: url('/assets/icons/heart.svg') center/contain no-repeat;
+  background: url('/assets/icons/star.svg') center/contain no-repeat;
 }
 
 .o-mainBarTimeline__tabIcon.-network {
-  background: url('/assets/icons/cloud-arrow-up.svg') center/contain no-repeat;
+  background: url('/assets/icons/users.svg') center/contain no-repeat;
 }
 
 .o-mainBarTimeline__tabIcon.-news {
-  background: url('/assets/icons/file.svg') center/contain no-repeat;
+  background: url('/assets/icons/newspaper.svg') center/contain no-repeat;
 }
 
 .o-mainBarTimeline__tabIcon.-notifications {
@@ -1598,7 +1598,7 @@ emoji-picker {
 }
 
 .o-mainBarTimeline__tabIcon.-shoutbox {
-  background: url('/assets/icons/comment.svg') center/contain no-repeat;
+  background: url('/assets/icons/bullhorn.svg') center/contain no-repeat;
 }
 
 .o-mainBarTimeline__tabIcon.-messages {

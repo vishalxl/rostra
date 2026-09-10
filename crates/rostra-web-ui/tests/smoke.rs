@@ -206,6 +206,42 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     );
 
     let stylesheet = include_str!("../assets/style.css");
+    for (tab, icon) in [
+        ("followees", "star"),
+        ("network", "users"),
+        ("news", "newspaper"),
+        ("shoutbox", "bullhorn"),
+    ] {
+        assert!(
+            stylesheet.contains(&format!(
+                ".o-mainBarTimeline__tabIcon.-{tab} {{\n  background: url('/assets/icons/{icon}.svg')"
+            )),
+            "{tab} should use the {icon} icon"
+        );
+        let response = driver.get(&format!("/assets/icons/{icon}.svg")).await;
+        assert_eq!(response.status(), 200, "{icon} should be served");
+        assert!(
+            response.text().await.unwrap().contains("<svg"),
+            "{icon} should contain SVG markup"
+        );
+    }
+    assert_ne!(
+        stylesheet
+            .split_once(".o-mainBarTimeline__tabIcon.-shoutbox {")
+            .unwrap()
+            .1
+            .split_once('}')
+            .unwrap()
+            .0,
+        stylesheet
+            .split_once(".o-mainBarTimeline__tabIcon.-messages {")
+            .unwrap()
+            .1
+            .split_once('}')
+            .unwrap()
+            .0,
+        "shoutbox and Messages should use distinct icons"
+    );
     assert!(stylesheet.contains("@container (max-width: 15.625rem)"));
     assert!(stylesheet.contains("@media (max-width: 32rem)"));
     assert!(stylesheet.contains("@container (max-width: 48.75rem)"));
