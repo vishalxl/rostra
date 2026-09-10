@@ -4,7 +4,10 @@
 [pruning proposal](payload-pruning.md), plus an in-memory logical-byte simulator.
 It does not enable pruning, change database state, or change fetching. The
 proposal's lifecycle, projection, admission and garbage-collection work remains
-necessary before any destructive integration.
+necessary before any destructive integration. The database now records immutable
+retention origins and preserves quota-decision source metadata across replay;
+see the [database checkpoint](payload-retention-database.md). No production quota
+mutation API or worker is enabled.
 
 ## Version 1 arithmetic and encoding
 

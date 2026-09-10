@@ -179,6 +179,26 @@ pruned, and invalid buckets. A payload whose envelope starts in Deleted enters
 the total and deleted buckets directly; it never enters Missing, changes
 content reference counts, or fabricates lifecycle transition side effects.
 
+## Local retention source metadata
+
+Newly accepted headers retain an immutable pruning age origin: the minimum of
+author time and first local header receipt. Successful first payload
+materialization records a separate grace origin. Duplicate delivery, rejected
+terminal-state content, and total replay never refresh either origin. These
+origins are local source data, not reception-order projection timestamps.
+Schema-27 cutover leaves older events without origins; neither replay nor late
+payload delivery invents their missing history. Missing origins must fail closed
+for quota eligibility. Wall-clock observations alone do not establish clock
+reliability; no destructive quota worker is enabled.
+
+Durable local quota decisions retain their reason and decision timestamp across
+total migration. Replay applies them during the envelope pass before available
+payloads can be materialized, including bytes surviving under another event's
+reference. They remain Pruned, never Missing or Processed, unless a signed
+deletion establishes the stronger Deleted state. The original quota decision
+remains source metadata even then. The database currently provides the source
+storage and replay contract, not a production quota-mutation API.
+
 ## Deduplication and retrieval
 
 Content bytes are keyed by hash and may satisfy multiple events, but each

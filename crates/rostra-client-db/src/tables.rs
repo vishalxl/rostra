@@ -151,6 +151,15 @@ macro_rules! def_table {
 #[cfg(test)]
 pub(crate) use def_table;
 
+def_table! {
+    /// Immutable local retention age and first-materialization origins.
+    events_retention_origins: ShortEventId => crate::retention::RetentionOrigins
+}
+def_table! {
+    /// Authoritative local quota decisions, preserved across total replay.
+    events_quota_pruned: ShortEventId => crate::retention::QuotaPruneDecision
+}
+
 // ============================================================================
 // SYSTEM TABLES
 // ============================================================================

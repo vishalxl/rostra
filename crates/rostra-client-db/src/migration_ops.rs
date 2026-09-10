@@ -76,8 +76,9 @@ pub(crate) struct LegacyEventReceivedRecord {
 ///
 /// Version 25 performs the single final rebuild for the stacked version-24
 /// schema changes. Version 26 adds the empty append-only SocialPost
-/// materialization feed without backfill.
-const DB_VER: u64 = 26;
+/// materialization feed without backfill. Version 27 adds durable retention
+/// source tables without inventing historical receipt or materialization times.
+const DB_VER: u64 = 27;
 
 /// Versions older than this require a total migration.
 ///
@@ -120,6 +121,17 @@ const MIGRATION_EVENT_SOURCES_TEMP_TABLE: &str = "_total_migration_event_sources
 const MIGRATION_SOCIAL_POST_MATERIALIZATIONS_TEMP_TABLE: &str =
     "_total_migration_social_post_materializations";
 
+const RETENTION_ORIGINS_TEMP: redb_bincode::TableDefinition<
+    'static,
+    ShortEventId,
+    crate::retention::RetentionOrigins,
+> = redb_bincode::TableDefinition::new("_total_migration_retention_origins");
+const QUOTA_PRUNED_TEMP: redb_bincode::TableDefinition<
+    'static,
+    ShortEventId,
+    crate::retention::QuotaPruneDecision,
+> = redb_bincode::TableDefinition::new("_total_migration_quota_pruned");
+
 impl Database {
     /// Check if there's a pending migration stash that needs reprocessing.
     ///
@@ -159,6 +171,8 @@ impl Database {
         tx.open_table(&crate::ids_nodes::TABLE)?;
 
         tx.open_table(&crate::events::TABLE)?;
+        tx.open_table(&crate::events_retention_origins::TABLE)?;
+        tx.open_table(&crate::events_quota_pruned::TABLE)?;
         tx.open_table(&crate::events_singletons_new::TABLE)?;
         tx.open_table(&crate::events_missing::TABLE)?;
         tx.open_table(&crate::events_by_time::TABLE)?;
@@ -336,6 +350,14 @@ impl Database {
         Self::copy_table_raw(dbtx, &content_store::TABLE, &content_store_temp)?;
         Self::copy_table_raw(dbtx, &ids_self::TABLE, &ids_self_temp)?;
         Self::copy_table_raw(dbtx, &crate::db_init_time::TABLE, &db_init_time_temp)?;
+        if 27 <= source_ver {
+            Self::copy_table_raw(
+                dbtx,
+                &crate::events_retention_origins::TABLE,
+                &RETENTION_ORIGINS_TEMP,
+            )?;
+            Self::copy_table_raw(dbtx, &crate::events_quota_pruned::TABLE, &QUOTA_PRUNED_TEMP)?;
+        }
         if 26 <= source_ver {
             Self::copy_table_raw(
                 dbtx,
@@ -521,6 +543,19 @@ impl Database {
             }
             .fail();
         }
+        if 27 <= source_ver {
+            for required in [
+                RETENTION_ORIGINS_TEMP.as_raw().name(),
+                QUOTA_PRUNED_TEMP.as_raw().name(),
+            ] {
+                if !table_names.iter().any(|name| name == required) {
+                    return crate::MissingMigrationStashTableSnafu {
+                        table: required.to_owned(),
+                    }
+                    .fail();
+                }
+            }
+        }
 
         for name in &table_names {
             if name.starts_with(MIGRATION_TEMP_PREFIX)
@@ -559,6 +594,14 @@ impl Database {
             &replaced_by_temp,
             &crate::social_posts_replaced_by::TABLE,
         )?;
+        if 27 <= source_ver {
+            Self::copy_table_raw(
+                dbtx,
+                &RETENTION_ORIGINS_TEMP,
+                &crate::events_retention_origins::TABLE,
+            )?;
+            Self::copy_table_raw(dbtx, &QUOTA_PRUNED_TEMP, &crate::events_quota_pruned::TABLE)?;
+        }
         if 26 <= source_ver {
             Self::copy_table_raw(
                 dbtx,
@@ -612,6 +655,40 @@ impl Database {
             .unwrap_or(0);
         let use_legacy_content_store = source_ver <= DB_VER_LEGACY_CONTENT_STORE_FORMAT;
 
+        // Retention decisions and origins are authoritative source, not replay
+        // output. Require the complete stash and decode every row before replay,
+        // including rows that would not be touched by ordinary payload handling.
+        if 27 <= source_ver {
+            let names = dbtx
+                .as_raw()
+                .list_tables()?
+                .map(|table| table.name().to_owned())
+                .collect::<std::collections::BTreeSet<_>>();
+            for required in [
+                RETENTION_ORIGINS_TEMP.as_raw().name(),
+                QUOTA_PRUNED_TEMP.as_raw().name(),
+            ] {
+                if !names.contains(required) {
+                    return crate::MissingMigrationStashTableSnafu {
+                        table: required.to_owned(),
+                    }
+                    .fail();
+                }
+            }
+            let source = dbtx.open_table(&RETENTION_ORIGINS_TEMP)?;
+            let mut destination = dbtx.open_table(&crate::events_retention_origins::TABLE)?;
+            for row in source.range(..)? {
+                let (key, value) = row?;
+                destination.insert(&key.value_try()?, &value.value_try()?)?;
+            }
+            let source = dbtx.open_table(&QUOTA_PRUNED_TEMP)?;
+            let mut destination = dbtx.open_table(&crate::events_quota_pruned::TABLE)?;
+            for row in source.range(..)? {
+                let (key, value) = row?;
+                destination.insert(&key.value_try()?, &value.value_try()?)?;
+            }
+        }
+
         // Content store temp tables — open whichever format matches
         let legacy_content_store_temp: redb_bincode::TableDefinition<
             '_,
@@ -643,6 +720,7 @@ impl Database {
         // heap allocations per event for the full transaction.
         dbtx.discard_commit_hooks();
         dbtx.suppress_materialization_emission();
+        dbtx.suppress_retention_tracking();
 
         let events_temp_table = dbtx.open_table(&events_temp)?;
         let event_sources = dbtx.open_table(&event_sources_temp)?;
@@ -927,6 +1005,9 @@ impl Database {
         dbtx.as_raw().delete_table(db_init_time_temp.as_raw())?;
         dbtx.as_raw().delete_table(replaced_by_temp.as_raw())?;
         dbtx.as_raw().delete_table(materializations_temp.as_raw())?;
+        dbtx.as_raw()
+            .delete_table(RETENTION_ORIGINS_TEMP.as_raw())?;
+        dbtx.as_raw().delete_table(QUOTA_PRUNED_TEMP.as_raw())?;
         dbtx.as_raw().delete_table(source_ver_temp.as_raw())?;
         dbtx.as_raw().delete_table(event_sources_temp.as_raw())?;
         // Try to delete legacy temp table (may not exist)

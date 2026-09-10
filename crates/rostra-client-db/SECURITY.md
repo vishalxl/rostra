@@ -39,6 +39,15 @@ encodings require fixtures using the corresponding released layouts. A
 malformed authoritative stash must fail closed; disposable metadata corruption
 must not destroy authoritative source.
 
+Schema 27 also preserves local retention origins and quota decisions as
+authoritative source. Their stash tables are mandatory for a schema-27 replay;
+missing tables or malformed values fail closed and retain the retryable stash.
+Older events have unknown origins rather than fabricated migration-time grace.
+No production quota mutation or destructive worker is enabled by this source
+metadata foundation. A future worker must fail closed for unknown origins and
+unreliable clocks rather than treating stored wall-clock readings as proof of
+elapsed time.
+
 Replay runs before the database is published, suppresses incremental hooks and
 materialization-feed emission, and refreshes current-state watches after commit.
 Total migration preserves a feed from schema 26 or newer byte-for-byte; older

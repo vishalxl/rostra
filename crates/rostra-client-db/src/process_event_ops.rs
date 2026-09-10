@@ -77,6 +77,40 @@ impl Database {
             ..
         } = insert_event_outcome
         {
+            if tx.retention_tracking_enabled() {
+                let mut origins = tx.open_table(&crate::events_retention_origins::TABLE)?;
+                if origins.get(&event.event_id.to_short())?.is_none() {
+                    origins.insert(
+                        &event.event_id.to_short(),
+                        &crate::retention::RetentionOrigins {
+                            effective_timestamp: event.timestamp().min(now),
+                            materialized_at: (event.content_len() == 0 && !is_deleted)
+                                .then_some(now),
+                        },
+                    )?;
+                }
+            }
+
+            // Source decisions are restored before envelope replay. Apply them
+            // while the event is still unmaterialized, never after projection
+            // processing; matching bytes may survive under another reference.
+            if tx
+                .open_table(&crate::events_quota_pruned::TABLE)?
+                .get(&event.event_id.to_short())?
+                .map(|row| row.value_try())
+                .transpose()?
+                .is_some()
+            {
+                Database::prune_event_content_tx(
+                    event.event_id,
+                    event.content_hash(),
+                    &mut events_content_state_tbl,
+                    &mut content_rc_tbl,
+                    &mut events_content_missing_tbl,
+                    Some((event.author(), event.content_len(), &mut ids_data_usage_tbl)),
+                )?;
+            }
+
             // Record when we received this event
             let mut events_received_at_tbl = tx.open_table(&events_received_at::TABLE)?;
             Self::insert_reception_ordered_tx(
@@ -207,34 +241,41 @@ impl Database {
             }
         }
 
-        let process_event_content_state =
-            if Self::MAX_CONTENT_LEN <= u32::from(event.event.content_len) {
-                if Database::prune_event_content_tx(
-                    event.event_id,
-                    event.content_hash(),
-                    &mut events_content_state_tbl,
-                    &mut content_rc_tbl,
-                    &mut events_content_missing_tbl,
-                    Some((event.author(), event.content_len(), &mut ids_data_usage_tbl)),
-                )? {
-                    ProcessEventState::Pruned
-                } else {
-                    ProcessEventState::Deleted
-                }
+        let process_event_content_state = if matches!(
+            events_content_state_tbl
+                .get(&event.event_id.to_short())?
+                .map(|row| row.value_try())
+                .transpose()?,
+            Some(crate::EventContentState::Pruned)
+        ) {
+            ProcessEventState::Pruned
+        } else if Self::MAX_CONTENT_LEN <= u32::from(event.event.content_len) {
+            if Database::prune_event_content_tx(
+                event.event_id,
+                event.content_hash(),
+                &mut events_content_state_tbl,
+                &mut content_rc_tbl,
+                &mut events_content_missing_tbl,
+                Some((event.author(), event.content_len(), &mut ids_data_usage_tbl)),
+            )? {
+                ProcessEventState::Pruned
             } else {
-                match insert_event_outcome {
-                    InsertEventOutcome::AlreadyPresent => ProcessEventState::Existing,
-                    InsertEventOutcome::Inserted { is_deleted, .. } => {
-                        if is_deleted {
-                            ProcessEventState::Deleted
-                        } else {
-                            // If the event was not there, and it wasn't deleted
-                            // it definitely does not have content yet.
-                            ProcessEventState::New
-                        }
+                ProcessEventState::Deleted
+            }
+        } else {
+            match insert_event_outcome {
+                InsertEventOutcome::AlreadyPresent => ProcessEventState::Existing,
+                InsertEventOutcome::Inserted { is_deleted, .. } => {
+                    if is_deleted {
+                        ProcessEventState::Deleted
+                    } else {
+                        // If the event was not there, and it wasn't deleted
+                        // it definitely does not have content yet.
+                        ProcessEventState::New
                     }
                 }
-            };
+            }
+        };
 
         // Notify the content fetcher when new content needs fetching.
         // This fires when a new event with content_len > 0 was inserted and

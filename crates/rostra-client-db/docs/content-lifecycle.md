@@ -1,5 +1,14 @@
 # Event Content Lifecycle
 
+Schema 27 records immutable local retention origins and preserves quota-decision
+source rows across total replay. These are independent of disposable receipt
+indexes. Older events retain unknown origins; replay and duplicate delivery do
+not invent or refresh them. Quota decisions constrain envelope replay before
+shared content can materialize, with signed deletion remaining stronger. No
+production quota transition or GC worker is enabled yet. See the
+[database retention checkpoint](../../../docs/payload-retention-database.md)
+and [SPEC-event-content-lifecycle](../specs/SPEC-event-content-lifecycle.md).
+
 > **See also**: `src/tables.rs` for table definitions and inline documentation.
 > When updating this document, ensure `tables.rs` stays in sync.
 

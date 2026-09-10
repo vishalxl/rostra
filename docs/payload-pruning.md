@@ -1,8 +1,9 @@
 # Payload pruning: discussion draft
 
-**Status: proposal, not an adopted specification.** Only the pure experimental
-ranking policy and in-memory simulator are implemented; see the
-[implementation guide](payload-retention-policy.md). No runtime pruning,
+**Status: proposal, not an adopted specification.** The pure experimental
+ranking policy, in-memory simulator, and durable database retention source
+metadata are implemented; see the [implementation guide](payload-retention-policy.md)
+and [database checkpoint](payload-retention-database.md). No runtime pruning,
 admission or fetching integration is enabled.
 
 ## Recommendation

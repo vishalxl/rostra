@@ -142,6 +142,13 @@ canonical forward replacement metadata, and the source version needed for legacy
 content decoding. Caller-owned extension tables remain untouched. It deletes all
 other reserved built-in state and creates the current schema.
 
+Schema 27 adds immutable local retention origins and authoritative quota-decision
+source tables without backfilling historical clocks. Total rebuild preserves
+these tables from schema 27 onward and requires their complete stash on retry.
+Quota decisions constrain envelope replay before payload projection, even when
+the bytes survive for another event. Replay never treats its synthetic receipt
+times as retention observations.
+
 Replay trusts that retained rows crossed the authentication boundary during
 normal ingestion; it is not a cryptographic integrity scrub. Typed decoding and
 the payload hash-and-length check required to construct verified content still

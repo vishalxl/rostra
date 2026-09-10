@@ -11,6 +11,9 @@ mod paginate;
 mod process_event_content_ops;
 mod process_event_ops;
 mod reception_order_ops;
+mod retention;
+#[cfg(test)]
+mod retention_tests;
 mod self_followee;
 pub mod social;
 mod social_post_materialization;
@@ -108,6 +111,8 @@ pub(crate) struct WriteTransactionCtx {
     dbtx: WriteTransaction,
     on_commit: std::sync::Mutex<Option<Vec<CommitHook>>>,
     materialization_emission_enabled: std::sync::atomic::AtomicBool,
+    /// Whether ingestion observes new local retention timestamps.
+    retention_tracking_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl From<WriteTransaction> for WriteTransactionCtx {
@@ -116,6 +121,7 @@ impl From<WriteTransaction> for WriteTransactionCtx {
             dbtx,
             on_commit: std::sync::Mutex::new(Some(vec![])),
             materialization_emission_enabled: std::sync::atomic::AtomicBool::new(true),
+            retention_tracking_enabled: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -134,6 +140,18 @@ impl std::ops::DerefMut for WriteTransactionCtx {
 }
 
 impl WriteTransactionCtx {
+    /// Do not interpret replay's authored timestamps as local observations.
+    pub(crate) fn suppress_retention_tracking(&self) {
+        self.retention_tracking_enabled
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Return whether ingestion records genuinely new local observations.
+    pub(crate) fn retention_tracking_enabled(&self) -> bool {
+        self.retention_tracking_enabled
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Registers an action to run in registration order after a successful
     /// commit.
     ///
@@ -177,6 +195,7 @@ impl WriteTransactionCtx {
             dbtx,
             on_commit,
             materialization_emission_enabled: _,
+            retention_tracking_enabled: _,
         } = self;
 
         dbtx.commit()?;
@@ -1199,6 +1218,19 @@ impl Database {
                 };
 
                 if is_valid {
+                    if tx.retention_tracking_enabled() {
+                        let mut origins = tx.open_table(&events_retention_origins::TABLE)?;
+                        let origin = origins
+                            .get(&event_short_id)?
+                            .map(|row| row.value_try())
+                            .transpose()?;
+                        if let Some(mut origin) = origin
+                            && origin.materialized_at.is_none()
+                        {
+                            origin.materialized_at = Some(now);
+                            origins.insert(&event_short_id, &origin)?;
+                        }
+                    }
                     // Store content in content_store if not already there
                     {
                         let mut content_store_table = tx.open_table(&content_store::TABLE)?;
