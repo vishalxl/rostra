@@ -27,6 +27,10 @@ mod payload_demand_state;
 #[cfg(test)]
 mod payload_demand_tests;
 mod payload_reservation;
+#[allow(dead_code)]
+mod payload_runtime;
+#[cfg(test)]
+mod payload_runtime_tests;
 mod process_event_content_ops;
 mod process_event_ops;
 mod quota_pruning;
@@ -500,6 +504,8 @@ pub struct Database {
     payload_admission: Arc<payload_reservation::AdmissionLedger>,
     /// Keeps an externally supplied account ledger exclusively attached.
     payload_account_owner: Option<Arc<()>>,
+    /// Non-activatable runtime integration; installed only by private tests.
+    payload_runtime: Option<payload_runtime::PayloadRuntime>,
 
     self_followees_updated: watch::Sender<Arc<HashMap<RostraId, IdsFolloweesRecord>>>,
     self_followers_updated: watch::Sender<Arc<HashMap<RostraId, IdsFollowersRecord>>>,
@@ -637,6 +643,7 @@ impl Database {
             write_and_publish_lock: std::sync::Mutex::new(()),
             payload_admission: Arc::default(),
             payload_account_owner: None,
+            payload_runtime: None,
             self_followees_updated,
             self_followers_updated,
             self_wot_updated,

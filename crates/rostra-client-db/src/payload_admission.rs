@@ -57,6 +57,18 @@ impl Database {
         &self,
         event: &VerifiedEvent,
     ) -> DbResult<PayloadReservationOutcome> {
+        if let Some(runtime) = &self.payload_runtime {
+            return runtime.prepare(self, event).await;
+        }
+        self.prepare_payload_acquisition_once(event).await
+    }
+
+    /// One allocation-free-on-return preparation attempt; all shared-store
+    /// scratch ownership is dropped before returning a pause.
+    pub(crate) async fn prepare_payload_acquisition_once(
+        &self,
+        event: &VerifiedEvent,
+    ) -> DbResult<PayloadReservationOutcome> {
         self.try_process_event(event).await?;
         match self
             .try_materialize_stored_payload(event.event_id.to_short())

@@ -99,6 +99,24 @@ checked reduction. Completion, reservation, reattachment and policy replacement
 invalidate demands. See the [database guide](../../docs/payload-retention-database.md)
 for the staged scope and remaining enabled-runtime requirements.
 
+An internal, test-installed runtime now connects ordinary acquisition preparation
+to metadata-only demand waiting and a bounded maintenance/preemption driver.
+No production account can install it. It independently maintains accounting,
+quota-nomination recovery, candidate backfill and fixed-time grace prefixes, with
+fresh writer-time authority checks for every prune. Explicit per-turn operation,
+logical-byte and cooperative-time bounds do not preempt an indivisible database
+operation. Waits own no payload buffers, deduplicate without renewing intent and
+have a monotonic outer deadline. Register-before-check notifications, minimum retry
+spacing and recovery waits avoid relying on a lossy wakeup or immediately retrying
+unattainable byte allowances.
+
+The runner spawns nothing; its caller must own and join its future. Unique RAII
+runner ownership releases on cancellation/panic, after any synchronous transaction
+finishes. Production Client task integration, enabled ingress coverage, general
+pressure/hysteresis, permanent ranked rejection, bounded-byte GC and DryRun remain
+required before any startup opt-in. The private integration does not collect bytes
+or imply a physical storage limit.
+
 The buffer limit is declared capacity, not a whole-process memory measurement.
 Existing APIs' already-allocated external content, transport/codec working memory,
 allocator overhead and clones retained after acquisition remain outside its

@@ -35,6 +35,19 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct PayloadDemand(Arc<DemandOwner>);
 
+impl PayloadDemand {
+    /// Check this exact nonrenewable owner, expiring metadata under
+    /// arbitration.
+    pub(crate) fn is_live(&self) -> bool {
+        let mut demands = self.0.ledger.demands.lock().unwrap();
+        demands.expire(Timestamp::now());
+        demands
+            .entries
+            .get(&self.0.event)
+            .is_some_and(|e| e.id == self.0.id)
+    }
+}
+
 /// Unique cancellation owner, weakly referenced by the ledger to avoid a cycle.
 #[derive(Debug)]
 pub(crate) struct DemandOwner {

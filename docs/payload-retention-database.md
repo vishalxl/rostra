@@ -379,11 +379,11 @@ origins remain. This checkpoint does not implement or activate that worker.
 
 ### Non-activatable pending-demand foundation
 
-The database now includes **crate-private, non-activatable** demand registration
-and one-step preemption. Ordinary acquisition still returns its existing
-`Deferred` outcome and does not register demand; only disposable configured tests
-exercise this foundation. Every production account remains Disabled. No worker,
-startup mode/budget API, collection or live reconfiguration has been introduced.
+The database includes **crate-private, non-activatable** demand registration,
+one-step preemption, and an internal maintenance/acquisition integration driver.
+Only disposable configured tests install that driver; production acquisition
+does not register demand and every production account remains Disabled. No
+startup mode/budget API, automatic collection or live reconfiguration exists.
 
 A failed reservation can occur at `cap - 1` even though retained plus reserved
 usage is below the cap. A metadata-only `PayloadDemand` expresses intent to make
@@ -463,9 +463,62 @@ Diagnostics now distinguish pending intent count/bytes from logical reservations
 and owned acquisition buffers. Demand usage is an advisory live walltime snapshot,
 not retained usage, unique store bytes, or physical allocation. This primitive
 does not collect nominated bytes and does not implement general over-cap pressure,
-90% low-water hysteresis, permanent ranked Missing rejection, DryRun, scheduling,
-or acquisition ownership while paused. The full activation obligations in the
+90% low-water hysteresis, permanent ranked Missing rejection or DryRun.
+The internal integration below adds bounded scheduling and acquisition ownership
+while paused, not a complete enabled runtime. The full activation obligations in the
 phase-3 handoff remain blockers for exposing enabled runtime modes.
+
+### Non-activatable maintenance and acquisition integration
+
+Private test construction can bind `PayloadRuntime` to the exact policy/holder
+generation and immutable admission-config incarnation before exposing a disposable
+database. There is no production constructor or setter. The ordinary
+`prepare_payload_acquisition` method then exercises the real preparation path,
+including shared-store reuse, while retaining only the verified header and one
+metadata-only demand owner between attempts. Internal copy/conversion guards have
+dropped before a paused attempt returns. Duplicate callers share the original
+nonrenewable demand; cancellation drops ownership and expiry returns Deferred
+without refreshing the intent. An additional monotonic 30-second wait bound
+prevents a backwards system clock from extending an acquisition indefinitely.
+Deferred remains a temporary outcome, not a permanent quota decision.
+
+The driver independently advances accounting, quota-nomination recovery, policy
+index backfill and grace promotion in round-robin one-row transactions, even
+without acquisitions. Each turn has explicit operation, logical-eviction-byte
+and cooperative-time limits. The phase survives one-operation turns; the driver
+finishes a bounded reconciliation cycle before sleeping rather than delaying
+the demand stage behind repeated idle maintenance stages. A promotion prefix uses
+one fixed walltime until drained. A later destructive demand step samples fresh
+walltime under its writer/arbitration locks and can require a newer prefix drain;
+the older promotion time never supplies pruning authority.
+
+Both runner and waiter register notifications before checking work. Runner
+continuation yields; blocked, exhausted, fitting and idle demand results wait
+after reconciliation. A minimum 100-ms wait limits notification-churn retries;
+one-second recovery waits also observe missed signals and future grace eligibility
+without treating walltime hints as a latch. This is bounded polling of metadata,
+not a new clock monitor. A candidate too large for the turn allowance cannot
+cause immediate repeated pruning attempts or be skipped for a larger-ranked one.
+
+`run` borrows the database and has a unique RAII runner owner. It spawns no task
+and performs synchronous, indivisible DB transactions; dropping or aborting its
+owning future releases exclusivity after the current transaction finishes. Tests
+scope runner futures to acquisition completion and cancellation. Before production
+activation, Client must own and join this runner through its existing retained
+task-completion machinery. This checkpoint does not start it in Client or claim
+that end-to-end Client teardown and every ingress path are already integrated.
+
+The integration tests cover cap-minus-one preparation through preemption,
+reservation and actual ingestion; independent single-operation maintenance;
+deduplication/cancellation/expiry with zero paused buffer charges; shared-store
+reuse; alternate-author progress behind an exhausted higher-ranked demand;
+bounded continuation past a previously promoted future prefix;
+and byte-blocked waiting with runner cancellation/exclusivity. General pressure
+and hysteresis, durable ranked rejection (including sustained refetch suppression),
+bounded-byte quota GC, DryRun, immutable enabled startup policy and the complete
+enabled bypass/load/body/race/overload audit remain activation blockers. No bytes
+are automatically collected here: unique stored bytes may remain after logical
+eviction, and no physical reclamation is claimed.
 
 Remaining checkpoints must add runtime configuration and retention-worker integration, including
 the unloaded-account HTTP policy boundary above, before any activation path.

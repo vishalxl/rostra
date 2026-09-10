@@ -16,7 +16,10 @@ transactional worker integration remain separate requirements.
 The database also has a production-disabled shared admission foundation with
 explicit logical ceilings and separate acquisition-buffer leases. Client reads,
 shared-store reuse, local serialization and raw signed HTTP parsing now use those
-leases; no production activation API or destructive runtime worker exists.
+leases; no production activation API or production destructive worker exists.
+An internal test-installed driver now connects bounded demand preemption and
+maintenance to buffer-free acquisition waiting; it is not a complete runtime
+or an enabled deployment option.
 
 ## Version 1 arithmetic and encoding
 
