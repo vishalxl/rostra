@@ -20,6 +20,10 @@ leases; no production activation API or production destructive worker exists.
 An internal test-installed driver now connects bounded demand preemption,
 author-first/global hysteresis, quota-only collection and maintenance to buffer-free
 acquisition waiting; it is not a complete runtime or an enabled deployment option.
+Its demand worker also supports conservative ranked durable Missing rejection:
+a fresh currently eligible retained index head must outrank the incoming event,
+and retained-only pressure must independently exceed the applicable cap. Skipped
+or protected-only boundaries still defer; this does not simulate future fit.
 
 ## Version 1 arithmetic and encoding
 

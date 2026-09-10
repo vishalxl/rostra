@@ -207,6 +207,280 @@ async fn prepare_with_worker(
     .await??)
 }
 
+async fn is_missing(db: &Database, event: &VerifiedEventContent) -> anyhow::Result<bool> {
+    Ok(db
+        .read_with(|tx| {
+            Ok(matches!(
+                tx.open_table(&crate::events_content_state::TABLE)?
+                    .get(&event.event_id().to_short())?
+                    .map(|row| row.value()),
+                Some(crate::EventContentState::Missing { .. })
+            ))
+        })
+        .await?)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_ranked_rejection_retains_better_incoming_in_author_and_global_scopes()
+-> anyhow::Result<()> {
+    for author_pressure in [false, true] {
+        let mut db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+        let author = RostraIdSecretKey::generate();
+        let old = post(author, 1, "same");
+        let better = post(author, 3, "same");
+        let worse = post(author, 2, "same");
+        let bytes = u64::from(old.content_len());
+        db.try_process_event_with_content(&old).await?;
+        install(
+            &mut db,
+            if author_pressure { 10000 } else { bytes + 1 },
+            if author_pressure { bytes + 1 } else { 10000 },
+            1,
+            bytes,
+        )
+        .await?;
+        settle(&db).await?;
+        // Shared-store reuse must first make logical room, just like a fetch.
+        assert!(matches!(
+            prepare_with_worker(&db, &better.event).await?,
+            PayloadReservationOutcome::Unneeded
+        ));
+        assert!(
+            db.get_event_content(better.event_id().to_short())
+                .await
+                .is_some()
+        );
+        assert!(matches!(
+            prepare_with_worker(&db, &worse.event).await?,
+            PayloadReservationOutcome::Unneeded
+        ));
+        db.read_with(|tx| {
+            assert_eq!(
+                tx.open_table(&crate::events_quota_pruned::TABLE)?
+                    .get(&worse.event_id().to_short())?
+                    .unwrap()
+                    .value()
+                    .reason,
+                if author_pressure {
+                    crate::QuotaPruneReason::AuthorQuota
+                } else {
+                    crate::QuotaPruneReason::GlobalQuota
+                }
+            );
+            Ok(())
+        })
+        .await?;
+        assert!(
+            db.get_event_content(better.event_id().to_short())
+                .await
+                .is_some()
+        );
+        assert_eq!(
+            db.get_payload_usage().await?.unwrap().logical_current_bytes,
+            bytes
+        );
+        let usage = db.payload_admission_usage();
+        assert_eq!(
+            (usage.acquisitions, usage.buffers, usage.buffer_bytes),
+            (0, 0, 0)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_ranked_rejection_survives_duplicate_shared_hash_ingress_and_replay()
+-> anyhow::Result<()> {
+    let mut db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let author = RostraIdSecretKey::generate();
+    let retained = post(author, 20, "same");
+    let rejected = post(author, 10, "same");
+    let bytes = u64::from(retained.content_len());
+    db.try_process_event_with_content(&retained).await?;
+    install(&mut db, bytes + 1, 10000, 1, bytes).await?;
+    settle(&db).await?;
+    let mut signals = db.quota_pruned_tx.subscribe();
+    assert!(matches!(
+        prepare_with_worker(&db, &rejected.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    assert_eq!(signals.try_recv()?, rejected.event_id().to_short());
+    for _ in 0..32 {
+        assert!(matches!(
+            db.prepare_payload_acquisition(&rejected.event).await?,
+            PayloadReservationOutcome::Unneeded
+        ));
+        assert_eq!(
+            db.try_process_admitted_event_content(&rejected, None)
+                .await?,
+            PayloadIngestOutcome::Unchanged
+        );
+        assert_eq!(
+            db.try_materialize_stored_payload(rejected.event_id().to_short())
+                .await?,
+            PayloadIngestOutcome::Unchanged
+        );
+    }
+    assert!(signals.try_recv().is_err());
+    let decision = db
+        .read_with(|tx| {
+            Ok(tx
+                .open_table(&crate::events_quota_pruned::TABLE)?
+                .get(&rejected.event_id().to_short())?
+                .unwrap()
+                .value())
+        })
+        .await?;
+    // Replay discards runtime indexes but preserves source decisions before
+    // processing envelopes whose shared bytes still exist.
+    db.payload_runtime = None;
+    db.payload_admission.state.lock().unwrap().config = None;
+    for _ in 0..2 {
+        db.write_with(|tx| Database::prepare_total_migration(tx, 31))
+            .await?;
+        db.write_with(|tx| db.reprocess_migration_stash(tx)).await?;
+        db.try_process_event_with_content(&rejected).await?;
+        db.read_with(|tx| {
+            assert!(
+                tx.open_table(&crate::events::TABLE)?
+                    .get(&rejected.event_id().to_short())?
+                    .is_some()
+            );
+            assert_eq!(
+                tx.open_table(&crate::events_quota_pruned::TABLE)?
+                    .get(&rejected.event_id().to_short())?
+                    .unwrap()
+                    .value(),
+                decision
+            );
+            assert!(matches!(
+                tx.open_table(&crate::events_content_state::TABLE)?
+                    .get(&rejected.event_id().to_short())?
+                    .unwrap()
+                    .value(),
+                crate::EventContentState::Pruned
+            ));
+            assert!(
+                tx.open_table(&crate::events_content_missing::TABLE)?
+                    .first()?
+                    .is_none()
+            );
+            assert!(
+                tx.open_table(&crate::social_posts::TABLE)?
+                    .get(&rejected.event_id().to_short())?
+                    .is_none()
+            );
+            assert_eq!(
+                tx.open_table(&crate::content_rc::TABLE)?
+                    .get(&rejected.content_hash())?
+                    .unwrap()
+                    .value(),
+                1
+            );
+            let usage = tx
+                .open_table(&crate::ids_data_usage::TABLE)?
+                .get(&author.id())?
+                .unwrap()
+                .value();
+            assert_eq!(usage.current_content_size, bytes);
+            assert_eq!(usage.pruned_payload_size, bytes);
+            assert!(
+                tx.open_table(&crate::events_retention_origins::TABLE)?
+                    .get(&rejected.event_id().to_short())?
+                    .unwrap()
+                    .value()
+                    .materialized_at
+                    .is_none()
+            );
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_ranked_rejection_needs_boundary_not_just_protected_usage() -> anyhow::Result<()> {
+    for has_boundary in [false, true] {
+        let local = RostraIdSecretKey::generate();
+        let mut db = Database::new_in_memory(local.id()).await?;
+        let author = RostraIdSecretKey::generate();
+        let protected = post(local, 1, "same");
+        let boundary = post(author, 20, "same");
+        let incoming = post(author, 10, "same");
+        db.try_process_event_with_content(&protected).await?;
+        if has_boundary {
+            db.try_process_event_with_content(&boundary).await?;
+        }
+        let bytes = u64::from(protected.content_len());
+        let cap = bytes * if has_boundary { 2 } else { 1 } + 1;
+        install(&mut db, cap, 10000, 1, bytes).await?;
+        settle(&db).await?;
+        if has_boundary {
+            assert!(matches!(
+                prepare_with_worker(&db, &incoming.event).await?,
+                PayloadReservationOutcome::Unneeded
+            ));
+        } else {
+            let prepare = db.prepare_payload_acquisition(&incoming.event);
+            tokio::pin!(prepare);
+            assert!(futures::poll!(&mut prepare).is_pending());
+            settle(&db).await?;
+            assert!(futures::poll!(&mut prepare).is_pending());
+            assert!(is_missing(&db, &incoming).await?);
+            assert_eq!(db.payload_admission_usage().pending_demands, 1);
+        }
+        assert!(
+            db.get_event_content(protected.event_id().to_short())
+                .await
+                .is_some()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_ranked_rejection_ignores_reservation_only_pressure_and_live_lease()
+-> anyhow::Result<()> {
+    let mut db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let author = RostraIdSecretKey::generate();
+    let retained = post(author, 20, "same");
+    let incoming = post(author, 10, "diff");
+    let other = post(author, 30, "else");
+    db.try_process_event_with_content(&retained).await?;
+    let bytes = u64::from(retained.content_len());
+    install(&mut db, 2 * bytes + 1, 10000, 1, bytes).await?;
+    settle(&db).await?;
+    let PayloadReservationOutcome::Reserved(reservation) =
+        db.prepare_payload_acquisition(&other.event).await?
+    else {
+        panic!("room");
+    };
+    {
+        let prepare = db.prepare_payload_acquisition(&incoming.event);
+        tokio::pin!(prepare);
+        assert!(futures::poll!(&mut prepare).is_pending());
+        settle(&db).await?;
+        assert!(is_missing(&db, &incoming).await?);
+    }
+    drop(reservation);
+    let PayloadReservationOutcome::Reserved(reservation) =
+        prepare_with_worker(&db, &incoming.event).await?
+    else {
+        panic!("released room");
+    };
+    {
+        let duplicate = db.prepare_payload_acquisition(&incoming.event);
+        tokio::pin!(duplicate);
+        assert!(futures::poll!(&mut duplicate).is_pending());
+        settle(&db).await?;
+        assert_eq!(db.payload_admission_usage().pending_demands, 0);
+        assert!(is_missing(&db, &incoming).await?);
+    }
+    drop(reservation);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn runtime_cap_minus_one_prepares_preempts_reserves_and_ingests() -> anyhow::Result<()> {
     let mut db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;

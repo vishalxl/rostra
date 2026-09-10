@@ -249,6 +249,15 @@ ownership prevent general pressure from spending acquisition-freed room twice.
 Targets and candidate cursors are disposable, never authority to replay a quota
 decision. Every production account remains Disabled-only.
 
+In that private driver, a ranked Missing rejection requires a fresh currently
+eligible retained index head strictly above the incoming full rank, retained-only
+pressure independent of reservations, and no Fits/exact partial-plan barrier or
+live incoming reservation. Protected bytes count against caps but do not alone
+prove a rank boundary. Skipped/future heads, unready state and transient pressure
+remain Deferred. The checked Missing transition makes ordinary retries terminal,
+including duplicate headers and shared-store reuse, without releasing retained
+logical bytes. It is a current-policy decision, not a promise about future fit.
+
 ## Deduplication and retrieval
 
 The shared admission foundation is disabled in production: no configuration

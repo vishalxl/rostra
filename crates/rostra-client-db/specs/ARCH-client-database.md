@@ -179,6 +179,9 @@ retained-plus-reserved logical bytes, atomically composing current pressure and
 candidate checks with the quota reducer. Disk-backed author targets avoid an
 author-sized RAM map. Quota-only collection uses separate strict unique-store-byte
 and bounded cursor scheduling; neither operation promises physical reclamation.
+The same demand boundary can durably decline eligible Missing content against a
+fresh higher-ranked retained minimum under retained-only pressure; cursor
+exhaustion and temporary reservations never authorize that decision.
 Production construction remains Disabled-only, with no Client runner or opt-in.
 See the [database retention guide](../../../docs/payload-retention-database.md)
 for the derived-state lifecycle and remaining activation boundary.

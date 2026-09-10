@@ -13,6 +13,7 @@ use rostra_core::Timestamp;
 use rostra_core::event::VerifiedEvent;
 
 use crate::payload_demand::{DemandRegistration, DemandStep, PayloadDemand};
+use crate::payload_demand_request::DemandRequest;
 use crate::payload_pressure::{PressureCursor, PressureRequest, PressureStep, PressureWorker};
 use crate::{
     Database, DbError, DbResult, PayloadReservationOutcome, RetentionClock, RetentionGeneration,
@@ -317,7 +318,13 @@ impl PayloadRuntime {
                 }
                 RuntimePhase::Demand if cursor.ready.all() => {
                     match db
-                        .preempt_payload_demand(self.generation, one, bytes, deadline)
+                        .preempt_payload_demand(DemandRequest {
+                            generation: self.generation,
+                            config: &self.config,
+                            scan_limit: one,
+                            max_bytes: bytes,
+                            deadline,
+                        })
                         .await?
                     {
                         DemandStep::Pruned {
@@ -326,7 +333,7 @@ impl PayloadRuntime {
                             bytes = bytes.checked_sub(released).ok_or(DbError::Overflow)?;
                             continued = true;
                         }
-                        DemandStep::Continue => continued = true,
+                        DemandStep::Continue | DemandStep::Rejected { .. } => continued = true,
                         DemandStep::NotReady => {
                             // A newer grace deadline can become due after a fixed
                             // prefix drain. Never reuse that older time as authority.

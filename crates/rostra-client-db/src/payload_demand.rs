@@ -8,6 +8,7 @@
 //! `demands`: a concurrent prune either observes cancellation or finishes its
 //! synchronous reducer first.
 
+#[cfg(test)]
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,6 +17,7 @@ use rostra_core::event::{EventExt as _, EventKind, VerifiedEvent};
 use rostra_core::id::ToShort as _;
 use rostra_core::{EventId, Timestamp};
 
+use crate::payload_demand_request::DemandRequest;
 use crate::payload_demand_scan::DemandScan;
 use crate::payload_demand_state::DemandEntry;
 use crate::payload_reservation::AdmissionLedger;
@@ -120,6 +122,12 @@ pub(crate) enum DemandStep {
         victim: EventId,
         /// Logical event bytes, not unique or physical reclaimed bytes.
         bytes: u64,
+    },
+    /// A current eligible retained minimum outranked a Missing demand under
+    /// retained-only pressure. No logical retained bytes were released.
+    Rejected {
+        /// Incoming event whose ordinary retry scheduling is now terminal.
+        event: EventId,
     },
 }
 
@@ -280,27 +288,20 @@ impl Database {
     /// Rechecks all authority inside the writer transaction. Demand arbitration
     /// prevents cancellation/logical release races until the reducer returns.
     /// Config remains absent in production. This is not general quota pressure,
-    /// low-water hysteresis, permanent Missing rejection, a worker or DryRun.
+    /// low-water hysteresis, a worker or DryRun. A fresh eligible index minimum
+    /// can instead authorize durable rejection of a lower-ranked Missing
+    /// demand.
     pub(crate) async fn preempt_payload_demand(
         &self,
-        generation: RetentionGeneration,
-        scan_limit: NonZeroUsize,
-        max_bytes: u64,
-        deadline: Instant,
+        request: DemandRequest<'_>,
     ) -> DbResult<DemandStep> {
-        self.preempt_payload_demand_with(
-            generation,
-            Timestamp::now,
-            scan_limit,
-            max_bytes,
-            deadline,
-            || Ok(()),
-        )
-        .await
+        self.preempt_payload_demand_bound_with(request, Timestamp::now, || Ok(()))
+            .await
     }
 
     /// Same operation with a synchronous boundary hook for deterministic
     /// cancellation/rollback tests; never exposed outside this crate.
+    #[cfg(test)]
     pub(crate) async fn preempt_payload_demand_with(
         &self,
         generation: RetentionGeneration,
@@ -310,6 +311,43 @@ impl Database {
         deadline: Instant,
         before_prune: impl FnOnce() -> DbResult<()>,
     ) -> DbResult<DemandStep> {
+        let config = self
+            .payload_admission
+            .state
+            .lock()
+            .unwrap()
+            .config
+            .as_ref()
+            .map(|config| config.identity())
+            .unwrap_or_default();
+        self.preempt_payload_demand_bound_with(
+            DemandRequest {
+                generation,
+                config: &config,
+                scan_limit,
+                max_bytes,
+                deadline,
+            },
+            clock,
+            before_prune,
+        )
+        .await
+    }
+
+    /// Bind expected runtime authority inside the same writer as reduction.
+    pub(crate) async fn preempt_payload_demand_bound_with(
+        &self,
+        request: DemandRequest<'_>,
+        clock: impl FnOnce() -> Timestamp,
+        before_prune: impl FnOnce() -> DbResult<()>,
+    ) -> DbResult<DemandStep> {
+        let DemandRequest {
+            generation,
+            config,
+            scan_limit,
+            max_bytes,
+            deadline,
+        } = request;
         if scan_limit.get() > crate::PAYLOAD_MAINTENANCE_MAX {
             return crate::PayloadMaintenanceLimitSnafu.fail();
         }
@@ -326,6 +364,15 @@ impl Database {
                 return Ok(DemandStep::NotReady);
             }
             let state = self.payload_admission.state.lock().unwrap();
+            if state
+                .config
+                .as_ref()
+                .is_some_and(|current| !config.ptr_eq(&current.identity()))
+            {
+                // An old runner must not prune for, or cancel, a new runtime's
+                // otherwise valid demand after a config replacement.
+                return Ok(DemandStep::NotReady);
+            }
             if demands.generation != Some(generation)
                 || state
                     .config
@@ -407,6 +454,7 @@ impl Database {
                 .map(|entry| entry.expires)
                 .min()
                 .ok_or(DbError::PayloadAccountingInvariant)?;
+            let rejection_barred = demands.active.is_some();
             for ((incoming, key), author) in plans.into_iter().zip(pressures) {
                 if Instant::now() >= deadline {
                     return Ok(if advanced {
@@ -449,11 +497,6 @@ impl Database {
                         break;
                     };
                     remaining -= 1;
-                    if victim_key >= key {
-                        scan.exhausted = true;
-                        advanced = true;
-                        break;
-                    }
                     let event = tx
                         .open_table(&crate::events::TABLE)?
                         .get(&id)?
@@ -465,20 +508,59 @@ impl Database {
                         author: event.author(),
                         key: victim_key,
                     };
-                    if !self.retention_candidate_current_tx(
+                    let current = self.retention_candidate_current_tx(
                         tx,
                         generation,
                         candidate,
                         RetentionClock::Trusted(now),
-                    )? {
-                        if let Some((entry, _)) =
+                    )?;
+                    if !current
+                        && let Some((entry, _)) =
                             self.derive_retention_entry_tx(tx, generation, id)?
-                            && now.as_u64() < entry.eligible_at
+                        && now.as_u64() < entry.eligible_at
+                    {
+                        let retry = Timestamp::from(entry.eligible_at);
+                        scan.retry_at = Some(scan.retry_at.map_or(retry, |old| old.min(retry)));
+                        retry_at = retry_at.min(retry);
+                    }
+                    if victim_key >= key {
+                        // A resumed/skipped frontier is advice, not proof of the
+                        // true minimum. Protected bytes alone establish no rank
+                        // boundary, nor do temporary reservations.
+                        if victim_key > key
+                            && current
+                            && scan.after.is_none()
+                            && !rejection_barred
+                            && self.retained_rejection_pressure_tx(tx, &incoming, author)?
                         {
-                            let retry = Timestamp::from(entry.eligible_at);
-                            scan.retry_at = Some(scan.retry_at.map_or(retry, |old| old.min(retry)));
-                            retry_at = retry_at.min(retry);
+                            before_prune()?;
+                            return match self.prune_quota_payload_tx(
+                                tx,
+                                QuotaPruneRequest {
+                                    id: incoming.event_id.to_short(),
+                                    target: QuotaPruneTarget::Missing,
+                                    reason: if author.is_some() {
+                                        QuotaPruneReason::AuthorQuota
+                                    } else {
+                                        QuotaPruneReason::GlobalQuota
+                                    },
+                                    policy,
+                                    clock: RetentionClock::Trusted(now),
+                                },
+                            )? {
+                                QuotaPruneOutcome::Pruned {
+                                    logical_released_bytes: 0,
+                                } => Ok(DemandStep::Rejected {
+                                    event: incoming.event_id,
+                                }),
+                                _ => Err(DbError::PayloadAccountingInvariant),
+                            };
                         }
+                        scan.exhausted = true;
+                        advanced = true;
+                        break;
+                    }
+                    if !current {
                         scan.after = Some(victim_key);
                         advanced = true;
                         continue;
@@ -535,5 +617,41 @@ impl Database {
             })
         })
         .await
+    }
+
+    /// Check retained-only pressure while the writer and demand arbitration
+    /// remain held. This is only one input to the fresh-minimum rank proof.
+    fn retained_rejection_pressure_tx(
+        &self,
+        tx: &WriteTransactionCtx,
+        incoming: &VerifiedEvent,
+        author: Option<rostra_core::id::RostraId>,
+    ) -> DbResult<bool> {
+        let state = self.payload_admission.state.lock().unwrap();
+        let Some(config) = &state.config else {
+            return Ok(false);
+        };
+        if state.events.contains_key(&incoming.event_id) {
+            return Ok(false);
+        }
+        let (retained, high) = if let Some(author) = author {
+            (
+                tx.open_table(&crate::ids_data_usage::TABLE)?
+                    .get(&author)?
+                    .map(|row| row.value().current_content_size)
+                    .unwrap_or(0),
+                config.author_bytes(author),
+            )
+        } else {
+            (
+                Self::payload_usage_tx(tx)?
+                    .ok_or(DbError::PayloadAccountingInvariant)?
+                    .logical_current_bytes,
+                config.database_bytes(),
+            )
+        };
+        Ok(retained
+            .checked_add(u64::from(incoming.content_len()))
+            .is_some_and(|total| total > high))
     }
 }

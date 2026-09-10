@@ -110,10 +110,19 @@ have a monotonic outer deadline. Register-before-check notifications, minimum re
 spacing and recovery waits avoid relying on a lossy wakeup or immediately retrying
 unattainable byte allowances.
 
+The same demand boundary can durably reject eligible Missing content only against
+a fresh, currently eligible retained index head with a strictly higher full rank,
+under retained-only cap pressure independent of reservations. Protected bytes count
+against caps but do not alone establish a boundary. Fits/exact partial-plan barriers
+and live incoming reservations block rejection; skipped/future heads and unready
+state remain Deferred. The checked Missing reducer removes retry scheduling and
+preserves replay decisions without releasing retained logical bytes. Duplicate
+headers, late content and shared-store reuse cannot resurrect that terminal state.
+
 The runner spawns nothing; its caller must own and join its future. Unique RAII
 runner ownership releases on cancellation/panic, after any synchronous transaction
-finishes. Production Client task integration, enabled ingress coverage, permanent
-ranked rejection and DryRun remain required before any startup opt-in.
+finishes. Production Client task integration, complete enabled ingress/audit coverage
+and DryRun remain required before any startup opt-in.
 
 The private driver includes general author-first/global pressure on retained plus
 logically reserved bytes, with experimental floor90% low-water hysteresis.

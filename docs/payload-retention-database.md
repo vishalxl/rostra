@@ -271,8 +271,8 @@ performs a service restart.
 Deferred or a unique logical `PayloadReservation`. Admission rechecks ready
 accounting and current author/database logical usage plus pending reservations
 inside the serialized writer boundary. Materialization rechecks capacity in its
-own transaction. Temporary author/global pressure is not yet ranked against the
-victim boundary and never produces a permanent quota rejection.
+own transaction. This one-attempt API does not rank pressure or reject permanently;
+the private runtime can submit a deferred acquisition to the ranked demand worker.
 
 Each lease can acquire distinct `PayloadBuffer` guards, one per payload-sized
 allocation. Four racing downloads plus their Vec-to-Arc conversions can charge
@@ -367,8 +367,8 @@ authors can proceed. Missing notifications register before peeking, with bounded
 empty-queue recovery polling. Ancestor/head sync leaves durable Missing retries
 instead of stopping its worker on temporary pressure.
 
-Production activation still requires ranking-aware temporary versus permanent
-admission, DryRun and complete Client/ingress integration. The private driver below
+Production activation still requires DryRun and complete Client/ingress integration
+and audit. The private driver below
 already composes generation/pressure/reducer atomicity, independent readiness,
 hysteresis and bounded yielding batches.
 The user-approved runtime clock assumption is to **trust the system clock**,
@@ -465,7 +465,8 @@ Diagnostics now distinguish pending intent count/bytes from logical reservations
 and owned acquisition buffers. Demand usage is an advisory live walltime snapshot,
 not retained usage, unique store bytes, or physical allocation. This primitive
 does not collect nominated bytes and does not implement general over-cap pressure,
-90% low-water hysteresis, permanent ranked Missing rejection or DryRun.
+90% low-water hysteresis or DryRun. It can reject ranked Missing demands as
+described below.
 The internal integration below adds bounded scheduling, general pressure/GC and
 acquisition ownership while paused, not a complete enabled runtime. The full activation obligations in the
 phase-3 handoff remain blockers for exposing enabled runtime modes.
@@ -515,12 +516,60 @@ reservation and actual ingestion; independent single-operation maintenance;
 deduplication/cancellation/expiry with zero paused buffer charges; shared-store
 reuse; alternate-author progress behind an exhausted higher-ranked demand;
 bounded continuation past a previously promoted future prefix;
-and byte-blocked waiting with runner cancellation/exclusivity. Durable ranked
-rejection (including sustained refetch suppression), DryRun, immutable enabled
+and byte-blocked waiting with runner cancellation/exclusivity. DryRun, immutable enabled
 startup policy and the complete enabled bypass/load/body/race/overload audit remain
 activation blockers. General pressure and quota-only collection are integrated
 only in this non-activatable driver; unique stored bytes may remain after logical
 eviction, and no physical reclamation is claimed.
+
+### Ranked durable Missing admission rejection
+
+The same non-activatable demand step can now reject a verified eligible remote
+Missing SocialPost instead of fetching it only to evict it. It requires a fresh
+author/global **index head**, revalidated as currently eligible, whose complete
+48-byte rank is strictly higher than the incoming rank. It also requires that
+retained bytes plus the incoming signed length exceed that scope's high-water
+cap **without counting reservations**. Author pressure is considered first.
+Readiness, full policy/holder generation, immutable config incarnation, current
+Missing eligibility, no live incoming reservation, and Fits/exact partial-plan
+barriers are checked under the same writer and cancellation arbitration as the
+checked Missing quota reducer. The decision releases zero retained logical bytes
+and therefore does not debit the logical eviction-byte allowance.
+The demand step binds the caller's runtime config identity, not just equality
+between the ledger and current config. An old runner cannot reject, evict for,
+or cancel a replacement incarnation's valid demand, even with identical budgets.
+
+Protected/grace/unknown retained bytes count against caps and may coexist with
+an eligible higher-ranked head. Those bytes alone do not establish a rank boundary.
+The decision expresses current policy, not proof that the event could never fit
+after future usage or eligibility changes. Unknown/future incoming origins,
+local/state-bearing/unknown kinds, unavailable readiness, reservation-only pressure
+and empty indexes remain temporary deferrals. Exhausted scans and time/byte bounds
+never authorize rejection. A byte-blocked retained victim still defers, but an
+independently proven zero-byte Missing rejection needs no eviction-byte allowance.
+Events too large to register bounded intent are also still Deferred, not rejected.
+
+A skipped or future index head does not authorize rejection against a later row:
+resumable cursors remain advice, not proof of the true minimum. This deliberately
+conservative limitation can leave a low-ranked request Deferred until the prefix
+changes or becomes eligible. Exhaustion sleeps; eligibility hints and index
+mutations reset advice. No full hot event scan or unconditional durable-rejection
+liveness guarantee is introduced.
+
+The checked transition preserves the verified header and original quota reason,
+removes Missing scheduling, updates historical counters and RC, and publishes
+completion signals only after commit. The next preparation observes terminal
+state and returns Unneeded. Duplicate headers, late payload delivery and
+shared-store reuse cannot resurrect it; total replay restores the decision before
+considering shared bytes. Shared-store preparation still checks admission before
+copy/conversion allocations, and waiting owns only metadata.
+
+Tests exercise both scopes, better incoming retention followed by lower-ranked
+rejection, full EventId ties, shared hashes under sustained duplicate delivery and
+two total replays, protected-only/coexisting protected usage, reservation-only and
+live-lease deferral, stale generation/config/readiness/origins, future-prefix
+recovery, rollback signals and cancellation linearization. The complete enabled
+ingress and lifecycle audit remains an activation obligation.
 
 ### General pressure, hysteresis and quota collection
 

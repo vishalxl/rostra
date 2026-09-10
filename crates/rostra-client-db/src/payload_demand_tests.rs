@@ -9,6 +9,7 @@ use rostra_core::id::{RostraIdSecretKey, ToShort as _};
 use rostra_core::retention::RetentionPolicy;
 
 use crate::payload_demand::{DemandRegistration, DemandStep, PayloadDemand};
+use crate::payload_demand_request::DemandRequest;
 use crate::{
     Database, PayloadAdmissionConfig, PayloadAdmissionLimits, PayloadReservationOutcome,
     RetentionClock, RetentionGeneration,
@@ -83,7 +84,7 @@ async fn one_row_step(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn demand_alternate_author_progresses_past_exhausted_ranked_plan() -> anyhow::Result<()> {
+async fn demand_alternate_author_progresses_past_rejected_ranked_plan() -> anyhow::Result<()> {
     let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
     let a = RostraIdSecretKey::generate();
     let b = RostraIdSecretKey::generate();
@@ -103,7 +104,9 @@ async fn demand_alternate_author_progresses_past_exhausted_ranked_plan() -> anyh
     let low_owner = demand(&db, &low, generation, 100).await?;
     assert_eq!(
         one_row_step(&db, generation, 100, bytes).await?,
-        DemandStep::Continue
+        DemandStep::Rejected {
+            event: high.event_id()
+        }
     );
     assert_eq!(
         one_row_step(&db, generation, 101, bytes).await?,
@@ -118,12 +121,7 @@ async fn demand_alternate_author_progresses_past_exhausted_ranked_plan() -> anyh
         DemandStep::Fits(low.event_id())
     );
     drop(low_owner);
-    assert_eq!(
-        step(&db, generation, 101).await?,
-        DemandStep::NoVictim {
-            retry_at: Timestamp::from(130),
-        }
-    );
+    assert_eq!(step(&db, generation, 101).await?, DemandStep::Idle);
     assert!(
         db.get_event_content(high_victim.event_id().to_short())
             .await
@@ -491,6 +489,17 @@ async fn configure(
     count: usize,
     bytes: u64,
 ) -> anyhow::Result<RetentionGeneration> {
+    configure_policy(db, global, author, count, bytes, policy()).await
+}
+
+async fn configure_policy(
+    db: &Database,
+    global: u64,
+    author: u64,
+    count: usize,
+    bytes: u64,
+    policy: RetentionPolicy,
+) -> anyhow::Result<RetentionGeneration> {
     let config = PayloadAdmissionConfig::new(PayloadAdmissionLimits {
         database_bytes: NonZeroU64::new(global).unwrap(),
         author_bytes: NonZeroU64::new(author).unwrap(),
@@ -505,7 +514,7 @@ async fn configure(
     })
     .await?;
     while !db.rebuild_payload_accounting(limit(10)).await?.ready {}
-    db.configure_retention_index(policy()).await?;
+    db.configure_retention_index(policy).await?;
     while !db.rebuild_retention_index(limit(10)).await?.unwrap().ready {}
     while db
         .promote_retention_grace(RetentionClock::Trusted(Timestamp::from(100)), limit(10))
@@ -514,7 +523,7 @@ async fn configure(
         .visited
         == 10
     {}
-    Ok(RetentionGeneration::new(policy(), db.self_id))
+    Ok(RetentionGeneration::new(policy, db.self_id))
 }
 
 async fn demand(
@@ -547,6 +556,431 @@ async fn step(
             || Ok(()),
         )
         .await?)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_rejection_future_head_and_skipped_prefix_are_not_rank_proofs() -> anyhow::Result<()>
+{
+    for skipped_lower in [false, true] {
+        let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+        let author = RostraIdSecretKey::generate();
+        let future = post(author, if skipped_lower { 1 } else { 20 }, "same");
+        let ready = post(author, 30, "same");
+        let incoming = post(author, 10, "same");
+        ingest_at(&db, &future, true, 100).await?;
+        ingest_at(&db, &ready, true, 80).await?;
+        ingest_at(&db, &incoming, false, 80).await?;
+        let bytes = u64::from(incoming.content_len());
+        // Promote at 100, then inspect at 90: the index can contain a future
+        // materialization even with no pending grace-table row.
+        let generation = configure(&db, 2 * bytes + 1, 10000, 5, 10000).await?;
+        let _owner = demand(&db, &incoming, generation, 90).await?;
+        let first = one_row_step(&db, generation, 90, bytes).await?;
+        if skipped_lower {
+            assert_eq!(first, DemandStep::Continue);
+        } else {
+            assert!(matches!(first, DemandStep::NoVictim { .. }));
+        }
+        assert!(matches!(
+            one_row_step(&db, generation, 91, bytes).await?,
+            DemandStep::NoVictim { .. }
+        ));
+        for _ in 0..10 {
+            assert!(matches!(
+                one_row_step(&db, generation, 92, bytes).await?,
+                DemandStep::NoVictim { .. }
+            ));
+        }
+        assert_eq!(
+            one_row_step(&db, generation, 100, bytes).await?,
+            if skipped_lower {
+                DemandStep::Pruned {
+                    demand: incoming.event_id(),
+                    victim: future.event_id(),
+                    bytes,
+                }
+            } else {
+                DemandStep::Rejected {
+                    event: incoming.event_id(),
+                }
+            }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_rejection_uses_full_event_id_tie_breaker() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let author = RostraIdSecretKey::generate();
+    let mut events = [post(author, 10, "aaaa"), post(author, 10, "bbbb")];
+    events.sort_by_key(|event| event.event_id());
+    let [incoming, retained] = events;
+    ingest(&db, &retained, true).await?;
+    ingest(&db, &incoming, false).await?;
+    let generation = configure(&db, u64::from(retained.content_len()) + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &incoming, generation, 100).await?;
+    assert_eq!(
+        step(&db, generation, 100).await?,
+        DemandStep::Rejected {
+            event: incoming.event_id()
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_rejection_grace_and_unknown_usage_require_an_eligible_boundary()
+-> anyhow::Result<()> {
+    for unknown in [false, true] {
+        for has_boundary in [false, true] {
+            let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+            let author = RostraIdSecretKey::generate();
+            let protected = post(author, 1, "same");
+            let retained = post(author, 20, "same");
+            let incoming = post(author, 10, "same");
+            ingest_at(&db, &protected, true, 100).await?;
+            if unknown {
+                db.write_with(|tx| {
+                    tx.open_table(&crate::events_retention_origins::TABLE)?
+                        .remove(&protected.event_id().to_short())?;
+                    Ok(())
+                })
+                .await?;
+            }
+            if has_boundary {
+                ingest_at(&db, &retained, true, 80).await?;
+            }
+            ingest_at(&db, &incoming, false, 80).await?;
+            let bytes = u64::from(incoming.content_len());
+            let generation = configure_policy(
+                &db,
+                bytes * if has_boundary { 2 } else { 1 } + 1,
+                10000,
+                5,
+                10000,
+                RetentionPolicy::new(1, 1, 0, 0, 1, 10).unwrap(),
+            )
+            .await?;
+            let _owner = demand(&db, &incoming, generation, 100).await?;
+            let outcome = one_row_step(&db, generation, 100, bytes).await?;
+            if has_boundary {
+                assert_eq!(
+                    outcome,
+                    DemandStep::Rejected {
+                        event: incoming.event_id()
+                    }
+                );
+            } else {
+                assert!(matches!(outcome, DemandStep::NoVictim { .. }));
+            }
+            assert!(
+                db.get_event_content(protected.event_id().to_short())
+                    .await
+                    .is_some()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_rejection_revalidates_generation_config_readiness_and_origin() -> anyhow::Result<()>
+{
+    for change in [
+        "generation",
+        "config",
+        "accounting",
+        "origin",
+        "future",
+        "local",
+        "kind",
+    ] {
+        let local = RostraIdSecretKey::generate();
+        let db = Database::new_in_memory(local.id()).await?;
+        let author = RostraIdSecretKey::generate();
+        let retained = post(author, 20, "same");
+        let incoming = post(if change == "local" { local } else { author }, 10, "same");
+        ingest(&db, &retained, true).await?;
+        ingest(&db, &incoming, false).await?;
+        let bytes = u64::from(retained.content_len());
+        let generation = configure(&db, bytes + 1, 10000, 5, 10000).await?;
+        if change == "local" {
+            assert!(matches!(
+                db.register_payload_demand_with(incoming.event_id(), generation, || {
+                    Timestamp::from(100)
+                })
+                .await?,
+                DemandRegistration::Unneeded
+            ));
+            continue;
+        }
+        let _owner = demand(&db, &incoming, generation, 100).await?;
+        match change {
+            "generation" => {
+                db.configure_retention_index(RetentionPolicy::new(1, 2, 0, 0, 1, 0).unwrap())
+                    .await?;
+            }
+            "config" => {
+                configure(&db, bytes + 1, 10000, 5, 10000).await?;
+            }
+            "accounting" => {
+                db.write_with(|tx| {
+                    tx.open_table(&crate::content_accounting_state::TABLE)?
+                        .remove(&())?;
+                    Ok(())
+                })
+                .await?;
+            }
+            "origin" | "future" => {
+                db.write_with(|tx| {
+                    let mut table = tx.open_table(&crate::events_retention_origins::TABLE)?;
+                    if change == "origin" {
+                        table.remove(&incoming.event_id().to_short())?;
+                    } else {
+                        let mut origin =
+                            table.get(&incoming.event_id().to_short())?.unwrap().value();
+                        origin.effective_timestamp = Timestamp::from(101);
+                        table.insert(&incoming.event_id().to_short(), &origin)?;
+                    }
+                    Ok(())
+                })
+                .await?;
+            }
+            "kind" => {
+                let raw = SocialPost::new_text("same".to_owned(), None, Default::default())
+                    .serialize_cbor()
+                    .unwrap();
+                let signed = Event::builder_raw_content()
+                    .author(author.id())
+                    .kind(EventKind::from(9999))
+                    .timestamp(Timestamp::from(10).to_offset_date_time().unwrap())
+                    .content(&raw)
+                    .build()
+                    .signed_by(author);
+                let unknown = VerifiedEvent::verify_signed(author.id(), signed)?;
+                db.try_process_event(&unknown).await?;
+                assert!(matches!(
+                    db.register_payload_demand_with(unknown.event_id, generation, || {
+                        Timestamp::from(100)
+                    })
+                    .await?,
+                    DemandRegistration::Unneeded
+                ));
+                continue;
+            }
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            step(&db, generation, 100).await?,
+            DemandStep::Idle | DemandStep::NotReady
+        ));
+        db.read_with(|tx| {
+            assert!(
+                tx.open_table(&crate::events_quota_pruned::TABLE)?
+                    .get(&incoming.event_id().to_short())?
+                    .is_none()
+            );
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_rejection_rollback_preserves_missing_owner_and_aftercommit_signal()
+-> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let author = RostraIdSecretKey::generate();
+    let retained = post(author, 20, "same");
+    let incoming = post(author, 10, "same");
+    ingest(&db, &retained, true).await?;
+    ingest(&db, &incoming, false).await?;
+    let bytes = u64::from(retained.content_len());
+    let generation = configure(&db, bytes + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &incoming, generation, 100).await?;
+    let usage = db.get_payload_usage().await?;
+    let mut signals = db.quota_pruned_subscribe();
+    let result = db
+        .preempt_payload_demand_with(
+            generation,
+            || Timestamp::from(100),
+            limit(1),
+            0,
+            Instant::now() + Duration::from_secs(5),
+            || Err(crate::DbError::PayloadAccountingInvariant),
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(db.get_payload_usage().await?, usage);
+    assert!(signals.try_recv().is_err());
+    assert_eq!(db.payload_admission.demands.lock().unwrap().usage().0, 1);
+    // Fail inside the checked reducer, after its RC decrement, rather than
+    // testing only an abort before the first lifecycle mutation.
+    db.write_with(|tx| {
+        let mut table = tx.open_table(&crate::ids_data_usage::TABLE)?;
+        let mut usage = table.get(&author.id())?.unwrap().value();
+        usage.missing_payload_size = 0;
+        table.insert(&author.id(), &usage)?;
+        Ok(())
+    })
+    .await?;
+    assert!(one_row_step(&db, generation, 100, 0).await.is_err());
+    assert!(signals.try_recv().is_err());
+    assert_eq!(db.get_payload_usage().await?, usage);
+    db.write_with(|tx| {
+        assert!(Database::payload_is_missing_tx(
+            tx,
+            incoming.event_id().to_short()
+        )?);
+        assert!(
+            tx.open_table(&crate::events_quota_pruned::TABLE)?
+                .get(&incoming.event_id().to_short())?
+                .is_none()
+        );
+        assert_eq!(
+            tx.open_table(&crate::content_rc::TABLE)?
+                .get(&incoming.content_hash())?
+                .unwrap()
+                .value(),
+            2
+        );
+        let mut table = tx.open_table(&crate::ids_data_usage::TABLE)?;
+        let mut usage = table.get(&author.id())?.unwrap().value();
+        usage.missing_payload_size = bytes;
+        table.insert(&author.id(), &usage)?;
+        Ok(())
+    })
+    .await?;
+    assert_eq!(
+        one_row_step(&db, generation, 100, 0).await?,
+        DemandStep::Rejected {
+            event: incoming.event_id()
+        }
+    );
+    assert_eq!(signals.try_recv()?, incoming.event_id().to_short());
+    assert_eq!(
+        db.get_payload_usage().await?.unwrap().logical_current_bytes,
+        bytes
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_old_runtime_cannot_spend_replacement_config_demand() -> anyhow::Result<()> {
+    for rejection in [false, true] {
+        let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+        let author = RostraIdSecretKey::generate();
+        let retained = post(author, 20, "same");
+        let incoming = post(author, if rejection { 10 } else { 30 }, "same");
+        ingest(&db, &retained, true).await?;
+        ingest(&db, &incoming, false).await?;
+        let bytes = u64::from(retained.content_len());
+        let generation = configure(&db, bytes + 1, 10000, 5, 10000).await?;
+        let old_config = db
+            .payload_admission
+            .state
+            .lock()
+            .unwrap()
+            .config
+            .as_ref()
+            .unwrap()
+            .identity();
+        let _old_owner = demand(&db, &incoming, generation, 100).await?;
+        // An old runner has already passed its non-transactional pre-check.
+        // Equal budget values still create a distinct authority incarnation.
+        configure(&db, bytes + 1, 10000, 5, 10000).await?;
+        let _new_owner = demand(&db, &incoming, generation, 100).await?;
+        assert_eq!(
+            db.preempt_payload_demand_bound_with(
+                DemandRequest {
+                    generation,
+                    config: &old_config,
+                    scan_limit: limit(1),
+                    max_bytes: bytes,
+                    deadline: Instant::now() + Duration::from_secs(5),
+                },
+                || Timestamp::from(100),
+                || panic!("stale runtime reached reducer")
+            )
+            .await?,
+            DemandStep::NotReady
+        );
+        assert_eq!(
+            db.payload_admission.demands.lock().unwrap().usage().0,
+            1,
+            "stale runner must not cancel the replacement's demand"
+        );
+        assert_eq!(
+            one_row_step(&db, generation, 100, bytes).await?,
+            if rejection {
+                DemandStep::Rejected {
+                    event: incoming.event_id(),
+                }
+            } else {
+                DemandStep::Pruned {
+                    demand: incoming.event_id(),
+                    victim: retained.event_id(),
+                    bytes,
+                }
+            }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_rejection_cancellation_linearizes_on_both_sides_of_reducer() -> anyhow::Result<()> {
+    let db =
+        std::sync::Arc::new(Database::new_in_memory(RostraIdSecretKey::generate().id()).await?);
+    let author = RostraIdSecretKey::generate();
+    let retained = post(author, 20, "same");
+    let incoming = post(author, 10, "same");
+    ingest(&db, &retained, true).await?;
+    ingest(&db, &incoming, false).await?;
+    let generation = configure(&db, u64::from(retained.content_len()) + 1, 10000, 5, 10000).await?;
+    let owner = demand(&db, &incoming, generation, 100).await?;
+    drop(owner);
+    assert_eq!(step(&db, generation, 100).await?, DemandStep::Idle);
+    let owner = demand(&db, &incoming, generation, 100).await?;
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let mut thread = None;
+    let db2 = db.clone();
+    let result = db
+        .preempt_payload_demand_with(
+            generation,
+            || Timestamp::from(100),
+            limit(1),
+            0,
+            Instant::now() + Duration::from_secs(5),
+            || {
+                thread = Some(std::thread::spawn(move || {
+                    assert!(matches!(
+                        db2.payload_admission.demands.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    started_tx.send(()).unwrap();
+                    drop(owner);
+                    finished_tx.send(()).unwrap();
+                }));
+                started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(finished_rx.try_recv().is_err());
+                Ok(())
+            },
+        )
+        .await?;
+    thread.unwrap().join().unwrap();
+    finished_rx.recv_timeout(Duration::from_secs(5))?;
+    assert_eq!(
+        result,
+        DemandStep::Rejected {
+            event: incoming.event_id()
+        }
+    );
+    assert_eq!(step(&db, generation, 100).await?, DemandStep::Idle);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -715,7 +1149,7 @@ async fn demand_author_first_never_uses_other_author_to_relieve_author_pressure(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn demand_no_victim_and_fixed_time_due_prefix_and_work_bounds() -> anyhow::Result<()> {
+async fn demand_rejection_and_fixed_time_due_prefix_and_work_bounds() -> anyhow::Result<()> {
     let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
     let a = RostraIdSecretKey::generate();
     let old = post(a, 2, "same");
@@ -727,8 +1161,8 @@ async fn demand_no_victim_and_fixed_time_due_prefix_and_work_bounds() -> anyhow:
     let owner = demand(&db, &incoming, generation, 100).await?;
     assert_eq!(
         step(&db, generation, 100).await?,
-        DemandStep::NoVictim {
-            retry_at: Timestamp::from(130),
+        DemandStep::Rejected {
+            event: incoming.event_id(),
         }
     );
     drop(owner);
@@ -1072,12 +1506,13 @@ async fn demand_equal_budget_replacement_invalidates_without_structural_comparis
         "intent must not retain configuration"
     );
     assert_eq!(
-        db.preempt_payload_demand(
+        db.preempt_payload_demand(DemandRequest {
             generation,
-            limit(10),
-            10000,
-            Instant::now() + Duration::from_secs(5),
-        )
+            config: &new_identity,
+            scan_limit: limit(10),
+            max_bytes: 10000,
+            deadline: Instant::now() + Duration::from_secs(5),
+        })
         .await?,
         DemandStep::NotReady
     );

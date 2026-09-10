@@ -5,8 +5,8 @@ ranking policy, in-memory simulator, and durable database retention source
 metadata are implemented; see the [implementation guide](payload-retention-policy.md)
 and [database checkpoint](payload-retention-database.md). Admission/fetch ownership
 and a private, test-installed driver now integrate bounded demand/general pressure,
-hysteresis and quota-only collection. No production runtime pruning or enabled
-quota configuration is available; durable ranked rejection, DryRun and complete
+hysteresis, conservative ranked durable Missing rejection and quota-only collection.
+No production runtime pruning or enabled quota configuration is available; DryRun and complete
 Client/startup/ingress integration remain unfinished.
 
 ## Recommendation
