@@ -3633,7 +3633,6 @@ body.-keyboard-nav * {
   min-width: 0;
 }
 
-.m-directMessages__panelHeader,
 .m-directMessages__startRow,
 .m-directMessages__threadHeader {
   display: flex;
@@ -3641,12 +3640,6 @@ body.-keyboard-nav * {
   gap: 0.75rem;
 }
 
-.m-directMessages__panelHeader {
-  justify-content: space-between;
-  margin-top: 1.25rem;
-}
-
-.m-directMessages__panelHeader h1,
 .m-directMessages__threadHeader h1 {
   margin: 0;
 }

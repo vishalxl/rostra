@@ -104,6 +104,34 @@ async fn replicate_event(
         .unwrap();
 }
 
+fn assert_conversation_panel_keeps_its_workflow_controls(document: &Html) {
+    let panel = document
+        .select(&Selector::parse(".m-directMessages__conversationPanel").unwrap())
+        .next()
+        .expect("conversation panel");
+    assert!(
+        panel
+            .select(&Selector::parse("form[action='/messages/open']").unwrap())
+            .next()
+            .is_some(),
+        "conversation panel should retain the ordinary start-conversation form"
+    );
+    assert!(
+        panel
+            .select(&Selector::parse("a[href='/settings/messages']").unwrap())
+            .next()
+            .is_none(),
+        "device administration belongs in Settings, not the conversation workspace"
+    );
+    assert!(
+        panel
+            .select(&Selector::parse("h1").unwrap())
+            .next()
+            .is_none(),
+        "the top-level Messages tab already identifies the workspace"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn private_pages_require_this_sessions_secret_and_protect_all_responses() {
     let server = TestServer::start().await;
@@ -226,6 +254,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     let path = format!("/messages/{}", bob_id.to_short());
     let page = alice.get("/messages").await.text().await.unwrap();
     let document = Html::parse_document(&page);
+    assert_conversation_panel_keeps_its_workflow_controls(&document);
     let open_form = document
         .select(&Selector::parse("form[action='/messages/open']").unwrap())
         .next()
@@ -276,6 +305,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     assert_eq!(response.status(), StatusCode::OK);
     let page = response.text().await.unwrap();
     let document = Html::parse_document(&page);
+    assert_conversation_panel_keeps_its_workflow_controls(&document);
     assert!(
         document
             .select(&Selector::parse(".m-directMessages__availabilityWarning").unwrap())

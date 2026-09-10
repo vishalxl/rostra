@@ -332,10 +332,6 @@ fn render_conversation_panel(
     selected: Option<RostraId>,
 ) -> Markup {
     html! {
-        div ."m-directMessages__panelHeader" {
-            h1 { "Messages" }
-            a href="/settings/messages" { "Device settings" }
-        }
         form ."m-directMessages__start" method="get" action="/messages/open" {
             label for="message-peer" { "Start a conversation" }
              div ."m-directMessages__startRow" {
