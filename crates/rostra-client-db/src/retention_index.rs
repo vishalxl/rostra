@@ -142,6 +142,27 @@ impl IndexRecord {
 }
 
 impl Database {
+    /// Require complete backfill and an exhausted due prefix at this exact
+    /// walltime before an internal pressure operation can choose a minimum.
+    pub(crate) fn retention_selection_ready_tx(
+        tx: &WriteTransactionCtx,
+        generation: RetentionGeneration,
+        now: rostra_core::Timestamp,
+    ) -> DbResult<bool> {
+        let Some(record) = Self::retention_record_tx(tx)? else {
+            return Ok(false);
+        };
+        if record.generation != generation || !matches!(record.stage, IndexStage::Ready) {
+            return Ok(false);
+        }
+        Ok(tx
+            .open_table(&grace::TABLE)?
+            .first()?
+            .map(|(key, _)| key.value_try())
+            .transpose()?
+            .is_none_or(|(deadline, _)| deadline > now.as_u64()))
+    }
+
     fn retention_limit(limit: NonZeroUsize) -> DbResult<()> {
         if limit.get() > crate::PAYLOAD_MAINTENANCE_MAX {
             return crate::PayloadMaintenanceLimitSnafu.fail();
@@ -169,6 +190,13 @@ impl Database {
     ) -> DbResult<RetentionIndexProgress> {
         self.write_with(|tx| {
             let generation = RetentionGeneration::new(policy, self.self_id);
+            if Self::retention_record_tx(tx)?.is_none_or(|record| record.generation != generation) {
+                let ledger = self.payload_admission.clone();
+                tx.on_commit(move || {
+                    ledger.demands.lock().unwrap().clear();
+                    ledger.changed.notify_waiters();
+                });
+            }
             let record = Self::retention_record_tx(tx)?
                 .filter(|record| record.generation == generation)
                 .unwrap_or(IndexRecord {

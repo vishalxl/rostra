@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::{Arc, Weak};
 
 use rostra_core::id::RostraId;
 
@@ -26,6 +27,9 @@ pub struct PayloadAdmissionLimits {
 pub struct PayloadAdmissionConfig {
     /// Validated immutable input, including the bounded maximum lease count.
     limits: PayloadAdmissionLimits,
+    /// Immutable construction identity for constant-time demand invalidation.
+    /// Clones preserve identity; independently constructed replacements do not.
+    identity: Arc<()>,
 }
 
 impl PayloadAdmissionConfig {
@@ -35,7 +39,16 @@ impl PayloadAdmissionConfig {
         if limits.in_flight_count.get() > crate::PAYLOAD_MAINTENANCE_MAX {
             return None;
         }
-        Some(Self { limits })
+        Some(Self {
+            limits,
+            identity: Arc::new(()),
+        })
+    }
+
+    /// Weak incarnation identity, avoiding override-map cloning/comparison or
+    /// extending that potentially large map's lifetime inside worker turns.
+    pub(crate) fn identity(&self) -> Weak<()> {
+        Arc::downgrade(&self.identity)
     }
 
     /// Return the per-database logical high-water ceiling.

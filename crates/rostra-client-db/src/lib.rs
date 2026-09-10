@@ -17,6 +17,13 @@ mod payload_admission_config;
 #[cfg(test)]
 mod payload_admission_tests;
 mod payload_allocation;
+// Runtime integration is intentionally withheld until the complete enforcement
+// worker and all acquisition paths can be enabled together.
+#[expect(dead_code)]
+mod payload_demand;
+mod payload_demand_state;
+#[cfg(test)]
+mod payload_demand_tests;
 mod payload_reservation;
 mod process_event_content_ops;
 mod process_event_ops;

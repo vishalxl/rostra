@@ -53,8 +53,11 @@ static scoring remain in the pure core policy. The checked transition applies
 that policy's grace check to Processed content. A Missing event has no
 materialization grace yet, but still requires a known, nonfuture header origin.
 `RetentionClock::Trusted` is an explicit caller assertion, not database proof.
-Phase 3 must provide a concrete trust policy, including handling forward jumps,
-before making that assertion in a runtime worker.
+The approved runtime policy is to trust the system clock, including startup.
+It adds no acknowledgement, clock authority, or high-water latch. Forward jumps
+can expire grace; unknown origins and timestamps in the future remain protected.
+The internal demand primitive samples a fixed trusted timestamp inside each
+writer transaction; no production worker invokes it yet.
 
 ## Accounting and quota-only physical reclamation
 
@@ -374,6 +377,64 @@ origins remain. This checkpoint does not implement or activate that worker.
 
 ## Next checkpoint
 
+### Non-activatable pending-demand foundation
+
+The database now includes **crate-private, non-activatable** demand registration
+and one-step preemption. Ordinary acquisition still returns its existing
+`Deferred` outcome and does not register demand; only disposable configured tests
+exercise this foundation. Every production account remains Disabled. No worker,
+startup mode/budget API, collection or live reconfiguration has been introduced.
+
+A failed reservation can occur at `cap - 1` even though retained plus reserved
+usage is below the cap. A metadata-only `PayloadDemand` expresses intent to make
+room for that incoming event. Clones deduplicate by full event identity and share
+one fixed 30-second walltime deadline; duplicates cannot refresh it. Count and
+summed signed lengths independently reuse the explicit in-flight count and byte
+limits as bounds on intent, without charging buffer capacity or promising logical
+storage. A demand owns no payload or allocation guard. Cancelled, expired,
+completed, newly reserved, reattached or policy-replaced demands cannot authorize
+subsequent preemption. Unknown/future origins, protected incoming kinds and events
+larger than either applicable ceiling cannot register preemption intent.
+
+The internal step chooses the highest-ranked live demand, rederives its Missing
+rank from the durable header/origin, and uses **that one demand**, not an aggregate
+sum, to check author pressure before database pressure. If it fits, the step
+returns `Fits` without evicting for other pending callers. Otherwise it considers
+the lowest current candidate in the appropriate author/global index, and can
+evict only a strictly lower-ranked candidate. It checks complete generation,
+accounting, exhausted due prefix at the fixed timestamp, candidate ownership and
+eligibility in the same writer transaction as the checked quota transition.
+Promotion's `ready` flag still describes backfill only.
+
+The demand arbitration mutex serializes cancellation and logical reservation
+release against the synchronous destructive reducer; acquire it before the
+ordinary admission-state mutex. DB writer serialization excludes reservation
+additions. The step releases the state mutex before reducers reacquire it and
+keeps arbitration until the reducer returns. Commit hooks execute after these
+guards drop. Buffer-only releases need no demand arbitration. Cancellation
+linearizes at demand removal: it either precedes the checked reduction or waits
+for that reduction; it cannot retroactively undo a committed eviction.
+
+Each call can prune at most one payload, caps visited candidate rows at the
+supplied count (maximum 4096), refuses a candidate larger than the supplied
+logical-byte allowance, and checks a cooperative deadline between bounded demand
+and candidate visits. Individual DB operations/projection reduction remain
+indivisible. `NotReady`, `NoVictim`, and `Bounded` are not permission to spin:
+the later scheduler must reconcile readiness or sleep until relevant changes.
+It must not repeatedly retry protected overload or an unattainable byte budget.
+The normal internal entry points sample fresh trusted walltime after acquiring
+the writer and cancellation locks, and reuse that one timestamp for every check
+in the transaction. A blocked/paused turn therefore cannot reuse expired
+pre-lock authority. Clock injection is confined to internal test helpers.
+
+Diagnostics now distinguish pending intent count/bytes from logical reservations
+and owned acquisition buffers. Demand usage is an advisory live walltime snapshot,
+not retained usage, unique store bytes, or physical allocation. This primitive
+does not collect nominated bytes and does not implement general over-cap pressure,
+90% low-water hysteresis, permanent ranked Missing rejection, DryRun, scheduling,
+or acquisition ownership while paused. The full activation obligations in the
+phase-3 handoff remain blockers for exposing enabled runtime modes.
+
 The next checkpoint adds runtime configuration and retention-worker integration, including
 the unloaded-account HTTP policy boundary above, before any activation path.
 Logical quota release may reclaim no physical bytes when another reference
@@ -387,9 +448,9 @@ explicit transition does not select victims, validate quota pressure or establis
 the active policy generation. Run accounting and nomination rebuilds separately;
 their `PayloadMaintenance.ready` results describe their own operation, not
 overall worker readiness. Run generation backfill and bounded grace promotion
-separately as well. Phase 3 must supply concrete clock-jump detection, trust and
-recovery before asserting `Trusted`; immutable timestamps cannot prove clock
-reliability. No durable high-water latch or reset policy is introduced here.
+separately as well. The runtime will trust the system clock per the explicit user
+decision; immutable timestamps cannot prove clock reliability. No clock-jump
+acknowledgement, durable high-water latch or reset policy is required.
 
 ## Verification
 
@@ -422,3 +483,12 @@ drop/cancellation wakeups, aborted ingestion, duplicate/foreign/stale guards,
 committed terminal release and late delivery, Invalid separation, protected-kind
 capacity refusal, configured shared-hash envelope scheduling and deferred
 hash-store reuse without refetching.
+
+`payload_demand_tests` covers cap-minus-one pressure without aggregate-demand
+eviction, author-first selection, true-minimum selection after due-prefix
+draining, count/byte/time bounds, deduplication, cancellation, expiry and stale
+owners. It also covers reservation-release arbitration through the reducer,
+clock sampling inside the writer boundary, policy/config invalidation,
+checked-reducer rollback with live intent preserved, and protected/no-victim
+overload without pruning. These are disposable configured primitive tests, not
+enabled-runtime liveness or acquisition-path coverage.

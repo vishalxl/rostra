@@ -64,6 +64,30 @@ logical ownership after commit, while buffers remain charged until their owners
 drop. Cancellation drops unfinished ownership; rollback never publishes a
 terminal release.
 
+Crate-private pending-demand registration and one-victim preemption are likewise
+non-activatable: no production acquisition or worker invokes them. Metadata-only
+weak/RAII ownership deduplicates full event IDs, expires after a nonrenewable
+30 seconds, and independently bounds intent count/bytes by explicit acquisition
+limits without promising reservations or owning buffers. The primitive selects
+one live demand rather than summing competing intents; it rechecks Missing rank,
+generation, fixed-time due-prefix exhaustion, author/global pressure including
+reservations, and current lower-ranked candidate ownership in the same writer
+transaction as checked pruning. It never collects bytes. Per-call candidate
+visits and logical bytes are bounded, with at most one indivisible reduction and
+cooperative time checks; `NoVictim`/`NotReady`/`Bounded` are not busy-loop signals.
+
+The lock order is DB writer, demand arbitration, then admission state. Logical
+lease drops take arbitration before state, preventing disappearing reservation
+pressure while pruning; buffer-only releases take state alone. Pruning releases
+state before reducers reacquire it, holds arbitration through the reducer, and
+releases both before commit hooks. Cancellation linearizes under arbitration,
+before or after that reduction. Normal internal entry points sample walltime only
+after acquiring writer and arbitration, so lock waits cannot preserve expired
+pre-lock authority. They reuse that timestamp for expiry, due-prefix, rank and
+checked reduction. Completion, reservation, reattachment and policy replacement
+invalidate demands. See the [database guide](../../docs/payload-retention-database.md)
+for the staged scope and remaining enabled-runtime requirements.
+
 The buffer limit is declared capacity, not a whole-process memory measurement.
 Existing APIs' already-allocated external content, transport/codec working memory,
 allocator overhead and clones retained after acquisition remain outside its

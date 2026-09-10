@@ -120,6 +120,11 @@ impl Database {
         state
             .events
             .insert(event.event_id, ReservedEvent { author, bytes, id });
+        let ledger = self.payload_admission.clone();
+        let event_id = event.event_id.to_short();
+        tx.on_commit(move || {
+            ledger.demands.lock().unwrap().remove_completed(event_id);
+        });
         Ok(PayloadReservationOutcome::Reserved(PayloadReservation {
             inner: Arc::new(ReservationOwner {
                 ledger: self.payload_admission.clone(),
@@ -130,7 +135,7 @@ impl Database {
         }))
     }
 
-    fn payload_capacity_pause_tx(
+    pub(crate) fn payload_capacity_pause_tx(
         tx: &WriteTransactionCtx,
         event: &VerifiedEvent,
         state: &AdmissionState,
@@ -186,10 +191,15 @@ impl Database {
     /// This advisory snapshot is not atomic with a separate persisted-usage
     /// query and must not authorize worker pruning outside the writer boundary.
     pub fn payload_admission_usage(&self) -> PayloadAdmissionUsage {
+        let mut demands = self.payload_admission.demands.lock().unwrap();
+        demands.expire(Timestamp::now());
+        let (pending_demands, pending_demand_bytes) = demands.usage();
         let state = self.payload_admission.state.lock().unwrap();
         PayloadAdmissionUsage {
             acquisitions: state.events.len(),
             logical_reserved_bytes: state.events.values().map(|e| e.bytes).sum(),
+            pending_demands,
+            pending_demand_bytes,
             buffers: state.buffers,
             buffer_bytes: state.buffer_bytes,
         }
@@ -415,6 +425,8 @@ impl Database {
         }
         let ledger = self.payload_admission.clone();
         tx.on_commit(move || {
+            let mut demands = ledger.demands.lock().unwrap();
+            demands.remove_completed(id);
             ledger
                 .state
                 .lock()

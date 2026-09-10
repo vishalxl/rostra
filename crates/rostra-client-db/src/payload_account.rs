@@ -107,6 +107,7 @@ impl Database {
             return Err(PayloadAccountAttachError::DatabaseBusy);
         }
         drop(state);
+        let mut demands = account.ledger.demands.lock().unwrap();
         let mut state = account.ledger.state.lock().unwrap();
         if state.database_owner.upgrade().is_some() {
             return Err(PayloadAccountAttachError::AccountAlreadyAttached);
@@ -116,6 +117,7 @@ impl Database {
         // Logical leases belong to the previous database attachment. Provisional
         // and outstanding buffer bytes remain charged until their owners drop.
         state.events.clear();
+        demands.clear();
         self.payload_account_owner = Some(owner);
         self.payload_admission = account.ledger.clone();
         Ok(())

@@ -35,6 +35,10 @@ pub struct PayloadAdmissionUsage {
     pub acquisitions: usize,
     /// Logical event bytes reserved in addition to retained usage.
     pub logical_reserved_bytes: u64,
+    /// Distinct live admission intents, not logical reservations.
+    pub pending_demands: usize,
+    /// Signed lengths of live intents; no buffers or storage are promised.
+    pub pending_demand_bytes: u64,
     /// Payload buffers whose owners have not released them.
     pub buffers: usize,
     /// Capacity charged for those buffers, including racing duplicate
@@ -46,6 +50,9 @@ pub struct PayloadAdmissionUsage {
 /// database's writer lock.
 #[derive(Debug, Default)]
 pub(crate) struct AdmissionLedger {
+    /// Arbitration for demand cancellation and logical lease release. Lock
+    /// before `state`; writer transactions serialize logical additions.
+    pub(crate) demands: Mutex<crate::payload_demand_state::DemandState>,
     /// No production setter exists until every acquisition caller is
     /// integrated.
     pub(crate) state: Mutex<AdmissionState>,
@@ -109,6 +116,7 @@ pub(crate) struct ReservationOwner {
 
 impl Drop for ReservationOwner {
     fn drop(&mut self) {
+        let arbitration = self.ledger.demands.lock().unwrap();
         let mut state = self.ledger.state.lock().unwrap();
         if state
             .events
@@ -118,6 +126,7 @@ impl Drop for ReservationOwner {
             state.events.remove(&self.event);
         }
         drop(state);
+        drop(arbitration);
         self.ledger.changed.notify_waiters();
     }
 }
