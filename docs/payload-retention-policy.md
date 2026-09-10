@@ -13,6 +13,9 @@ accounting readiness does not establish policy-index readiness. Disposable datab
 indexes now store full policy/holder generations, bound rebuild and grace work,
 and expose advisory author/global selection. Pressure, runtime clock trust and
 transactional worker integration remain separate requirements.
+The database also has a production-disabled shared admission foundation with
+explicit logical ceilings and separate acquisition-buffer leases; callers are
+not yet integrated, and no production activation API exists.
 
 ## Version 1 arithmetic and encoding
 
@@ -77,9 +80,10 @@ empirically selected deployment defaults.
   content state, projection readiness and zero-length payloads. A key or
   elapsed grace is not permission to discard content. See
   [SPEC-event-content-lifecycle](../crates/rostra-client-db/specs/SPEC-event-content-lifecycle.md).
-- Runtime opt-in/dry-run settings, author-specific overrides, admission
-  reservations, worker batching and database transactions are deliberately
-  absent. The only executable pressure path here is a pure simulator with
+- Runtime opt-in/dry-run settings and worker integration are absent.
+  Author-specific ceilings and reservation primitives now live in the disabled
+  database foundation, not this pure policy module. The executable pressure path
+  here remains a pure simulator with
   explicit budgets. No production GiB quota is supplied.
 
 ## Reproducible simulation

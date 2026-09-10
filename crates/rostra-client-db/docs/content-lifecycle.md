@@ -40,6 +40,16 @@ content-derived projections. The lower-level `process_event_content_tx` helper
 assumes an existing envelope and remains internal for transaction composition
 and migration replay.
 
+The shared admission foundation currently has no production activation path.
+When exercised with configured limits, all legacy fallible content APIs return
+`DbError::PayloadAdmissionPaused` on temporary refusal and roll back the entire
+ingestion transaction; their panic wrappers also panic on that refusal.
+`try_process_admitted_event_content` instead returns Deferred while preserving
+ordinary header effects and Missing scheduling, separately from Processed,
+Invalid and Unchanged. Temporary pressure is neither a peer failure nor a
+quota-prune decision. See the [database retention guide](../../../docs/payload-retention-database.md)
+for buffer ownership and the remaining client integration boundary.
+
 Content may be empty (`content_len == 0`). Empty content is handled as normal
 content — it gets an RC entry and is stored in `content_store` immediately at
 event insertion time unless the event starts in Deleted.
@@ -213,10 +223,15 @@ pruned during envelope processing and never enters Missing.
    - Increment RC for content_hash
    - Mark as Missing { count: 0, next: ZERO } in `events_content_state`
    - Content already in store? Skip adding to `events_content_missing`
+     (configured admission restores this event's current Missing schedule in
+     `process_event_tx_with_source`, so shared-store reuse remains resumable)
    - Otherwise add (Timestamp::ZERO, event_id) to `events_content_missing`
 
 2. process_event_content_tx:
    - Check length eligibility and can_insert_event_content_tx: Missing? → proceed
+   - admit_materialization_tx: check ready accounting, author/global current
+     bytes plus reservations, and a per-attempt buffer guard before side effects
+   - Temporary refusal: legacy API rolls back; typed API retains header/Missing
    - Leave fetch scheduling unchanged if the payload is ineligible
    - Apply side effects (reply counts, follow updates, etc.)
    - Store content in `content_store` (if not already there)
@@ -596,6 +611,17 @@ fails transactionally in all builds; neither case authorizes fabricated
 ownership or partial lifecycle bookkeeping.
 
 ## Test Coverage
+
+### Admission Foundation Tests
+
+`payload_admission_tests` covers production-disabled behavior, named explicit
+limit validation, readiness and both logical ceilings, common/override author
+caps, configured envelope scheduling of shared-store bytes, deferred reuse,
+local/unknown protections without capacity exemptions, Invalid/temporary/terminal
+outcome separation, independent acquisition/buffer count and byte limits,
+duplicate reservations, racing writers and peer buffers, cancellation wakeups,
+aborted materialization, foreign/stale guards and terminal late delivery.
+Tests only activate disposable databases; no runtime pruning worker is exercised.
 
 ### Core Flow Tests
 

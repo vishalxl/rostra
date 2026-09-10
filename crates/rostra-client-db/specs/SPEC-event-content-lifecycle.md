@@ -243,6 +243,26 @@ quota transition in one write transaction.
 
 ## Deduplication and retrieval
 
+The shared admission foundation is disabled in production: no configuration
+activation path or destructive worker exists yet. Its database boundary guards
+materialization rather than only network downloads, so local publication,
+direct verified-content callers and hash-store reuse cannot bypass logical
+ceilings when the foundation is exercised. Temporary admission deferral is not
+Invalid, Pruned or a failed peer fetch. Admission-aware ingestion retains the
+envelope and Missing schedule while deferring projections; legacy fallible
+ingestion instead returns a structured capacity error and rolls back atomically.
+Protected payloads count against the same ceilings; protection never grants
+unbounded admission.
+
+Logical reservations and actual acquisition buffers have different lifetimes.
+Concurrent copies of one payload each consume buffer capacity, but reserve its
+logical event charge only once. Committed materialization or terminal lifecycle
+changes release the logical reservation. They do not release buffers still owned
+by a network operation. Cancellation releases reservations through their owners;
+transaction rollback cannot publish a terminal release. These primitives do not
+yet bound client network reads: callers must acquire buffers before reading, and
+preserve their guards until the acquired bytes are released.
+
 Content bytes are keyed by hash and may satisfy multiple events, but each
 event's content-derived effects are processed independently. Reference counts
 track how many events still want a hash, including Missing events. A zero count

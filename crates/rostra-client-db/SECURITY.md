@@ -51,6 +51,34 @@ not yet started materialization grace. Clock trust is an explicit caller
 assertion; a runtime worker must supply a concrete policy for unreliable clocks,
 including forward jumps. No automatic destructive worker is enabled.
 
+The phase-3a shared admission boundary remains production-disabled: its config
+is `None`, with no production setter or worker. Adding an activation path is a
+security/reliability revisit trigger, not routine configuration plumbing.
+Configured admission rechecks ready accounting and author/database current usage
+plus pending logical reservations inside the materialization writer transaction.
+One full EventId has one logical acquisition owner; each racing payload attempt
+requires its own buffer guard. Committed materialization/terminal changes release
+logical ownership after commit, while buffers remain charged until their owners
+drop. Cancellation drops unfinished ownership; rollback never publishes a
+terminal release.
+
+The buffer limit is declared capacity, not a whole-process memory measurement.
+Existing APIs' already-allocated content, raw HTTP request parsing, transport/
+codec working memory and clones retained after acquisition are outside its
+guarantee. Production activation requires pre-read admission on every acquisition
+path, including provisional/pre-parse HTTP budgeting and guard retention across
+each racing download, ingestion and buffer lifetime. Race, cancellation,
+transaction rollback and late-terminal-delivery coverage must accompany that
+integration. Protecting local/state/unknown content from eviction does not exempt
+it from admission caps.
+
+Admission notifications are lossy: callers must register before checking work,
+then recheck, and also wake for startup, configuration, accounting readiness and
+bounded retry/grace deadlines. Deferred Missing work must not spin on its queue
+row or treat temporary pressure as a peer failure. The current primitive tests
+do not prove worker liveness, clock trust or complete pre-read memory bounds;
+those remain explicit activation prerequisites.
+
 Schema 28 adds disposable global logical/unique-byte accounting and a quota-only
 physical collector. All databases start unready; totals remain unavailable and
 collection fails closed until an explicit bounded rebuild finishes. The rebuild

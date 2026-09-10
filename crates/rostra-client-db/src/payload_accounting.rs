@@ -419,6 +419,7 @@ impl Database {
         let mut accounting = Self::accounting_tx(tx)?;
         let mut authors = Vec::new();
         for (id, old) in before.events {
+            self.release_completed_admission_tx(tx, id)?;
             self.refresh_retention_index_tx(tx, id)?;
             if Self::event_counted(accounting.stage, id) {
                 if let Some(old) = old {
@@ -482,6 +483,11 @@ impl Database {
                 .map(|record| record.usage))
         })
         .await
+    }
+
+    pub(crate) fn payload_usage_tx(tx: &WriteTransactionCtx) -> DbResult<Option<PayloadUsage>> {
+        let accounting = Self::accounting_tx(tx)?;
+        Ok(matches!(accounting.stage, AccountingStage::Ready).then_some(accounting.usage))
     }
 
     fn check_payload_limit(limit: NonZeroUsize) -> DbResult<()> {

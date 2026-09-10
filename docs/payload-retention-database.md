@@ -2,7 +2,8 @@
 
 This checkpoint implements durable source metadata, checked lifecycle counters,
 global/unique-byte accounting, checked quota transitions and a bounded quota-only
-collector, plus policy-generation candidate indexes. Explicit callers can
+collector, policy-generation candidate indexes, and a production-disabled shared
+admission/reservation boundary. Explicit callers can
 dematerialize an eligible Processed remote SocialPost or permanently decline a Missing payload and nominate its hash
 atomically. It does not enable automatic eviction/admission, a client worker,
 or production quotas.
@@ -200,9 +201,98 @@ transactional counterpart is available for the later pressure operation and
 requires matching promoted reverse ownership and both forward mappings.
 Neither API authorizes pruning or converts selection into a quota request.
 
+## Shared admission foundation (phase 3a)
+
+`PayloadAdmissionConfig` validates explicit nonzero logical database/common-author
+caps, optional full-`RostraId` author overrides, and independent in-flight
+count/byte limits. Counts are bounded by 4096. Author caps are strict ceilings,
+not reserved shares; a ceiling above the database cap does not permit borrowing.
+There is no universal GiB default. `experimental_low_water` computes floor(90%)
+without overflow; this is an experimental starting point for future hysteresis,
+not a worker or an automatic deletion rule.
+
+**Production admission remains disabled by construction.** The database owns an
+empty optional configuration, and only disposable unit tests can populate it.
+There is no public setter, runtime config wiring, clock assertion, worker,
+automatic quota decision, collection or service activation. This safety
+checkpoint deliberately precedes complete client integration.
+
+`reserve_payload` retains a verified envelope and returns Disabled, Unneeded,
+Deferred or a unique logical `PayloadReservation`. Admission rechecks ready
+accounting and current author/database logical usage plus pending reservations
+inside the serialized writer boundary. Materialization rechecks capacity in its
+own transaction. Temporary author/global pressure is not yet ranked against the
+victim boundary and never produces a permanent quota rejection.
+
+Each lease can acquire distinct `PayloadBuffer` guards, one per payload-sized
+allocation/peer attempt. Four racing downloads charge four buffers but one
+logical event. Both logical acquisitions and buffers have independent count
+ceilings; buffers additionally have an aggregate byte ceiling. The guard API
+reserves capacity, not memory: callers must acquire before allocation and hold it
+through ingestion until those bytes are released. It does not measure allocator
+overhead, transport/BAO working memory, envelopes, retained notification/caller
+clones after acquisition completes, or DB file growth. It cannot retroactively bound already-allocated inputs to existing
+APIs.
+
+Dropping the acquisition cancels it unless a buffer still owns its lifetime.
+Committed Processed/terminal transitions release the logical charge through the
+existing accounting owner, but outstanding buffers remain charged until dropped.
+Full event/lease/database identity prevents stale or cross-database guard reuse.
+The bounded ledger supports one logical owner per event: another request receives
+AlreadyReserved instead of making another logical claim. `payload_admission_usage`
+reports these two kinds of ownership separately; `payload_admission_changed` is a
+lossy notification, never readiness or a durable work queue.
+
+All ordinary content reducers pass the same admission check before projections
+or bytes change. `try_process_admitted_event_content` exposes Processed, Invalid,
+Unchanged, or Deferred separately. Deferred
+commits the header and retains/reinserts its existing Missing schedule, with no
+quota decision or retry-attempt change. Ordinary signed-header effects, including
+author deletion of another payload, still apply. The old fallible ingestion methods return
+`DbError::PayloadAdmissionPaused { reason }` and roll back the whole transaction;
+the old panic wrappers retain their documented panic-on-error contract. Local
+publication and protected kinds are not exempt from logical caps. This error is
+a clear storage-capacity refusal, not a database corruption or peer failure.
+
+`try_materialize_stored_payload` handles one retained event, reserves before
+copying hash-store bytes, then uses the same materialization gate. A deferred
+shared-hash event gains its otherwise omitted Missing queue row, without scanning
+historical events. Envelope ingestion under configured admission also ensures
+that row exists. No client invokes the new reuse API yet; production scheduling
+is unchanged. Logical usage charges both materialized events even if their bytes
+share one stored hash.
+
+### Acquisition-path audit and next caller obligations
+
+| Path | Database boundary already covered | Still required before activation |
+| --- | --- | --- |
+| Missing retries / ancestor synchronization | `util::rpc::download_events_from_child` ultimately uses guarded DB ingestion | Pre-read reservation, shared-store reuse first, typed pause propagation instead of retry failure |
+| Explicit direct fetch | `get_event_content_from_followers` uses guarded DB ingestion | Same pre-read reservation and terminal checks |
+| Pushed `FEED_EVENT` | `Client::store_event_with_content` uses guarded DB ingestion | Reserve before success response and BAO payload read; return existing suitable refusal semantics |
+| Local publication / head merger | `try_process_event_with_content` is guarded; empty events need no payload room | Pre-allocation budgeting where possible and storage-full error mapping; never override caps |
+| Raw signed web API (`routes/api.rs`) | Its direct `try_process_event_with_content` call is guarded | Bound request-body allocation before JSON/content verification, then transfer ownership to verified-event admission |
+| Hash-store reuse | New single-event reuse API uses the same gate | Call before fetching and pause without re-fetching the existing shared bytes |
+| Public direct DB ingestion | All three fallible ingestion variants and panic wrappers converge on the gate | External holders of already-allocated bytes own that memory; use the explicit pre-read guard API for controlled acquisition |
+| Direct P2P connection/cache APIs | Any later DB materialization is guarded | Do not expose production acquisition through an unmetered `Connection::get_event_content`; cache currently races four peers |
+
+Before adding runtime activation, all client acquisition owners must adopt the
+buffer/typed-result contract. The raw signed HTTP request allocates its body before
+it has a verified envelope: its pre-parse capacity must be bounded separately (or
+with a provisional buffer lease), not falsely claimed as covered by the current
+verified-envelope guard. Existing APIs' inline guards protect committed logical
+growth only; they do not prove pre-read memory bounds.
+
+A Deferred queue-front item must not be retried in a tight loop or converted to a
+peer backoff failure. Register wakeups before checking work, recheck after a wake,
+and use bounded retry/config/grace wakeups to tolerate lost or self-generated
+signals. The later worker must supply ranking-aware temporary versus permanent
+admission, generation/pressure/reducer atomicity, distinct readiness dimensions,
+trusted-clock recovery, hysteresis, dry-run modeling and bounded yielding batches.
+No production clock can be inferred from these APIs or test timestamps.
+
 ## Next checkpoint
 
-Only after those foundations may phase 3 add admission and worker integration.
+Only after those foundations may phase 3b add complete client/worker integration.
 Logical quota release may reclaim no physical bytes when another reference
 survives. Headers and index overhead remain outside logical payload accounting.
 
@@ -241,3 +331,11 @@ by rollback/reopen/replay and concurrent reference release.
 pages, independent readiness, interleaved rebuild/lifecycle updates, policy and
 holder mismatch, stale advice, bounded grace promotion, protected/unknown/future
 origins, rollback/untrusted clocks, abort/reopen and repeated total replay.
+
+`payload_admission_tests` covers disabled behavior, named explicit configuration,
+accounting readiness, author/common/override and database capacity including
+reservations, independent buffer count/bytes, racing writers and peer buffers,
+drop/cancellation wakeups, aborted ingestion, duplicate/foreign/stale guards,
+committed terminal release and late delivery, Invalid separation, protected-kind
+capacity refusal, configured shared-hash envelope scheduling and deferred
+hash-store reuse without refetching.

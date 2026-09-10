@@ -11,6 +11,11 @@ mod paginate;
 mod payload_accounting;
 #[cfg(test)]
 mod payload_accounting_tests;
+mod payload_admission;
+mod payload_admission_config;
+#[cfg(test)]
+mod payload_admission_tests;
+mod payload_reservation;
 mod process_event_content_ops;
 mod process_event_ops;
 mod quota_pruning;
@@ -60,6 +65,11 @@ pub use self::extension::{
     ExtensionWriteTransaction,
 };
 pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, PayloadUsage};
+pub use self::payload_admission::{PayloadIngestOutcome, PayloadReservationOutcome};
+pub use self::payload_admission_config::{PayloadAdmissionConfig, PayloadAdmissionLimits};
+pub use self::payload_reservation::{
+    PayloadAdmissionPause, PayloadAdmissionUsage, PayloadBuffer, PayloadReservation,
+};
 pub use self::quota_pruning::{
     QuotaPruneOutcome, QuotaPruneRequest, QuotaPruneTarget, RetentionClock,
 };
@@ -241,6 +251,13 @@ pub type TableDumpResult<T> = std::result::Result<T, TableDumpError>;
 
 #[derive(Debug, Snafu)]
 pub enum DbError {
+    #[snafu(display(
+        "Payload storage capacity unavailable: {reason:?} (temporary admission pause)"
+    ))]
+    PayloadAdmissionPaused {
+        /// Structured admission result; never classify this as a peer failure.
+        reason: PayloadAdmissionPause,
+    },
     #[snafu(display("Payload accounting does not match retained lifecycle sources"))]
     PayloadAccountingInvariant,
     #[snafu(display("Payload accounting and replay guards are not ready"))]
@@ -466,6 +483,9 @@ pub struct Database {
     /// the durable transaction is still valid.
     write_and_publish_lock: std::sync::Mutex<()>,
 
+    /// Shared disabled-by-construction logical and acquisition-buffer boundary.
+    payload_admission: Arc<payload_reservation::AdmissionLedger>,
+
     self_followees_updated: watch::Sender<Arc<HashMap<RostraId, IdsFolloweesRecord>>>,
     self_followers_updated: watch::Sender<Arc<HashMap<RostraId, IdsFollowersRecord>>>,
     self_wot_updated: watch::Sender<Arc<WotData>>,
@@ -600,6 +620,7 @@ impl Database {
             iroh_secret,
             db_init_time,
             write_and_publish_lock: std::sync::Mutex::new(()),
+            payload_admission: Arc::default(),
             self_followees_updated,
             self_followers_updated,
             self_wot_updated,
@@ -1077,6 +1098,10 @@ impl Database {
     /// Returns storage and transaction errors, including
     /// [`DbError::IdentityPrefixCollision`]. An error rolls back the envelope,
     /// content, lifecycle, and projection changes together.
+    ///
+    /// With admission configured, temporary capacity refusal returns
+    /// [`DbError::PayloadAdmissionPaused`] with the same complete rollback.
+    /// Admission currently has no production activation path.
     pub async fn try_process_event_with_content(
         &self,
         content: &VerifiedEventContent,
@@ -1102,6 +1127,9 @@ impl Database {
     /// violated, including a vote winner with a missing or invalid inline
     /// projection or a shortened identity prefix mapped to a different full
     /// identity.
+    /// A configured admission boundary also makes this wrapper panic on a
+    /// temporary capacity refusal; admission-aware callers must use the
+    /// fallible or explicitly deferred ingestion APIs instead.
     pub async fn process_event_with_content(
         &self,
         content: &VerifiedEventContent,
@@ -1122,7 +1150,9 @@ impl Database {
     /// # Errors
     ///
     /// Returns errors under the same conditions as
-    /// [`Database::try_process_event_with_content`].
+    /// [`Database::try_process_event_with_content`], including structured
+    /// temporary [`DbError::PayloadAdmissionPaused`] with complete rollback
+    /// when admission is configured.
     pub async fn try_process_event_content(
         &self,
         event_content: &VerifiedEventContent,
@@ -1138,7 +1168,8 @@ impl Database {
     /// # Panics
     ///
     /// Panics under the same conditions as
-    /// [`Database::process_event_with_content`].
+    /// [`Database::process_event_with_content`], including temporary admission
+    /// refusal when admission is configured.
     pub async fn process_event_content(&self, event_content: &VerifiedEventContent) {
         self.try_process_event_content(event_content)
             .await
@@ -1164,8 +1195,18 @@ impl Database {
         now: Timestamp,
         tx: &WriteTransactionCtx,
     ) -> DbResult<()> {
+        self.process_event_content_with_buffer_tx(event_content, now, tx, None)
+    }
+
+    pub(crate) fn process_event_content_with_buffer_tx(
+        &self,
+        event_content: &VerifiedEventContent,
+        now: Timestamp,
+        tx: &WriteTransactionCtx,
+        buffer: Option<&PayloadBuffer>,
+    ) -> DbResult<()> {
         let before = self.payload_before_tx(tx, &event_content.event)?;
-        self.process_event_content_inner_tx(event_content, now, tx)?;
+        self.process_event_content_inner_tx(event_content, now, tx, buffer)?;
         self.payload_after_tx(tx, before)
     }
 
@@ -1174,6 +1215,7 @@ impl Database {
         event_content: &VerifiedEventContent,
         now: Timestamp,
         tx: &WriteTransactionCtx,
+        buffer: Option<&PayloadBuffer>,
     ) -> DbResult<()> {
         {
             let events_table = tx.open_table(&events::TABLE)?;
@@ -1209,6 +1251,7 @@ impl Database {
         };
 
         if can_insert {
+            let _inline_buffer = self.admit_materialization_tx(tx, &event_content.event, buffer)?;
             // Remove eligible content from the missing list.
             {
                 let event_short_id = event_content.event_id().to_short();
