@@ -1868,6 +1868,13 @@ impl Database {
             .expect("Database panic")
     }
 
+    /// Get at most `limit` identities that have authored retained events.
+    pub async fn get_known_identities_bounded(&self, limit: usize) -> Vec<RostraId> {
+        self.read_with(|tx| ids_full::read_bounded(tx, limit))
+            .await
+            .expect("Database panic")
+    }
+
     /// Resolve a shortened identity that has authored a retained event.
     ///
     /// Event ingestion rejects identity-prefix collisions, so a returned

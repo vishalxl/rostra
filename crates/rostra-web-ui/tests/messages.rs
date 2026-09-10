@@ -68,7 +68,6 @@ async fn settings_token(driver: &UiDriver) -> String {
 
 async fn replicate_device(server: &TestServer, source: RostraId, target: RostraId) {
     let source_client = server.client(source).await;
-    let target_client = server.client(target).await;
     let event_id = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let devices = source_client.db().dm_own_devices(None, 64).await.unwrap();
@@ -80,6 +79,17 @@ async fn replicate_device(server: &TestServer, source: RostraId, target: RostraI
     })
     .await
     .unwrap();
+    replicate_event(server, source, target, event_id).await;
+}
+
+async fn replicate_event(
+    server: &TestServer,
+    source: RostraId,
+    target: RostraId,
+    event_id: rostra_core::ShortEventId,
+) {
+    let source_client = server.client(source).await;
+    let target_client = server.client(target).await;
     let record = source_client.db().get_event(event_id).await.unwrap();
     let event = VerifiedEvent::verify_signed(source, record.signed).unwrap();
     let content = source_client
@@ -195,9 +205,24 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     let alice = server.driver();
     let bob = server.driver();
     let (alice_id, alice_secret) = alice.login_new_identity().await;
-    let (bob_id, _) = bob.login_new_identity().await;
+    let (bob_id, bob_secret) = bob.login_new_identity().await;
+    server
+        .client(bob_id)
+        .await
+        .post_social_profile_update(bob_secret, "Bob Example".to_owned(), String::new(), None)
+        .await
+        .unwrap();
+    let bob_profile_event = server
+        .client(bob_id)
+        .await
+        .db()
+        .get_social_profile(bob_id)
+        .await
+        .unwrap()
+        .event_id;
     replicate_device(&server, alice_id, bob_id).await;
     replicate_device(&server, bob_id, alice_id).await;
+    replicate_event(&server, bob_id, alice_id, bob_profile_event).await;
     let path = format!("/messages/{}", bob_id.to_short());
     let page = alice.get("/messages").await.text().await.unwrap();
     let document = Html::parse_document(&page);
@@ -206,6 +231,20 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .next()
         .unwrap();
     assert_eq!(open_form.value().attr("method"), Some("get"));
+    let peer_input = open_form
+        .select(&Selector::parse("input[name='peer']").unwrap())
+        .next()
+        .unwrap();
+    assert_eq!(
+        peer_input.value().attr("list"),
+        Some("message-peer-suggestions")
+    );
+    let bob_short = bob_id.to_short().to_string();
+    let suggestion = open_form
+        .select(&Selector::parse("datalist option").unwrap())
+        .find(|option| option.value().attr("value") == Some(bob_short.as_str()))
+        .expect("locally known recipient suggestion");
+    assert_eq!(suggestion.value().attr("label"), Some("Bob Example"));
     let response = alice.get(&format!("/messages/open?peer={bob_id}")).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()[header::LOCATION], path);

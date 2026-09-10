@@ -58,6 +58,15 @@ pub(crate) fn read_all(tx: &ReadTransaction) -> DbResult<Vec<RostraId>> {
         .collect::<Result<_, _>>()?)
 }
 
+pub(crate) fn read_bounded(tx: &ReadTransaction, limit: usize) -> DbResult<Vec<RostraId>> {
+    Ok(tx
+        .open_table(&TABLE)?
+        .range(..)?
+        .take(limit)
+        .map(|entry| entry.map(|(prefix, rest)| RostraId::assemble(prefix.value(), rest.value())))
+        .collect::<Result<_, _>>()?)
+}
+
 pub(crate) fn get(tx: &ReadTransaction, prefix: ShortRostraId) -> DbResult<Option<RestRostraId>> {
     Ok(tx
         .open_table(&TABLE)?
