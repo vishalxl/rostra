@@ -21,6 +21,12 @@ use super::{Maud, fragment, recovery};
 
 type MessageResult = Result<Response, Response>;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MessagePageSection {
+    Conversations,
+    Devices,
+}
+
 /// Apply private-response controls, including errors and redirects.
 pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
     let mut response = body.into_response();
@@ -69,7 +75,7 @@ pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
 }
 
 /// Render a complete private page without scripts, embeds, or remote resources.
-fn page(title: &str, content: Markup) -> Response {
+fn page(title: &str, active_section: Option<MessagePageSection>, content: Markup) -> Response {
     Maud(html! {
         (DOCTYPE)
         html lang="en" {
@@ -84,28 +90,44 @@ fn page(title: &str, content: Markup) -> Response {
             body ."o-body" {
                 div ."o-pageLayout" {
                     nav ."o-navBar" aria-label="Private messages" {
-                        div ."o-topNav -dense" {
+                        div ."o-topNav" {
                             a ."o-topNav__item" href="/following" {
                                 span ."o-topNav__icon -back" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Back to timeline" }
+                                span ."o-topNav__label" { "Back" }
                             }
-                            a ."o-topNav__item" href="/messages" {
-                                span ."o-topNav__icon -messages" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Conversations" }
+
+                        }
+                        div ."o-settingsNav" {
+                            div ."o-settingsNav__group" {
+                                h3 ."o-settingsNav__groupHeader" { "Messages" }
+                                a ."o-settingsNav__item"
+                                    ."-active"[active_section == Some(MessagePageSection::Conversations)]
+                                    href="/messages"
+                                {
+                                    "Conversations"
+                                }
+                                a ."o-settingsNav__item"
+                                    ."-active"[active_section == Some(MessagePageSection::Devices)]
+                                    href="/settings/messages"
+                                {
+                                    "Message devices"
+                                }
                             }
-                            a ."o-topNav__item" href="/settings/messages" {
-                                span ."o-topNav__icon -devices" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Message devices" }
-                            }
-                            a ."o-topNav__item" href="/unlock" {
-                                span ."o-topNav__icon -unlock" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Unlock session" }
+                            div ."o-settingsNav__group" {
+                                h3 ."o-settingsNav__groupHeader" { "Session" }
+                                a ."o-settingsNav__item" href="/unlock" {
+                                    "Unlock session"
+                                }
                             }
                         }
                     }
-                    main ."o-mainBarTimeline m-directMessages" {
-                        div ."o-mainBarTimeline__tabs" { h1 { (title) } }
-                        div ."o-settingsContent" { (content) }
+                    main ."o-mainBar" {
+                        div ."o-mainBarTimeline m-directMessages" {
+                            div ."o-mainBarTimeline__tabs" {
+                                span ."o-mainBarTimeline__settingsTitle" { (title) }
+                            }
+                            div ."o-settingsContent" { (content) }
+                        }
                     }
                 }
             }
@@ -117,6 +139,7 @@ fn page(title: &str, content: Markup) -> Response {
 fn error_page(status: StatusCode, message: &str) -> Response {
     let mut response = page(
         "Private messages",
+        None,
         html! {
             p role="alert" { (message) }
             p { a href="/messages" { "Return to conversations" } }
@@ -224,6 +247,7 @@ pub(super) async fn get_messages(
     });
     Ok(page(
         "Private messages",
+        Some(MessagePageSection::Conversations),
         html! {
             p { "Messages are encrypted for selected devices. Local history is retained on this installation; it does not automatically appear on a new device." }
             form method="get" action="/messages/open" {
@@ -338,6 +362,7 @@ async fn render_thread(
     };
     let mut response = page(
         "Conversation",
+        Some(MessagePageSection::Conversations),
         html! {
             p ."m-directMessages__identity" { "With " (peer) }
             p { "Only selected devices can decrypt new messages. There are no delivery or read receipts." }

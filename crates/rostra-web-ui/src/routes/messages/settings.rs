@@ -9,7 +9,8 @@ use serde::Deserialize;
 
 use super::session::MessageSession;
 use super::{
-    MessageResult, access_error, error_page, page, publication_error, storage_error, take_page,
+    MessagePageSection, MessageResult, access_error, error_page, page, publication_error,
+    storage_error, take_page,
 };
 use crate::routes::fragment;
 
@@ -67,6 +68,7 @@ pub(crate) async fn get_settings(
     });
     Ok(page(
         "Message devices",
+        Some(MessagePageSection::Devices),
         html! {
             p { "Each installation has independent random message keys. Your recovery phrase does not recover old message keys or this installation's history." }
             p { "New local keys are eligible for sending for 7 days, then receive-only for 28 more days. Each key keeps its original deletion deadline. Local plaintext history currently has no automatic expiry." }
@@ -137,6 +139,7 @@ pub(crate) async fn get_retirement(
     let csrf = session.csrf().await?;
     Ok(page(
         "Confirm device retirement",
+        Some(MessagePageSection::Devices),
         html! {
             p ."m-directMessages__identity" { "Device: " code { (data_encoding::HEXLOWER.encode(&id)) } }
             @if local.is_some_and(|local| local.device_id == id) {

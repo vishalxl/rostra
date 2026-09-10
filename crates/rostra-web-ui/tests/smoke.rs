@@ -128,13 +128,9 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     let response = driver.get("/messages").await;
     assert_eq!(response.status(), 200);
     let document = Html::parse_document(&response.text().await.unwrap());
-    for (href, label) in [
-        ("/following", "Back to timeline"),
-        ("/messages", "Conversations"),
-        ("/settings/messages", "Message devices"),
-        ("/unlock", "Unlock session"),
-    ] {
-        let selector = Selector::parse(&format!(".o-topNav.-dense a[href='{href}']")).unwrap();
+    {
+        let (href, label) = ("/following", "Back");
+        let selector = Selector::parse(&format!(".o-topNav a[href='{href}']")).unwrap();
         let item = document
             .select(&selector)
             .next()
@@ -147,6 +143,46 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
         );
         assert!(item.text().any(|text| text.trim() == label));
     }
+    for (href, label) in [
+        ("/messages", "Conversations"),
+        ("/settings/messages", "Message devices"),
+        ("/unlock", "Unlock session"),
+    ] {
+        let selector = Selector::parse(&format!(".o-settingsNav a[href='{href}']")).unwrap();
+        let item = document
+            .select(&selector)
+            .next()
+            .unwrap_or_else(|| panic!("missing private-message navigation item {href}"));
+        assert!(item.text().any(|text| text.trim() == label));
+    }
+    assert!(
+        document
+            .select(
+                &Selector::parse(
+                    "main.o-mainBar .o-mainBarTimeline .o-mainBarTimeline__settingsTitle",
+                )
+                .unwrap(),
+            )
+            .any(|title| title.text().any(|text| text.trim() == "Private messages"))
+    );
+    assert!(
+        document
+            .select(&Selector::parse(".o-settingsNav__item.-active[href='/messages']").unwrap())
+            .next()
+            .is_some()
+    );
+    let response = driver.get("/settings/messages").await;
+    assert_eq!(response.status(), 200);
+    let document = Html::parse_document(&response.text().await.unwrap());
+    assert!(
+        document
+            .select(
+                &Selector::parse(".o-settingsNav__item.-active[href='/settings/messages']",)
+                    .unwrap(),
+            )
+            .next()
+            .is_some()
+    );
 
     let generic_tab_bar =
         Html::parse_fragment(&rostra_web_ui::UiState::render_page_tab_bar("Post").into_string());

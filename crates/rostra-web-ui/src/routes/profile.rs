@@ -322,9 +322,12 @@ impl UiState {
                             .aria_label("Copy RostraId")
                             .call())
                         @if session.id() != profile_id {
-                            a ."m-profileSummary__messageButton"
+                            a ."m-profileSummary__messageButton u-button"
                                 href=(super::messages::thread_url(profile_id))
-                            { "Message" }
+                            {
+                                span ."m-profileSummary__messageButtonIcon u-buttonIcon" {}
+                                "Message"
+                            }
                             @let label = if following { "Following..." } else { "Follow..." };
                             (fragment::ajax_button(
                                 &profile_follow_url(profile_id),
