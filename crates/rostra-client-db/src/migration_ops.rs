@@ -82,7 +82,8 @@ pub(crate) struct LegacyEventReceivedRecord {
 /// readiness.
 /// Version 29 adds disposable quota-hash provenance and its recovery cursor.
 /// Version 30 adds disposable retention policy indexes with bounded rebuilding.
-const DB_VER: u64 = 30;
+/// Version 31 adds disposable bounded-runtime pressure state.
+const DB_VER: u64 = 31;
 
 /// Versions older than this require a total migration.
 ///
@@ -160,6 +161,8 @@ impl Database {
 
     /// Initialize all current schema tables.
     pub(crate) fn init_tables_tx(tx: &WriteTransactionCtx) -> DbResult<()> {
+        tx.open_table(&crate::content_pressure_state::TABLE)?;
+        tx.open_table(&crate::content_pressure_authors::TABLE)?;
         tx.open_table(&crate::content_retention_state::TABLE)?;
         tx.open_table(&crate::content_retention_reverse::TABLE)?;
         tx.open_table(&crate::content_retention_global::TABLE)?;

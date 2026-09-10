@@ -311,6 +311,14 @@ def_table! {
     /// First possible eligibility time, without periodically rescoring payloads.
     content_retention_grace: (u64, ShortEventId) => ()
 }
+def_table! {
+    /// Disposable runtime incarnation and global hysteresis, never replay authority.
+    content_pressure_state: () => crate::payload_pressure::PressureRecord
+}
+def_table! {
+    /// Disk-backed per-author hysteresis and bounded candidate continuation.
+    content_pressure_authors: RostraId => crate::payload_pressure::AuthorPressure
+}
 
 /// Aggregate data usage record for an identity.
 ///

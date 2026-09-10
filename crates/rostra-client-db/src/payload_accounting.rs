@@ -422,10 +422,16 @@ impl Database {
             self.release_completed_admission_tx(tx, id)?;
             self.refresh_retention_index_tx(tx, id)?;
             if Self::event_counted(accounting.stage, id) {
+                let new = self.contribution_tx(tx, id)?;
+                if old.as_ref().map(|e| (e.author, e.logical))
+                    != new.as_ref().map(|e| (e.author, e.logical))
+                {
+                    self.payload_admission.invalidate_pressure();
+                }
                 if let Some(old) = old {
                     Self::adjust_contribution_tx(tx, &mut accounting, &old, false)?;
                 }
-                if let Some(new) = self.contribution_tx(tx, id)? {
+                if let Some(new) = new {
                     if !authors.contains(&new.author) {
                         authors.push(new.author);
                     }
@@ -669,50 +675,85 @@ impl Database {
         tx: &WriteTransactionCtx,
         limit: NonZeroUsize,
     ) -> DbResult<PayloadMaintenance> {
-        let mut accounting = Self::accounting_tx(tx)?;
-        if !matches!(accounting.stage, AccountingStage::Ready) {
-            return crate::PayloadAccountingNotReadySnafu.fail();
-        }
+        Self::require_payload_accounting_ready_tx(tx)?;
         let mut result = PayloadMaintenance {
             ready: true,
             ..Default::default()
         };
         for _ in 0..limit.get() {
-            let next = tx
-                .open_table(&payload_gc::TABLE)?
-                .first()?
-                .map(|(key, _)| key.value_try())
-                .transpose()?;
-            let Some(hash) = next else { break };
-            Self::validate_hash_tx(tx, hash)?;
-            let guard = tx
-                .open_table(&payload_accounting_hashes::TABLE)?
-                .get(&hash)?
-                .map(|row| row.value_try())
-                .transpose()?
-                .context(crate::PayloadAccountingInvariantSnafu)?;
-            if guard.references == 0 && !guard.protected_history {
-                let removed = tx
-                    .open_table(&content_store::TABLE)?
-                    .remove(&hash)?
-                    .map(|row| row.value_try().map(|value| value.0.as_slice().len() as u64))
-                    .transpose()?
-                    .unwrap_or(0);
-                accounting.usage.unique_stored_bytes = accounting
-                    .usage
-                    .unique_stored_bytes
-                    .checked_sub(removed)
-                    .context(OverflowSnafu)?;
-                result.removed_bytes = result
-                    .removed_bytes
-                    .checked_add(removed)
-                    .context(OverflowSnafu)?;
+            let (_, step) = Self::collect_quota_payload_step_tx(tx, None, u64::MAX)?;
+            if step.visited == 0 {
+                break;
             }
-            tx.open_table(&payload_gc::TABLE)?.remove(&hash)?;
-            result.visited += 1;
+            result.visited += step.visited;
+            result.removed_bytes = result
+                .removed_bytes
+                .checked_add(step.removed_bytes)
+                .context(OverflowSnafu)?;
         }
+        Ok(result)
+    }
+
+    /// Visit one quota nomination with a strict unique-store removal allowance.
+    /// Oversized values remain nominated; the exclusive cursor lets smaller
+    /// hashes behind them progress. The caller retries a completed sweep only
+    /// after waiting. Reading/validating one value remains indivisible.
+    pub(crate) async fn collect_quota_payload_step(
+        &self,
+        after: Option<ContentHash>,
+        max_bytes: u64,
+    ) -> DbResult<(Option<ContentHash>, PayloadMaintenance)> {
+        self.write_with(|tx| Self::collect_quota_payload_step_tx(tx, after, max_bytes))
+            .await
+    }
+
+    /// Atomically validate and visit one quota-only nomination within a strict
+    /// unique-store removal allowance, retaining oversized work for later
+    /// sweeps.
+    pub(crate) fn collect_quota_payload_step_tx(
+        tx: &WriteTransactionCtx,
+        after: Option<ContentHash>,
+        max_bytes: u64,
+    ) -> DbResult<(Option<ContentHash>, PayloadMaintenance)> {
+        let mut accounting = Self::accounting_tx(tx)?;
+        Self::require_payload_accounting_ready_tx(tx)?;
+        let next = tx
+            .open_table(&payload_gc::TABLE)?
+            .range((after.map_or(Unbounded, Excluded), Unbounded))?
+            .next()
+            .transpose()?
+            .map(|(key, _)| key.value_try())
+            .transpose()?;
+        let mut result = PayloadMaintenance {
+            ready: true,
+            ..Default::default()
+        };
+        let Some(hash) = next else {
+            return Ok((None, result));
+        };
+        Self::validate_hash_tx(tx, hash)?;
+        let guard = tx
+            .open_table(&payload_accounting_hashes::TABLE)?
+            .get(&hash)?
+            .context(crate::PayloadAccountingInvariantSnafu)?
+            .value_try()?;
+        result.visited = 1;
+        if guard.references == 0 && !guard.protected_history {
+            let bytes = Self::stored_len_tx(tx, hash)?;
+            if bytes > max_bytes {
+                return Ok((Some(hash), result));
+            }
+            tx.open_table(&content_store::TABLE)?.remove(&hash)?;
+            accounting.usage.unique_stored_bytes = accounting
+                .usage
+                .unique_stored_bytes
+                .checked_sub(bytes)
+                .context(OverflowSnafu)?;
+            result.removed_bytes = bytes;
+        }
+        tx.open_table(&payload_gc::TABLE)?.remove(&hash)?;
         tx.open_table(&payload_accounting::TABLE)?
             .insert(&(), &accounting)?;
-        Ok(result)
+        Ok((Some(hash), result))
     }
 }

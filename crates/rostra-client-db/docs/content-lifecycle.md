@@ -7,7 +7,13 @@ not invent or refresh them. Quota decisions constrain envelope replay before
 shared content can materialize, with signed deletion remaining stronger.
 Explicit checked quota transitions now dematerialize eligible remote
 SocialPosts or decline Missing admission and nominate their hashes atomically.
-No automatic victim selection, quota budgets or destructive worker is enabled.
+No production victim selection, quota budgets or destructive worker is enabled.
+A private test-installed driver integrates author-first/global pressure with
+reservation-aware low-water hysteresis and bounded quota-only collection.
+Schema31 pressure targets/frontiers are disposable runtime-incarnation advice,
+not sources for replay; every reduction still uses current writer-transaction
+checks and the checked quota transition. See the
+[database retention guide](../../../docs/payload-retention-database.md).
 Schema 28 adds checked accounting and a bounded quota-only collector; schema 29
 adds disposable quota-hash provenance and bounded nomination reconstruction.
 All databases require explicit accounting rebuild/readiness before totals or
@@ -204,10 +210,15 @@ Zero RC is necessary, but not sufficient, for quota garbage collection.
 - Retained local-authored and non-SocialPost headers guard a colliding nominated
   hash even after releasing RC. These guards are not current logical usage.
 - Physical removal, exact unique-byte decrement and queue consumption commit
-  atomically. Blocked nominations are consumed without removal; historical
+  atomically. Reference/history-blocked nominations are consumed without removal; historical
   quota-hash provenance allows a later final reference release to requeue only
   quota-owned work. `prune_quota_payload` is the explicit checked nominator,
-  not an automatic quota worker.
+  not itself an automatic quota worker. The private driver also enforces a strict
+  unique-store bytes-removed allowance: oversized nominations remain queued,
+  an exclusive cursor lets later small hashes proceed, and full-sweep exhaustion
+  waits before retry. Such bytes can remain indefinitely under an unchanged
+  insufficient allowance; neither byte accounting nor collection promises
+  physical-page reclamation.
 
 ## Detailed Flows
 

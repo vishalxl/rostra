@@ -6,7 +6,7 @@ use rostra_core::id::RostraId;
 use crate::{DbResult, WriteTransactionCtx};
 
 /// Constant-size advisory frontier for one bounded demand, not a victim list.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bincode::Encode, bincode::Decode)]
 pub(crate) struct DemandScan {
     /// Index mutation incarnation; even aborted mutations invalidate advice.
     pub(crate) revision: u64,

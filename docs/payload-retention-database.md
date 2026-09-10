@@ -200,7 +200,7 @@ Clock trust itself is not inferred or latched by the database.
 Pagination is a transaction-local snapshot, not a frozen victim list. Restart
 from the beginning after policy changes and when considering newly promoted grace
 rows. `retention_candidate_is_current` exposes advisory revalidation; its
-transactional counterpart is available for the later pressure operation and
+transactional counterpart is used by the internal pressure operation and
 requires matching promoted reverse ownership and both forward mappings.
 Neither API authorizes pruning or converts selection into a quota request.
 
@@ -211,14 +211,14 @@ caps, optional full-`RostraId` author overrides, and independent in-flight
 count/byte limits. Counts are bounded by 4096. Author caps are strict ceilings,
 not reserved shares; a ceiling above the database cap does not permit borrowing.
 There is no universal GiB default. `experimental_low_water` computes floor(90%)
-without overflow; this is an experimental starting point for future hysteresis,
-not a worker or an automatic deletion rule.
+without overflow; the private driver's experimental hysteresis uses it.
+The arithmetic alone is not a worker or an automatic deletion rule.
 
 **Production admission remains disabled by construction.** The shared ledger owns
 an empty optional configuration, and only disposable unit tests can populate it.
-There is no public setter, runtime config wiring, clock assertion, retention worker,
-automatic quota decision, collection or service activation. This safety
-checkpoint deliberately precedes complete client integration.
+There is no public setter, production runtime configuration, Client worker or
+service activation. The private test-installed driver described below deliberately
+precedes complete client integration.
 
 `PayloadAccount::disabled` creates an account-scoped ledger without filesystem
 work. `MultiClient::new_with_payload_accounts` installs explicitly listed handles
@@ -367,13 +367,14 @@ authors can proceed. Missing notifications register before peeking, with bounded
 empty-queue recovery polling. Ancestor/head sync leaves durable Missing retries
 instead of stopping its worker on temporary pressure.
 
-The later worker must supply ranking-aware temporary versus permanent
-admission, generation/pressure/reducer atomicity, distinct readiness dimensions,
-pressure policy, hysteresis, dry-run modeling and bounded yielding batches.
+Production activation still requires ranking-aware temporary versus permanent
+admission, DryRun and complete Client/ingress integration. The private driver below
+already composes generation/pressure/reducer atomicity, independent readiness,
+hysteresis and bounded yielding batches.
 The user-approved runtime clock assumption is to **trust the system clock**,
 including startup: no acknowledgement workflow or omission of otherwise known
 origins is required. Existing future/grace checks and protection for unknown legacy
-origins remain. This checkpoint does not implement or activate that worker.
+origins remain. No production worker is activated.
 
 ## Next checkpoint
 
@@ -383,7 +384,8 @@ The database includes **crate-private, non-activatable** demand registration,
 one-step preemption, and an internal maintenance/acquisition integration driver.
 Only disposable configured tests install that driver; production acquisition
 does not register demand and every production account remains Disabled. No
-startup mode/budget API, automatic collection or live reconfiguration exists.
+startup mode/budget API or live reconfiguration exists. The private test-installed
+driver also performs bounded general pressure and quota-only collection.
 
 A failed reservation can occur at `cap - 1` even though retained plus reserved
 usage is below the cap. A metadata-only `PayloadDemand` expresses intent to make
@@ -464,8 +466,8 @@ and owned acquisition buffers. Demand usage is an advisory live walltime snapsho
 not retained usage, unique store bytes, or physical allocation. This primitive
 does not collect nominated bytes and does not implement general over-cap pressure,
 90% low-water hysteresis, permanent ranked Missing rejection or DryRun.
-The internal integration below adds bounded scheduling and acquisition ownership
-while paused, not a complete enabled runtime. The full activation obligations in the
+The internal integration below adds bounded scheduling, general pressure/GC and
+acquisition ownership while paused, not a complete enabled runtime. The full activation obligations in the
 phase-3 handoff remain blockers for exposing enabled runtime modes.
 
 ### Non-activatable maintenance and acquisition integration
@@ -513,12 +515,90 @@ reservation and actual ingestion; independent single-operation maintenance;
 deduplication/cancellation/expiry with zero paused buffer charges; shared-store
 reuse; alternate-author progress behind an exhausted higher-ranked demand;
 bounded continuation past a previously promoted future prefix;
-and byte-blocked waiting with runner cancellation/exclusivity. General pressure
-and hysteresis, durable ranked rejection (including sustained refetch suppression),
-bounded-byte quota GC, DryRun, immutable enabled startup policy and the complete
-enabled bypass/load/body/race/overload audit remain activation blockers. No bytes
-are automatically collected here: unique stored bytes may remain after logical
+and byte-blocked waiting with runner cancellation/exclusivity. Durable ranked
+rejection (including sustained refetch suppression), DryRun, immutable enabled
+startup policy and the complete enabled bypass/load/body/race/overload audit remain
+activation blockers. General pressure and quota-only collection are integrated
+only in this non-activatable driver; unique stored bytes may remain after logical
 eviction, and no physical reclamation is claimed.
+
+### General pressure, hysteresis and quota collection
+
+The driver visits one accounted author and at most one candidate per pressure
+operation. Retained logical bytes **plus logical reservations** trigger pressure
+only above the applicable explicit high water. Once triggered, the scope remains
+active until that sum reaches `floor(90% * high_water)` or below; whole-event
+reductions can undershoot. Author pressure runs before global pressure. Global
+pressure is first evaluated after the author pass, as in the pure simulator.
+Protected or exhausted authors keep their author target but do not prevent later
+authors or global work. No event-sized victim list or author-sized RAM map exists.
+
+Schema **31** adds disposable `content_pressure_state` and
+`content_pressure_authors` tables. A checked monotonically increasing runtime
+incarnation owns the singleton global latch and per-author latch/frontier rows.
+Dropping a runner cursor does not lose the same runtime's targets. A fresh runtime
+does not inherit previous-config targets: it evaluates current startup pressure,
+and a one-author-at-a-time pass removes stale/inactive rows or replaces active
+ones. Accounting retains zero-usage author rows, so every old pressure row remains
+reachable for this bounded cleanup. Total replay discards both tables; neither
+table changes immutable origins or quota-decision authority.
+
+A complete author pass is advice tied to logical-usage/reservation and candidate
+mutation revisions, plus the earliest skipped author eligibility time. Lifecycle
+logical changes, logical lease addition/drop/completion/reattachment, index
+changes, reaching that eligibility time and backwards walltime invalidate the
+pass before global selection. Aborted mutations may conservatively invalidate
+advice. Revision saturation fails shut rather than reusing a sweep. Actual
+duplicate no-op delivery and buffer-only churn do not invalidate logical advice.
+Invalidation waits before restarting, preventing mutation storms from spinning;
+finite stable inputs and adequate operation allowances permit progress. Sustained
+relevant mutation can delay a complete author sweep; this is not an unconditional
+liveness guarantee under arbitrary writes.
+
+The mutation-to-sweep invalidation contract is:
+
+| Mutation | Invalidation owner |
+| --- | --- |
+| Header/contribution creation or changed retained logical bytes | before/after accounting owner, inside the writer |
+| Logical lease addition | reservation insertion, inside the writer |
+| Logical lease cancellation/drop | owner Drop under demand arbitration and state |
+| Logical lease completion | after-commit removal under demand arbitration and state |
+| Account reattachment | logical-ledger reset under both locks |
+| Candidate membership or promotion | existing index revision |
+| Duplicate no-op delivery; buffer-only acquire/drop | no logical revision change |
+
+`runtime_pressure_revision_mutation_matrix_and_saturation` checks logical
+mutations, rollback invalidation, lease lifecycle/reattachment, no-op negatives
+and saturation-to-error without pruning.
+
+The pressure step samples trusted walltime after taking the writer and demand
+arbitration locks. In that same transaction it checks full generation, config
+incarnation, accounting/due-prefix readiness, live demand barriers, current
+reservations, scope pressure, exact candidate ownership and eligibility, then
+calls the checked Processed quota reducer. A fitting live demand or the exact
+active partial-plan event/lease prevents general eviction from spending room
+already freed for acquisition. Unrelated nonfitting or infeasible intent does not
+block general pressure. Arbitration remains held through the synchronous reducer;
+the ordinary state lock is released before reducers reacquire it. Unknown legacy,
+local, state-bearing, future/grace and true-minimum byte protections remain intact.
+
+The seven-phase scheduler shares one operation allowance and cooperative deadline
+across accounting, nominations, index, grace, demand, pressure and collection.
+Demand and general eviction share a strict logical-byte allowance. Collection
+has a separate strict allowance measuring **unique content-store value bytes
+removed**, not logical bytes, decoded bytes, allocator memory or physical pages.
+One DB operation and its validation/reducer are indivisible; no hard walltime,
+whole-process memory or physical-reclaim bound is claimed.
+
+Collection visits one quota nomination per operation using an exclusive hash
+cursor. Oversized values remain nominated while later smaller hashes can progress;
+there is no oversized-operation exception. A completed sweep sleeps before retry,
+so retained oversized nominations cannot pin the frontier or cause a busy loop.
+Earlier concurrent insertions and final-reference-release requeues are revisited
+on the next bounded recovery sweep. An unchanged insufficient byte allowance can
+leave oversized values unreclaimed indefinitely. The existing collector's checked
+RC, historical local/non-social protection and quota-only provenance rules remain;
+unrelated signed-delete, invalid and legacy garbage is not newly nominated.
 
 Remaining checkpoints must add runtime configuration and retention-worker integration, including
 the unloaded-account HTTP policy boundary above, before any activation path.

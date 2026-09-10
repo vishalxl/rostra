@@ -173,6 +173,16 @@ Ready indexes provide bounded advisory selection, not pressure or pruning
 authorization. Caller-asserted clock trust and current origin/grace eligibility
 are rechecked even for previously promoted candidates.
 
+Schema31 adds disposable runtime-incarnation pressure state. A private,
+test-installed driver performs bounded author-first/global hysteresis over
+retained-plus-reserved logical bytes, atomically composing current pressure and
+candidate checks with the quota reducer. Disk-backed author targets avoid an
+author-sized RAM map. Quota-only collection uses separate strict unique-store-byte
+and bounded cursor scheduling; neither operation promises physical reclamation.
+Production construction remains Disabled-only, with no Client runner or opt-in.
+See the [database retention guide](../../../docs/payload-retention-database.md)
+for the derived-state lifecycle and remaining activation boundary.
+
 Replay trusts that retained rows crossed the authentication boundary during
 normal ingestion; it is not a cryptographic integrity scrub. Typed decoding and
 the payload hash-and-length check required to construct verified content still

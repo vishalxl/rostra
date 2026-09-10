@@ -116,6 +116,7 @@ impl Database {
         state.database_owner = Arc::downgrade(&owner);
         // Logical leases belong to the previous database attachment. Provisional
         // and outstanding buffer bytes remain charged until their owners drop.
+        account.ledger.invalidate_pressure();
         state.events.clear();
         demands.clear();
         self.payload_account_owner = Some(owner);

@@ -17,9 +17,9 @@ The database also has a production-disabled shared admission foundation with
 explicit logical ceilings and separate acquisition-buffer leases. Client reads,
 shared-store reuse, local serialization and raw signed HTTP parsing now use those
 leases; no production activation API or production destructive worker exists.
-An internal test-installed driver now connects bounded demand preemption and
-maintenance to buffer-free acquisition waiting; it is not a complete runtime
-or an enabled deployment option.
+An internal test-installed driver now connects bounded demand preemption,
+author-first/global hysteresis, quota-only collection and maintenance to buffer-free
+acquisition waiting; it is not a complete runtime or an enabled deployment option.
 
 ## Version 1 arithmetic and encoding
 
@@ -87,8 +87,8 @@ empirically selected deployment defaults.
 - Runtime opt-in/dry-run settings and worker integration are absent.
   Author-specific ceilings and reservation primitives now live in the disabled
   database foundation, not this pure policy module. The executable pressure path
-  here remains a pure simulator with
-  explicit budgets. No production GiB quota is supplied.
+   includes a non-activatable database driver alongside the pure simulator, both
+   with explicit budgets. No production GiB quota is supplied.
 
 ## Reproducible simulation
 

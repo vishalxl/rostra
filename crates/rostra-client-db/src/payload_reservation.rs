@@ -50,6 +50,9 @@ pub struct PayloadAdmissionUsage {
 /// database's writer lock.
 #[derive(Debug, Default)]
 pub(crate) struct AdmissionLedger {
+    /// Invalidates author sweeps on all logical mutations, including Drop.
+    /// Saturation disables general pressure rather than reusing old authority.
+    pub(crate) pressure_revision: std::sync::atomic::AtomicU64,
     /// Conservative process-local invalidation of demand scan frontiers.
     pub(crate) retention_revision: std::sync::atomic::AtomicU64,
     /// Arbitration for demand cancellation and logical lease release. Lock
@@ -61,6 +64,18 @@ pub(crate) struct AdmissionLedger {
     /// Lossy capacity/configuration/lifecycle wakeup; callers must recheck
     /// state.
     pub(crate) changed: Notify,
+}
+
+impl AdmissionLedger {
+    /// Invalidate completed author sweeps before changing logical usage or
+    /// leases.
+    pub(crate) fn invalidate_pressure(&self) {
+        let _ = self.pressure_revision.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |revision| Some(revision.saturating_add(1)),
+        );
+    }
 }
 
 /// Synchronous counters shared by RAII leases and serialized DB transactions.
@@ -125,6 +140,7 @@ impl Drop for ReservationOwner {
             .get(&self.event)
             .is_some_and(|e| e.id == self.id)
         {
+            self.ledger.invalidate_pressure();
             state.events.remove(&self.event);
         }
         drop(state);

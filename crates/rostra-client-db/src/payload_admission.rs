@@ -129,6 +129,7 @@ impl Database {
         }
         let id = state.next_id.checked_add(1).ok_or(DbError::Overflow)?;
         state.next_id = id;
+        self.payload_admission.invalidate_pressure();
         state
             .events
             .insert(event.event_id, ReservedEvent { author, bytes, id });
@@ -439,12 +440,12 @@ impl Database {
         tx.on_commit(move || {
             let mut demands = ledger.demands.lock().unwrap();
             demands.remove_completed(id);
-            ledger
-                .state
-                .lock()
-                .unwrap()
-                .events
-                .retain(|event, _| event.to_short() != id);
+            let mut state = ledger.state.lock().unwrap();
+            let previous = state.events.len();
+            state.events.retain(|event, _| event.to_short() != id);
+            if previous != state.events.len() {
+                ledger.invalidate_pressure();
+            }
             ledger.changed.notify_waiters();
         });
         Ok(())

@@ -13,6 +13,7 @@ use rostra_core::Timestamp;
 use rostra_core::event::VerifiedEvent;
 
 use crate::payload_demand::{DemandRegistration, DemandStep, PayloadDemand};
+use crate::payload_pressure::{PressureCursor, PressureRequest, PressureStep, PressureWorker};
 use crate::{
     Database, DbError, DbResult, PayloadReservationOutcome, RetentionClock, RetentionGeneration,
 };
@@ -24,6 +25,8 @@ pub(crate) struct RuntimeLimits {
     pub(crate) operations: NonZeroUsize,
     /// Maximum logical eviction bytes per turn; an oversized minimum blocks.
     pub(crate) bytes: u64,
+    /// Maximum unique content-store bytes removed per turn, not physical pages.
+    pub(crate) gc_bytes: u64,
     /// Cooperative time allowance; one DB transaction is indivisible.
     pub(crate) time: Duration,
 }
@@ -39,17 +42,75 @@ pub(crate) struct PayloadRuntime {
     limits: RuntimeLimits,
     /// A borrowed RAII owner prevents overlapping runners, including on panic.
     running: AtomicBool,
+    /// Incarnation binding survives cancellation of a borrowed runner.
+    pressure: PressureWorker,
 }
 
 /// Scheduler continuation only; no state here authorizes pruning.
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeCursor {
     /// Round-robin next subsystem, preserved even with a one-operation turn.
-    phase: usize,
+    phase: RuntimePhase,
     /// Independent readiness for accounting, nomination, index and due prefix.
-    ready: [bool; 4],
+    ready: Readiness,
     /// Fixed promotion target until that prefix is drained.
     drain_at: Option<Timestamp>,
+    /// Bounded general-pressure discovery and selection.
+    pressure: PressureCursor,
+    /// Pressure waits until the next recovery cycle after blockage/exhaustion.
+    pressure_waiting: bool,
+    /// Exclusive quota nomination frontier; oversized hashes remain queued.
+    gc_after: Option<rostra_core::ContentHash>,
+    /// A complete quota queue pass waits before retrying skipped nominations.
+    gc_done: bool,
+    /// Progress survives a cycle split across one-operation turns.
+    cycle_progress: bool,
+}
+
+/// Explicit round-robin order, independent of the per-turn operation allowance.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum RuntimePhase {
+    #[default]
+    Accounting,
+    Nominations,
+    Index,
+    Grace,
+    Demand,
+    Pressure,
+    Collection,
+}
+
+impl RuntimePhase {
+    fn next(self) -> Self {
+        match self {
+            Self::Accounting => Self::Nominations,
+            Self::Nominations => Self::Index,
+            Self::Index => Self::Grace,
+            Self::Grace => Self::Demand,
+            Self::Demand => Self::Pressure,
+            Self::Pressure => Self::Collection,
+            Self::Collection => Self::Accounting,
+        }
+    }
+}
+
+/// Independent readiness dimensions; none alone grants selection authority.
+#[derive(Debug, Default)]
+struct Readiness {
+    /// Logical and hash counters are complete.
+    accounting: bool,
+    /// Historical quota nominations have been recovered.
+    nominations: bool,
+    /// The full policy/holder index is built.
+    index: bool,
+    /// The fixed-time grace prefix has drained.
+    grace: bool,
+}
+
+impl Readiness {
+    fn all(&self) -> bool {
+        self.accounting && self.nominations && self.index && self.grace
+    }
 }
 
 /// Advisory scheduling result, not durable pressure or candidate authority.
@@ -81,6 +142,7 @@ impl PayloadRuntime {
     ) -> Option<Self> {
         if limits.operations.get() > crate::PAYLOAD_MAINTENANCE_MAX
             || limits.bytes == 0
+            || limits.gc_bytes == 0
             || limits.time.is_zero()
             || Instant::now().checked_add(limits.time).is_none()
         {
@@ -91,6 +153,7 @@ impl PayloadRuntime {
             config,
             limits,
             running: AtomicBool::new(false),
+            pressure: PressureWorker::default(),
         })
     }
 
@@ -210,6 +273,7 @@ impl PayloadRuntime {
             .ok_or(DbError::Overflow)?;
         let one = NonZeroUsize::new(1).expect("one is nonzero");
         let mut bytes = self.limits.bytes;
+        let mut gc_bytes = self.limits.gc_bytes;
         let mut continued = false;
         let mut worked = false;
         for _ in 0..self.limits.operations.get() {
@@ -218,11 +282,16 @@ impl PayloadRuntime {
             }
             worked = true;
             let phase = cursor.phase;
-            cursor.phase = (phase + 1) % 5;
+            cursor.phase = phase.next();
             match phase {
-                0 => cursor.ready[0] = db.rebuild_payload_accounting(one).await?.ready,
-                1 => cursor.ready[1] = db.rebuild_quota_payload_nominations(one).await?.ready,
-                2 => {
+                RuntimePhase::Accounting => {
+                    cursor.ready.accounting = db.rebuild_payload_accounting(one).await?.ready
+                }
+                RuntimePhase::Nominations => {
+                    cursor.ready.nominations =
+                        db.rebuild_quota_payload_nominations(one).await?.ready
+                }
+                RuntimePhase::Index => {
                     let progress = db
                         .rebuild_retention_index(one)
                         .await?
@@ -230,9 +299,9 @@ impl PayloadRuntime {
                     if progress.generation != self.generation {
                         return Err(DbError::PayloadAccountingInvariant);
                     }
-                    cursor.ready[2] = progress.ready;
+                    cursor.ready.index = progress.ready;
                 }
-                3 => {
+                RuntimePhase::Grace => {
                     let now = *cursor.drain_at.get_or_insert_with(Timestamp::now);
                     let progress = db
                         .promote_retention_grace(RetentionClock::Trusted(now), one)
@@ -241,12 +310,12 @@ impl PayloadRuntime {
                     if progress.generation != self.generation {
                         return Err(DbError::PayloadAccountingInvariant);
                     }
-                    cursor.ready[3] = progress.ready && progress.visited == 0;
-                    if cursor.ready[3] {
+                    cursor.ready.grace = progress.ready && progress.visited == 0;
+                    if cursor.ready.grace {
                         cursor.drain_at = None;
                     }
                 }
-                _ if cursor.ready.iter().all(|ready| *ready) => {
+                RuntimePhase::Demand if cursor.ready.all() => {
                     match db
                         .preempt_payload_demand(self.generation, one, bytes, deadline)
                         .await?
@@ -261,7 +330,7 @@ impl PayloadRuntime {
                         DemandStep::NotReady => {
                             // A newer grace deadline can become due after a fixed
                             // prefix drain. Never reuse that older time as authority.
-                            cursor.ready = [false; 4];
+                            cursor.ready = Readiness::default();
                         }
                         DemandStep::Idle
                         | DemandStep::Fits(_)
@@ -269,19 +338,76 @@ impl PayloadRuntime {
                         | DemandStep::Bounded => {}
                     }
                 }
+                RuntimePhase::Pressure if cursor.ready.all() && !cursor.pressure_waiting => {
+                    match self
+                        .pressure
+                        .step(
+                            db,
+                            PressureRequest {
+                                generation: self.generation,
+                                config: &self.config,
+                                max_bytes: bytes,
+                                deadline,
+                            },
+                            &mut cursor.pressure,
+                        )
+                        .await?
+                    {
+                        PressureStep::Continue => continued = true,
+                        PressureStep::Pruned {
+                            logical_released_bytes: released,
+                        } => {
+                            bytes = bytes.checked_sub(released).ok_or(DbError::Overflow)?;
+                            continued = true;
+                        }
+                        PressureStep::Wait => cursor.pressure_waiting = true,
+                        PressureStep::NotReady => cursor.ready = Readiness::default(),
+                    }
+                }
+                RuntimePhase::Collection
+                    if cursor.ready.accounting && cursor.ready.nominations && !cursor.gc_done =>
+                {
+                    let (after, progress) = db
+                        .collect_quota_payload_step(cursor.gc_after, gc_bytes)
+                        .await?;
+                    gc_bytes = gc_bytes
+                        .checked_sub(progress.removed_bytes)
+                        .ok_or(DbError::Overflow)?;
+                    cursor.gc_after = after;
+                    cursor.gc_done = after.is_none();
+                    continued |= !cursor.gc_done;
+                }
                 _ => {}
             }
-            if cursor.phase == 0 && !continued && cursor.ready.iter().all(|ready| *ready) {
+            cursor.cycle_progress |= continued;
+            if cursor.phase == RuntimePhase::Accounting {
+                continued |= cursor.cycle_progress;
+                cursor.cycle_progress = false;
+            }
+            if cursor.phase == RuntimePhase::Accounting
+                && !continued
+                && cursor.ready.all()
+                && cursor.pressure_waiting
+                && cursor.gc_done
+            {
                 break;
             }
         }
-        Ok(
-            if worked && (continued || cursor.phase != 0 || cursor.ready.iter().any(|ready| !ready))
-            {
-                RuntimeTurn::Continue
-            } else {
-                RuntimeTurn::Wait
-            },
-        )
+        let outcome = if worked
+            && (continued
+                || cursor.phase != RuntimePhase::Accounting
+                || !cursor.ready.all()
+                || !cursor.pressure_waiting
+                || !cursor.gc_done)
+        {
+            RuntimeTurn::Continue
+        } else {
+            RuntimeTurn::Wait
+        };
+        if outcome == RuntimeTurn::Wait {
+            cursor.pressure_waiting = false;
+            cursor.gc_done = false;
+        }
+        Ok(outcome)
     }
 }

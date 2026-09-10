@@ -241,6 +241,14 @@ remain external responsibilities. Advisory selection does not authorize eviction
 active-generation, eligibility and pressure rechecks must compose with the checked
 quota transition in one write transaction.
 
+The non-activatable internal driver composes those checks under writer and demand
+cancellation arbitration, trusting the system clock including startup. General
+author-first/global pressure counts logical reservations and preserves triggered
+low-water targets across bounded turns. Fits and exact partially serviced demand
+ownership prevent general pressure from spending acquisition-freed room twice.
+Targets and candidate cursors are disposable, never authority to replay a quota
+decision. Every production account remains Disabled-only.
+
 ## Deduplication and retrieval
 
 The shared admission foundation is disabled in production: no configuration

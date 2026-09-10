@@ -112,10 +112,35 @@ unattainable byte allowances.
 
 The runner spawns nothing; its caller must own and join its future. Unique RAII
 runner ownership releases on cancellation/panic, after any synchronous transaction
-finishes. Production Client task integration, enabled ingress coverage, general
-pressure/hysteresis, permanent ranked rejection, bounded-byte GC and DryRun remain
-required before any startup opt-in. The private integration does not collect bytes
-or imply a physical storage limit.
+finishes. Production Client task integration, enabled ingress coverage, permanent
+ranked rejection and DryRun remain required before any startup opt-in.
+
+The private driver includes general author-first/global pressure on retained plus
+logically reserved bytes, with experimental floor90% low-water hysteresis.
+Schema31 stores disposable epoch-scoped author targets/frontiers and a global
+target, not replay authority. A new runtime ignores previous-incarnation targets
+and cleans stale rows during bounded author discovery. A completed author sweep
+cannot authorize global pruning after logical usage/lease or candidate mutation,
+an author eligibility deadline, or backwards walltime. Saturated mutation revisions
+fail shut; aborted mutations may conservatively invalidate advice. Invalidation
+waits rather than spinning under churn; arbitrary sustained writes can delay a
+complete sweep.
+
+General reduction uses the same writer → demand arbitration → state lock order,
+fresh clock, current generation/config/accounting/reservation/eligibility checks
+and checked reducer. Fits and exact active event/lease partial-plan barriers
+prevent spending acquisition-freed room twice; unrelated nonfitting intent does
+not suppress general relief. State is dropped before the reducer reacquires it,
+while arbitration excludes cancellation/logical release through reduction.
+
+Quota-only collection shares operation/time bounds and has a separate strict
+unique-store-value **bytes removed** allowance. An exclusive hash cursor retains
+oversized nominations, visits later smaller work, then waits after a full sweep
+before retrying. RC/history/provenance checks remain transactional. Protected or
+oversized values may remain forever; unrelated legacy/signed-delete garbage is
+not newly nominated. Neither logical eviction nor collection claims physical-page
+reclamation, whole-process RAM bounds, or hard time bounds for indivisible DB
+operations. No production account can install this runtime.
 
 The buffer limit is declared capacity, not a whole-process memory measurement.
 Existing APIs' already-allocated external content, transport/codec working memory,
@@ -142,8 +167,8 @@ P2P callers still own their allocation policy; supplying a dummy guard is not a
 supported client admission path. Adding any acquisition path or changing buffer
 representations is a capacity-audit trigger.
 
-Production activation still requires ranking-aware admission, transactional
-pressure/worker integration, bounded hysteresis/readiness work, dry-run modeling,
+Production activation still requires complete ranking-aware admission and Client
+worker integration, dry-run modeling,
 and independent review of the complete enabled runtime. Protecting local/state/
 unknown content from eviction does not exempt it from admission caps. Runtime
 clock policy trusts the system wall clock, per the operator decision; unknown

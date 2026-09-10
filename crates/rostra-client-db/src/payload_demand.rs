@@ -125,7 +125,7 @@ pub(crate) enum DemandStep {
 
 impl Database {
     /// Rederive a safe Missing rank from durable verified header/origins.
-    fn demand_event_tx(
+    pub(crate) fn demand_event_tx(
         &self,
         tx: &WriteTransactionCtx,
         id: EventId,

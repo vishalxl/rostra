@@ -26,6 +26,8 @@ mod payload_demand_scan;
 mod payload_demand_state;
 #[cfg(test)]
 mod payload_demand_tests;
+#[allow(dead_code)]
+mod payload_pressure;
 mod payload_reservation;
 #[allow(dead_code)]
 mod payload_runtime;

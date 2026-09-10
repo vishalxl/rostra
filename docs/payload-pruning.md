@@ -3,8 +3,11 @@
 **Status: proposal, not an adopted specification.** The pure experimental
 ranking policy, in-memory simulator, and durable database retention source
 metadata are implemented; see the [implementation guide](payload-retention-policy.md)
-and [database checkpoint](payload-retention-database.md). No runtime pruning,
-admission or fetching integration is enabled.
+and [database checkpoint](payload-retention-database.md). Admission/fetch ownership
+and a private, test-installed driver now integrate bounded demand/general pressure,
+hysteresis and quota-only collection. No production runtime pruning or enabled
+quota configuration is available; durable ranked rejection, DryRun and complete
+Client/startup/ingress integration remain unfinished.
 
 ## Recommendation
 
@@ -59,7 +62,9 @@ Sources: [content lifecycle specification](../crates/rostra-client-db/specs/SPEC
 and [client construction](../crates/rostra-client/src/client.rs).
 These describe current behavior; the sections below propose changes.
 
-There is no general background pruning/GC worker or global usage counter yet.
+Disposable global logical/unique-byte accounting is implemented. No production
+background pruning/GC worker is enabled; only the private test-installed driver
+performs automatic pressure relief and quota-only collection.
 The existing `prune_event_content_tx` helper is used for oversized payloads at
 initial envelope ingestion, before ordinary projection processing. Reusing it
 for already processed payloads requires the additional lifecycle work below.
