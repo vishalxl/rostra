@@ -211,6 +211,19 @@ prove combined worker liveness or complete ingress coverage. Enabled startup,
 Client lifecycle and real HTTP fixtures supplement the race/overload suites;
 stable-input conditional liveness and declared acquisition scope remain limits.
 
+Runtime progress is phase-local: reset the phase result before every phase and
+accumulate only fresh work in the current seven-phase cycle. Never feed completed
+cycle progress back into `cycle_progress` across cooperative deadline splits.
+That can prevent the idle `Wait` boundary indefinitely, leaving pressure and GC
+waiting flags unreconciled after a successful prune invalidates advisory state.
+`Wait` resets those recovery flags; it is not proof that a pressure target was
+met. Scheduler changes must preserve
+`runtime_multi_cycle_turns_do_not_recycle_old_progress`, which requires target
+attainment, an actual wait and GC completion across multi-cycle turns. Revisit
+the [disposable disk evaluation](../../docs/payload-retention-evaluation.md#preserved-pre-fix-failures-and-diagnosis)
+when changing phase scheduling or time/operation budgeting: tiny fixed-turn
+fixtures alone missed a stable-input disk plateau under variable deadline splits.
+
 Schema 28 adds disposable global logical/unique-byte accounting and a quota-only
 physical collector. All databases start unready; totals remain unavailable and
 collection fails closed until an explicit bounded rebuild finishes. The rebuild

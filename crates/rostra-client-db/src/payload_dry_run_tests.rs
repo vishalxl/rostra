@@ -360,6 +360,14 @@ async fn dry_run_whole_snapshot_is_nonmutating_and_never_fresh_work() -> anyhow:
     assert_eq!(expected.status, DryRunStatus::Complete);
     let projection = expected.projection.as_ref().unwrap();
     assert_eq!(projection.victims.len(), 2);
+    assert_eq!(projection.victim_details.len(), projection.victims.len());
+    for (detail, (event, _)) in projection.victim_details.iter().zip(&projection.victims) {
+        assert_eq!(detail.event, *event);
+        assert_eq!(detail.author, author.id());
+        assert_eq!(detail.bytes, u64::from(first.event.content_len()));
+        assert!(detail.age_seconds > 0);
+        assert_eq!(detail.distance_credit_ticks, 0);
+    }
     assert_eq!(
         projection.logical_victim_bytes,
         u64::from(first.event.content_len()) * 2

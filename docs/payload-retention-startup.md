@@ -148,6 +148,16 @@ These boundaries must be evaluated together, not as a sum of checkpoint reviews:
    demand/pressure/GC race, backfill, stale-policy, overload and refetch suites,
    not replace their semantic review.
 
+Authenticated, non-read-only Settings → Event Explorer links to the read-only
+`/settings/retention` operator page. It shows the session's storing account only,
+immutable mode, separately sampled accounting/guarded usage and the last bounded
+DryRun forecast. GET never advances maintenance or expires demand ownership.
+Pending intent can include entries awaiting routine expiry. The page uses sensitive
+no-store headers and needs no JavaScript; complete victims explain logical size,
+age, quota reason and capped distance age credit. Unique/physical savings and GC
+backlog are unavailable rather than estimated. Limits or unready accounting can
+leave reports incomplete forever.
+
 Runtime errors fail the worker and log an error rather than mutating under stale
 authority. Admission remains enforcing; this can leave progress paused pending
 operator diagnosis. Diagnostics are available through `get_payload_usage()`,
@@ -161,10 +171,12 @@ from durable quota pruning, other local pruning, signed deletion, and invalid
 content. Payload reads deduplicate existing candidates and rank plausible holders
 by full event/full holder distance after preferences supported by existing
 reachability facts. They add no discovery, inventory RPC, restore path, or
-transport-key coordinate. Broad production-shaped operational experiments,
-retention diversity, fetch churn, availability, operator presentation and policy
-tuning remain phase5. The tiny disposable correctness fixtures are not operational
-recommendations. No live data, service restart, configuration activation,
+transport-key coordinate. A [disposable evaluation](payload-retention-evaluation.md)
+compares synthetic retention diversity, availability, hypothetical retry suppression,
+and actual indexed DB maintenance cost. It documents unmeasured real-network churn,
+large-scale/concurrent performance and physical write amplification; none of its
+synthetic parameters are operational recommendations. Policy tuning and real-world
+rollout evidence remain separate. No live data, service restart, configuration activation,
 deployment or publication is part of this work.
 
 The Fetch control remains an ordinary POST form: no-JavaScript requests return

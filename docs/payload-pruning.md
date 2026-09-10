@@ -558,6 +558,10 @@ matter more. Keep the fallback and measure hit rate.
 
 ## 11. Evaluation before enabling destructive mode
 
+The [disposable evaluation and operator report](payload-retention-evaluation.md)
+provide reproducible synthetic comparisons, disk-backed indexed workload evidence,
+and a correctness/gap audit. They do not recommend activation or production quotas.
+
 Build a deterministic simulator before tuning production values. Compare:
 
 - Oldest-first.

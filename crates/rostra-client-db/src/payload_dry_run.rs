@@ -60,6 +60,8 @@ pub struct DryRunProjection {
     pub author_high_waters: BTreeMap<RostraId, u64>,
     /// Logical victims in model order; never newly pruned events.
     pub victims: Vec<(EventId, QuotaPruneReason)>,
+    /// Same-snapshot context in victim order, bounded by the event allowance.
+    pub victim_details: Vec<DryRunVictim>,
     /// Projected logical bytes removed, charging shared hashes per event.
     pub logical_victim_bytes: u64,
     /// Projected retained bytes after author-first/global 90% targets.
@@ -70,6 +72,22 @@ pub struct DryRunProjection {
     pub unmet_authors: usize,
     /// Whether a triggered global low-water target remains unmet.
     pub unmet_global: bool,
+}
+
+/// Header-only explanation of an eligible projected victim; never reads
+/// payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DryRunVictim {
+    /// Full event identity.
+    pub event: EventId,
+    /// Author whose logical usage is charged.
+    pub author: RostraId,
+    /// Signed logical length, not unique or physical savings.
+    pub bytes: u64,
+    /// Age since immutable effective origin at the report's trusted walltime.
+    pub age_seconds: u64,
+    /// Exact capped logarithmic distance age credit in Q32 seconds.
+    pub distance_credit_ticks: i128,
 }
 
 /// One immutable as-of observation, not a current-state or reclamation promise.
@@ -158,6 +176,8 @@ struct Candidate {
     bytes: u64,
     /// Prevents selecting an author victim again in the global pass.
     removed: bool,
+    /// Same-read explanatory metadata; no additional database lookup.
+    detail: DryRunVictim,
 }
 
 impl DryRun {
@@ -368,6 +388,14 @@ impl DryRun {
                     author: event.author(),
                     bytes,
                     removed: false,
+                    detail: DryRunVictim {
+                        event: event.event_id,
+                        author: event.author(),
+                        bytes,
+                        age_seconds: now.secs_since(origin.effective_timestamp),
+                        distance_credit_ticks: policy
+                            .distance_credit_ticks(event.event_id, generation.holder()),
+                    },
                 });
             }
             if total != usage.logical_current_bytes {
@@ -394,6 +422,7 @@ impl DryRun {
                         .sum::<u64>(),
                 unmet_authors: 0,
                 unmet_global: false,
+                victim_details: Vec::new(),
             };
             for reason in [QuotaPruneReason::AuthorQuota, QuotaPruneReason::GlobalQuota] {
                 let global_triggered =
@@ -426,6 +455,7 @@ impl DryRun {
                     projection.logical_remaining_bytes -= candidate.bytes;
                     projection.logical_victim_bytes += candidate.bytes;
                     projection.victims.push((candidate.event, reason));
+                    projection.victim_details.push(candidate.detail.clone());
                 }
                 if reason == QuotaPruneReason::GlobalQuota {
                     projection.unmet_global = global_triggered

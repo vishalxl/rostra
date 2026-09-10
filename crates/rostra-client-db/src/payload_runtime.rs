@@ -334,6 +334,10 @@ impl PayloadRuntime {
             if Instant::now() >= deadline {
                 break;
             }
+            // Only fresh phase work enters the cycle accumulator. Reusing a
+            // completed cycle's progress can prevent idle recovery indefinitely
+            // when cooperative deadlines repeatedly split later cycles.
+            continued = false;
             worked = true;
             let phase = cursor.phase;
             cursor.phase = phase.next();
@@ -473,6 +477,15 @@ impl PayloadRuntime {
 }
 
 impl Database {
+    /// Return the immutable startup mode without advancing maintenance.
+    pub fn payload_retention_mode(&self) -> &'static str {
+        match &self.payload_runtime {
+            None => "Disabled",
+            Some(runtime) if runtime.dry_run.is_some() => "DryRun",
+            Some(_) => "Enforce",
+        }
+    }
+
     /// Whether immutable startup configuration requires a retained worker.
     pub fn has_payload_retention_runtime(&self) -> bool {
         self.payload_runtime.is_some()

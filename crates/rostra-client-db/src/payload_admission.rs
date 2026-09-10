@@ -216,6 +216,25 @@ impl Database {
         }
     }
 
+    /// Observe guarded counters without expiring demands or changing ownership.
+    ///
+    /// Pending intent includes entries awaiting routine expiry. This bounded
+    /// observation is separate from persisted accounting and grants no
+    /// authority.
+    pub fn payload_admission_observation(&self) -> PayloadAdmissionUsage {
+        let demands = self.payload_admission.demands.lock().unwrap();
+        let (pending_demands, pending_demand_bytes) = demands.usage();
+        let state = self.payload_admission.state.lock().unwrap();
+        PayloadAdmissionUsage {
+            acquisitions: state.events.len(),
+            logical_reserved_bytes: state.events.values().map(|e| e.bytes).sum(),
+            pending_demands,
+            pending_demand_bytes,
+            buffers: state.buffers,
+            buffer_bytes: state.buffer_bytes,
+        }
+    }
+
     /// Wait for a lossy capacity/lifecycle signal; register before checking
     /// work.
     ///

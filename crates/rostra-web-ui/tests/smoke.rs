@@ -33,6 +33,43 @@ fn assert_link_precedes(document: &Html, first: &str, second: &str) {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn retention_diagnostics_are_authenticated_read_only_and_session_scoped() {
+    let server = TestServer::start().await;
+    let anonymous = server.driver();
+    assert!(
+        anonymous
+            .get("/settings/retention")
+            .await
+            .status()
+            .is_redirection()
+    );
+    let rw = server.driver();
+    let (id, _) = rw.login_new_identity().await;
+    let db = server.client(id).await;
+    let before = db.db().get_payload_usage().await.unwrap();
+    let response = rw.get("/settings/retention?id=untrusted").await;
+    assert!(response.status().is_success());
+    assert!(
+        response.headers()[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("no-store")
+    );
+    let page = response.text().await.unwrap();
+    assert!(page.contains("<html"));
+    assert!(page.contains(&id.to_string()));
+    assert!(page.contains("Startup mode: Disabled"));
+    assert!(page.contains("No DryRun report available"));
+    assert!(page.contains("Physical database size and reclamation: unknown"));
+    assert_eq!(before, db.db().get_payload_usage().await.unwrap());
+    let ro = server.driver();
+    ro.login_readonly(id).await;
+    assert!(!ro.get("/settings/retention").await.status().is_success());
+    drop(db);
+    server.shutdown().await;
+}
+
 fn assert_untrusted_media_headers(response: &reqwest::Response, content_type: &str) {
     assert_eq!(
         response.headers().get(header::CONTENT_TYPE).unwrap(),

@@ -193,6 +193,47 @@ async fn settle(db: &Database) -> anyhow::Result<RuntimeCursor> {
     panic!("bounded fixture maintenance failed to settle");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_multi_cycle_turns_do_not_recycle_old_progress() -> anyhow::Result<()> {
+    let mut db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    while !db
+        .rebuild_payload_accounting(NonZeroUsize::new(64).unwrap())
+        .await?
+        .ready
+    {}
+    let author = RostraIdSecretKey::generate();
+    for n in 1..=10 {
+        db.try_process_event_with_content(&post(author, n, &format!("post {n}")))
+            .await?;
+    }
+    let before = db.get_payload_usage().await?.unwrap();
+    let high = before.logical_current_bytes / 2;
+    install(
+        &mut db,
+        high,
+        before.logical_current_bytes,
+        64,
+        before.logical_current_bytes,
+    )
+    .await?;
+    let runtime = db.payload_runtime.as_ref().unwrap();
+    let mut cursor = RuntimeCursor::default();
+    for _ in 0..10 {
+        let turn = runtime.turn(&db, &mut cursor).await?;
+        let usage = db.get_payload_usage().await?.unwrap();
+        if turn == RuntimeTurn::Wait
+            && usage.logical_current_bytes <= high * 9 / 10
+            && usage.unique_stored_bytes == usage.logical_current_bytes
+        {
+            return Ok(());
+        }
+    }
+    panic!(
+        "stable input did not progress: {cursor:?}, usage={:?}",
+        db.get_payload_usage().await?
+    );
+}
+
 async fn prepare_with_worker(
     db: &Database,
     event: &VerifiedEvent,

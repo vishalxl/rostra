@@ -282,3 +282,26 @@ fn key_encoding_orders_signed_time_and_full_id_ties() {
     assert!(policy.grace_elapsed(Some(Timestamp::MAX), Timestamp::MAX));
     assert!(!policy.grace_elapsed(None, Timestamp::MAX));
 }
+
+#[test]
+fn diagnostic_distance_credit_is_exact_key_contribution() {
+    for beta in [0, 65536, u32::MAX] {
+        for cap in [1, 8, 64, u32::MAX] {
+            let policy = RetentionPolicy::new(1024, u32::MAX, 32768, beta, cap, 0).unwrap();
+            let baseline = RetentionPolicy::new(1024, u32::MAX, 32768, 0, cap, 0).unwrap();
+            for n in 0..32 {
+                let credit = policy.distance_credit_ticks(event(n), holder(0));
+                assert!(credit >= 0);
+                assert_eq!(
+                    policy
+                        .key(event(n), holder(0), 100_000, Timestamp::MAX)
+                        .ticks()
+                        - baseline
+                            .key(event(n), holder(0), 100_000, Timestamp::MAX)
+                            .ticks(),
+                    credit
+                );
+            }
+        }
+    }
+}

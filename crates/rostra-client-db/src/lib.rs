@@ -26,6 +26,8 @@ mod payload_demand_tests;
 mod payload_dry_run;
 #[cfg(test)]
 mod payload_dry_run_tests;
+#[cfg(test)]
+mod payload_evaluation_tests;
 mod payload_pressure;
 mod payload_reservation;
 mod payload_retention_config;
@@ -87,7 +89,9 @@ pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, 
 pub use self::payload_admission::{PayloadIngestOutcome, PayloadReservationOutcome};
 pub use self::payload_admission_config::{PayloadAdmissionConfig, PayloadAdmissionLimits};
 pub use self::payload_allocation::PayloadAllocation;
-pub use self::payload_dry_run::{DryRunLimits, DryRunProjection, DryRunReport, DryRunStatus};
+pub use self::payload_dry_run::{
+    DryRunLimits, DryRunProjection, DryRunReport, DryRunStatus, DryRunVictim,
+};
 pub use self::payload_reservation::{
     PayloadAdmissionPause, PayloadAdmissionUsage, PayloadBuffer, PayloadReservation,
 };

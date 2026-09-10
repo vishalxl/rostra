@@ -13,6 +13,7 @@ mod post;
 mod profile;
 pub(crate) mod profile_self;
 mod recovery;
+mod retention;
 mod search;
 mod settings;
 mod shoutbox;
@@ -291,6 +292,7 @@ pub fn route_handler(state: SharedState) -> Router<Arc<UiState>> {
         .route("/settings/following", get(settings::get_settings_following))
         .route("/settings/followers", get(settings::get_settings_followers))
         .route("/settings/events", get(settings::get_settings_events))
+        .route("/settings/retention", get(retention::get_retention))
         .route(
             "/settings/events/content/{event_id}",
             get(settings::get_event_content_json),

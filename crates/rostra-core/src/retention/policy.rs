@@ -129,6 +129,15 @@ impl RetentionPolicy {
         self.grace_seconds
     }
 
+    /// Return the exact distance-derived age credit in signed Q32 seconds.
+    ///
+    /// This is the capped logarithmic bonus after the time scale and exponent,
+    /// not a probability of availability or a replication guarantee.
+    pub fn distance_credit_ticks(self, event: EventId, holder: RostraId) -> i128 {
+        self.key(event, holder, self.size_floor, Timestamp::from(0))
+            .ticks()
+    }
+
     /// Compute a static key from verified header metadata and persisted age
     /// time.
     pub fn key(

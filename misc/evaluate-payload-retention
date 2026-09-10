@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Offline generated data only; no service configuration or user DB arguments.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+output=$(mktemp -d "${TMPDIR:-/tmp}/rostra-retention-evaluation.XXXXXXXX")
+printf 'Writing disposable evaluation output to %s\n' "$output"
+{
+  date -u
+  uname -a
+  rustc --version
+  lscpu
+  df -h "$output"
+} > "$output/environment.txt"
+cargo run --offline --locked --quiet -p rostra-core --example retention-evaluation \
+  > "$output/policies.csv" 2> "$output/distributions.csv"
+cargo run --offline --locked --quiet -p rostra-core --example retention-evaluation \
+  > "$output/repeated.csv" 2> "$output/repeated-distributions.csv"
+cmp "$output/policies.csv" "$output/repeated.csv"
+cmp "$output/distributions.csv" "$output/repeated-distributions.csv"
+timeout --kill-after=30s 45m cargo test --offline --locked --release -p rostra-client-db disposable_payload_index_evaluation \
+  -- --ignored --nocapture > "$output/database.txt" 2>&1
+printf 'Completed; inspect %s (not a deployment recommendation).\n' "$output"

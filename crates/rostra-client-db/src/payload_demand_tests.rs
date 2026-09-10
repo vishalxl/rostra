@@ -19,6 +19,31 @@ fn limit(n: usize) -> NonZeroUsize {
     NonZeroUsize::new(n).unwrap()
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_observation_preserves_expired_demand_ownership() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let author = RostraIdSecretKey::generate();
+    let event = post(author, 1, "expired diagnostic demand");
+    let retained = post(author, 2, "retained diagnostic payload");
+    ingest(&db, &retained, true).await?;
+    ingest(&db, &event, false).await?;
+    let generation = configure(&db, u64::from(retained.content_len()) + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &event, generation, 100).await?;
+    let before = db.payload_admission_observation();
+    assert_eq!(before.pending_demands, 1);
+    for _ in 0..10 {
+        assert_eq!(db.payload_admission_observation(), before);
+        assert_eq!(
+            db.payload_admission.demands.lock().unwrap().entries.len(),
+            1
+        );
+    }
+    // The older operational accessor intentionally expires this old intent;
+    // operator GET must never call it.
+    assert_eq!(db.payload_admission_usage().pending_demands, 0);
+    Ok(())
+}
+
 fn policy() -> RetentionPolicy {
     RetentionPolicy::new(1, 1, 0, 0, 1, 0).unwrap()
 }

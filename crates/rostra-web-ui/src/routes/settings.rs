@@ -922,6 +922,9 @@ impl UiState {
         }
 
         Ok(html! {
+            @if self.id_secret(session.session_token()).is_some() {
+                p { a href="/settings/retention" { "Payload retention diagnostics (this storing account)" } }
+            }
             div ."o-settingsContent__section" {
                 h3 ."o-settingsContent__sectionHeader" { "Select Identity" }
 
