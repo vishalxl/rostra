@@ -42,8 +42,8 @@ pub struct PayloadAdmissionUsage {
     pub buffer_bytes: u64,
 }
 
-/// One database-owned ledger; all logical additions occur under its writer
-/// lock.
+/// Account-scoped ledger; all logical additions occur under the attached
+/// database's writer lock.
 #[derive(Debug, Default)]
 pub(crate) struct AdmissionLedger {
     /// No production setter exists until every acquisition caller is
@@ -57,6 +57,8 @@ pub(crate) struct AdmissionLedger {
 /// Synchronous counters shared by RAII leases and serialized DB transactions.
 #[derive(Debug, Default)]
 pub(crate) struct AdmissionState {
+    /// Exclusive database attachment; HTTP owners may outlive an unloaded DB.
+    pub(crate) database_owner: std::sync::Weak<()>,
     /// Absent in every production database in this checkpoint.
     pub(crate) config: Option<PayloadAdmissionConfig>,
     /// Each full event has at most one logical acquisition owner.

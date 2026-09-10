@@ -9,7 +9,7 @@ use std::path::Path;
 use std::str::FromStr as _;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use backon::Retryable as _;
@@ -33,6 +33,12 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
+mod init;
+pub(crate) mod task_owner;
+pub(crate) mod tasks;
+
+use self::init::ClientInit;
+use self::task_owner::ClientTaskOwner;
 use crate::LOG_TARGET;
 use crate::error::{
     ActivateResult, ActivateSnafu, ConnectResult, IdResolveError, IdResolveResult,
@@ -331,7 +337,8 @@ pub struct Client {
     /// Networking layer (endpoint, pkarr, p2p_state, connection cache)
     pub(crate) networking: Arc<crate::net::ClientNetworking>,
 
-    task_handles: Mutex<Vec<AbortOnDropHandle<()>>>,
+    /// Retired owners can await cancellation completion before rebuilding.
+    pub(crate) task_handles: ClientTaskOwner,
 }
 
 #[bon::bon]
@@ -374,6 +381,66 @@ impl Client {
         /// Use [`Client::make_pkarr_client`] to create one.
         pkarr_client: Option<Arc<PkarrClient>>,
     ) -> InitResult<Arc<Self>> {
+        Self::new_inner(ClientInit {
+            task_owner: ClientTaskOwner::default(),
+            id,
+            start_request_handler,
+            start_background_tasks,
+            db: db.map(Arc::new),
+            secret,
+            public_mode,
+            iroh_endpoint,
+            pkarr_client,
+        })
+        .await
+    }
+}
+
+impl Client {
+    /// Reconstruct a manager-owned runtime after all prior tasks have
+    /// terminated.
+    pub(crate) async fn from_shared_database(
+        id: RostraId,
+        db: Arc<Database>,
+        public_mode: bool,
+        pkarr_client: Arc<PkarrClient>,
+        iroh_endpoint: Option<iroh::Endpoint>,
+        task_owner: ClientTaskOwner,
+    ) -> InitResult<Arc<Self>> {
+        Self::new_inner(ClientInit {
+            task_owner,
+            id,
+            db: Some(db),
+            public_mode,
+            pkarr_client: Some(pkarr_client),
+            iroh_endpoint,
+            start_request_handler: true,
+            start_background_tasks: true,
+            secret: None,
+        })
+        .await
+    }
+
+    /// Build from consuming public inputs or teardown-checked manager
+    /// ownership.
+    async fn new_inner(init: ClientInit) -> InitResult<Arc<Self>> {
+        let ClientInit {
+            task_owner,
+            id,
+            start_request_handler,
+            start_background_tasks,
+            db,
+            secret,
+            public_mode,
+            iroh_endpoint,
+            pkarr_client,
+        } = init;
+        #[cfg(test)]
+        let (task_owner, after_start) = {
+            let mut task_owner = task_owner;
+            let after_start = task_owner.after_start.get_mut().unwrap().take();
+            (task_owner, after_start)
+        };
         debug!(target: LOG_TARGET, id = %id, "Starting Rostra client");
         let client_start = Instant::now();
         let is_mode_full = db.is_some();
@@ -400,10 +467,9 @@ impl Client {
             Some(db) => db,
             _ => {
                 debug!(target: LOG_TARGET, id = %id, "Creating temporary in-memory database");
-                Database::new_in_memory(id).await?
+                Database::new_in_memory(id).await?.into()
             }
-        }
-        .into();
+        };
         trace!(target: LOG_TARGET, id = %id, "Creating client");
         let networking = Arc::new(crate::net::ClientNetworking::new(
             endpoint,
@@ -417,7 +483,7 @@ impl Client {
             id,
             active: AtomicBool::new(false),
             activation_lock: tokio::sync::Mutex::new(()),
-            task_handles: Mutex::new(Vec::new()),
+            task_handles: task_owner,
         });
 
         trace!(target: LOG_TARGET, id = %id, "Starting client tasks");
@@ -438,6 +504,11 @@ impl Client {
 
         if let Some(secret) = secret {
             client.unlock_active(secret).await.context(ActivateSnafu)?;
+        }
+
+        #[cfg(test)]
+        if let Some(after_start) = after_start {
+            after_start(client.clone()).await;
         }
 
         trace!(target: LOG_TARGET, %id, "Client complete");
@@ -573,10 +644,7 @@ impl Client {
 
     fn spawn_task(&self, future: impl Future<Output = ()> + Send + 'static) {
         let handle = AbortOnDropHandle::new(tokio::spawn(future));
-        self.task_handles
-            .lock()
-            .expect("locking failed")
-            .push(handle);
+        self.task_handles.push(handle);
     }
 
     pub(crate) fn start_pkarr_id_publisher(&self, secret_id: RostraIdSecretKey) {
@@ -1227,14 +1295,14 @@ mod tests {
             )
             .expect_err("announcement storage failure");
         assert!(!client.active.load(SeqCst));
-        assert!(client.task_handles.lock().expect("task handles").is_empty());
+        assert_eq!(client.task_handles.len(), 0);
 
         client
             .finish_activation(secret, Ok(()))
             .expect("activation retry");
         assert!(client.active.load(SeqCst));
         assert_eq!(
-            client.task_handles.lock().expect("task handles").len(),
+            client.task_handles.len(),
             2,
             "the retry starts each signing task exactly once"
         );

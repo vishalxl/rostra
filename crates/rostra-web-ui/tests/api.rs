@@ -39,6 +39,115 @@ async fn malformed_raw_publish_does_not_load_arbitrary_identity() {
     assert!(!server.is_client_loaded(id).await);
 }
 
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn unloaded_raw_body_and_concurrent_load_share_startup_account() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let id = RostraIdSecretKey::generate().id();
+    let account = rostra_client_db::PayloadAccount::disabled(id);
+    let server = TestServer::start_with_payload_accounts(vec![account.clone()]).await;
+    let mut stream = tokio::net::TcpStream::connect(server.address())
+        .await
+        .unwrap();
+    stream
+        .write_all(
+            format!(
+                "POST /api/{id}/publish HTTP/1.1\r\nHost: localhost\r\n\
+                 X-Rostra-Api-Version: 0\r\n\
+                 Content-Type: application/json\r\nContent-Length: 2\r\n\
+                 Expect: 100-continue\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    // Hyper sends Continue when the handler polls the body, after account lookup.
+    let mut interim = vec![0; b"HTTP/1.1 100 Continue\r\n\r\n".len()];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_exact(&mut interim),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+    assert!(!server.is_client_loaded(id).await);
+    assert!(!server.has_database_file(id));
+
+    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(server.client(id), server.client(id))
+    })
+    .await
+    .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    let mut probe = rostra_client_db::Database::new_in_memory(id).await.unwrap();
+    assert_eq!(
+        probe.attach_payload_account(&account),
+        Err(rostra_client_db::PayloadAccountAttachError::AccountAlreadyAttached)
+    );
+    stream.write_all(b"{}").await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_to_string(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 422"));
+    drop(first);
+    drop(second);
+    server.shutdown().await;
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn malformed_unloaded_raw_body_preserves_startup_account_without_database() {
+    let id = RostraIdSecretKey::generate().id();
+    let account = rostra_client_db::PayloadAccount::disabled(id);
+    let server = TestServer::start_with_payload_accounts(vec![account.clone()]).await;
+    let response = server
+        .driver()
+        .api_post_json(
+            &format!("/api/{id}/publish"),
+            None,
+            &serde_json::json!({ "content": "deadbeef" }),
+        )
+        .await;
+    assert_eq!(response.status(), 422);
+    assert!(!server.is_client_loaded(id).await);
+    assert!(!server.has_database_file(id));
+    let mut probe = rostra_client_db::Database::new_in_memory(id).await.unwrap();
+    probe.attach_payload_account(&account).unwrap();
+    server.shutdown().await;
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn duplicate_startup_accounts_are_rejected_without_loading() {
+    let id = RostraIdSecretKey::generate().id();
+    let directory = tempfile::TempDir::new().unwrap();
+    let result = rostra_client::multiclient::MultiClient::new_with_payload_accounts(
+        directory.path().to_path_buf(),
+        10,
+        false,
+        rostra_client::Client::make_pkarr_client().unwrap(),
+        [
+            rostra_client_db::PayloadAccount::disabled(id),
+            rostra_client_db::PayloadAccount::disabled(id),
+        ],
+    );
+    assert!(matches!(
+        result,
+        Err(rostra_client::multiclient::MultiClientError::DuplicatePayloadAccount { id: duplicate })
+            if duplicate == id
+    ));
+    assert!(
+        std::fs::read_dir(directory.path())
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
 /// Helper: generate an identity via the API and return (rostra_id, secret).
 async fn generate_identity(driver: &common::UiDriver) -> (String, String) {
     let resp = driver.api_get("/api/generate-id").await;

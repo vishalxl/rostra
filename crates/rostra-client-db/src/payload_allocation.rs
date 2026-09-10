@@ -10,7 +10,8 @@ use crate::{Database, PayloadAdmissionPause, PayloadBuffer, PayloadReservation};
 /// It does not authorize materialization or measure allocator/codec overhead.
 #[derive(Debug)]
 pub struct PayloadAllocation {
-    /// Database-owned shared buffer ledger.
+    /// Account-scoped shared buffer ledger, also available before database
+    /// load.
     ledger: Option<Arc<AdmissionLedger>>,
     /// Aggregate capacities covered by this owner.
     bytes: u64,
@@ -25,7 +26,16 @@ impl Database {
         &self,
         bytes: u64,
     ) -> Result<Option<PayloadAllocation>, PayloadAdmissionPause> {
-        let mut state = self.payload_admission.state.lock().unwrap();
+        PayloadAllocation::reserve(&self.payload_admission, bytes)
+    }
+}
+
+impl PayloadAllocation {
+    pub(crate) fn reserve(
+        ledger: &Arc<AdmissionLedger>,
+        bytes: u64,
+    ) -> Result<Option<Self>, PayloadAdmissionPause> {
+        let mut state = ledger.state.lock().unwrap();
         let Some(config) = &state.config else {
             return Ok(None);
         };
@@ -40,7 +50,7 @@ impl Database {
         state.buffers += 1;
         state.buffer_bytes = total;
         Ok(Some(PayloadAllocation {
-            ledger: Some(self.payload_admission.clone()),
+            ledger: Some(ledger.clone()),
             bytes,
         }))
     }

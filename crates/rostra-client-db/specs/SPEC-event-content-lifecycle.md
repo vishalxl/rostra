@@ -263,11 +263,14 @@ transaction rollback cannot publish a terminal release. Client acquisition check
 terminal state and tries shared-store reuse before fetching. Each racing read and
 its temporary Vec-to-Arc conversion has separate pre-allocation capacity; the
 winning buffer remains owned through ingestion. Local serialization and raw signed
-HTTP parsing for already-loaded accounts use provisional capacity before a verified
-envelope exists, then bind the surviving allocation to its logical reservation.
-Unloaded HTTP accounts retain the ordinary per-request body limit and are loaded
-only after validation; runtime activation must supply their pre-parse policy
-without creating databases from unverified paths. This bounds declared
+HTTP parsing consult provisional capacity before a verified envelope exists, then
+bind the surviving allocation to its logical reservation. Explicit startup account
+ownership is shared across preparse and lazy database load, with exclusive database
+attachment. Reattachment invalidates old logical leases, not still-owned buffers.
+All constructible accounts remain disabled. Unloaded HTTP accounts retain the
+ordinary per-request body limit and are loaded only after validation; runtime
+activation must still supply startup preparse policy without creating databases
+from unverified paths. This bounds declared
 acquisition capacities, not whole-process memory or physical disk.
 
 Content bytes are keyed by hash and may satisfy multiple events, but each

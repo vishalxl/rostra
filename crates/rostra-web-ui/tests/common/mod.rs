@@ -26,6 +26,29 @@ impl TestServer {
         Self::start_on(SocketAddr::from(([127, 0, 0, 1], 0)), None, None).await
     }
 
+    /// Start with immutable pre-open ownership for explicitly listed accounts.
+    pub async fn start_with_payload_accounts(
+        accounts: Vec<rostra_client_db::PayloadAccount>,
+    ) -> Self {
+        Self::start_on_with_payload_accounts(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            None,
+            None,
+            accounts,
+        )
+        .await
+    }
+
+    /// Return the loopback listener for controlled streaming HTTP tests.
+    pub fn address(&self) -> SocketAddr {
+        self.server.local_addr()
+    }
+
+    /// Check the current-format account path without filesystem side effects.
+    pub fn has_database_file(&self, id: RostraId) -> bool {
+        self._temp_dir.path().join(format!("{id}.redb")).exists()
+    }
+
     /// Start a test server that renders its default-profile landing actions.
     pub async fn start_with_default_profile(default_profile: RostraId) -> Self {
         Self::start_on(
@@ -66,6 +89,15 @@ impl TestServer {
         origin: Option<String>,
         default_profile: Option<RostraId>,
     ) -> Self {
+        Self::start_on_with_payload_accounts(listen, origin, default_profile, vec![]).await
+    }
+
+    async fn start_on_with_payload_accounts(
+        listen: SocketAddr,
+        origin: Option<String>,
+        default_profile: Option<RostraId>,
+        accounts: Vec<rostra_client_db::PayloadAccount>,
+    ) -> Self {
         // Use dev mode so assets are served from the source tree
         // (avoids needing compiled/bundled assets).
         // SAFETY: Integration tests run as separate binaries, so no other
@@ -78,7 +110,14 @@ impl TestServer {
         let data_dir = temp_dir.path().to_path_buf();
 
         let pkarr_client = Client::make_pkarr_client().expect("Failed to create pkarr client");
-        let clients = MultiClient::new(data_dir.clone(), 10, false, pkarr_client);
+        let clients = MultiClient::new_with_payload_accounts(
+            data_dir.clone(),
+            10,
+            false,
+            pkarr_client,
+            accounts,
+        )
+        .expect("unique account configuration");
 
         let opts = Opts::new(
             rostra_util_bind_addr::BindAddr::Tcp(listen),

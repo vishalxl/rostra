@@ -564,9 +564,8 @@ async fn publish_signed_event(
     request: Request,
 ) -> ApiResult<Json<PublishSignedEventResponse>> {
     // Never create/open a database from an unverified path or malformed body.
-    // Runtime activation must also make unloaded-account pre-parse policy
-    // available without loading a database. No such configured account exists
-    // in this non-activatable checkpoint.
+    // Startup configuration is immutable and available before lazy loading.
+    let account = state.clients.payload_account(rostra_id);
     let existing_client = state.client(rostra_id).await.ok();
     let existing_ref = existing_client
         .as_ref()
@@ -579,11 +578,12 @@ async fn publish_signed_event(
     };
     // Body, JSON string/scratch, and Vec -> Arc conversion can coexist.
     // Codec/transport scratch and allocator overhead are not measured here.
-    let reserve = || match &existing_ref {
-        Some(client) => client
+    let reserve = || match (&account, &existing_ref) {
+        (Some(account), _) => account.reserve_payload_allocation(SIGNED_EVENT_BODY_LIMIT as u64),
+        (None, Some(client)) => client
             .db()
             .reserve_payload_allocation(SIGNED_EVENT_BODY_LIMIT as u64),
-        None => Ok(None),
+        (None, None) => Ok(None),
     };
     let body_capacity = reserve().map_err(capacity_error)?;
     let string_capacity = reserve().map_err(capacity_error)?;

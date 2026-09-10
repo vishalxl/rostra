@@ -69,11 +69,20 @@ Existing APIs' already-allocated external content, transport/codec working memor
 allocator overhead and clones retained after acquisition remain outside its
 guarantee. Client acquisition now reserves before reads, including a separate
 full-payload Vec-to-Arc conversion charge, and retains the winner through ingestion.
-Raw signed HTTP uses a pinned body limit and conservative simultaneous pre-parse
-charges from an already-loaded client's ledger; local serialization charges output
-growth before allocation. Unverified HTTP paths never create/open a database.
-An unloaded account has no configured ledger here: activation must make its
-pre-parse capacity policy available without DB creation, including lazy-load races.
+Raw signed HTTP uses a pinned body limit and consults immutable startup account
+ownership before parsing, falling back to an already-loaded client's ledger.
+Local serialization charges output growth before allocation. Unverified HTTP
+paths never create/open a database. Explicitly listed account ledgers survive
+lazy loading and have exclusive database attachment; concurrent manager loads are
+serialized. Reattachment invalidates old logical leases but preserves outstanding
+buffer charges. Unlisted HTTP identities cannot grow the account registry.
+Client-cache eviction preserves discoverability of still-live clients or storage.
+Database keepers are released through atomic sole-ownership cleanup before fresh
+opens, not a race-prone check of reference counts or failed weak upgrades.
+Every constructible account remains disabled: activation must still install
+validated preparse capacity policy before publishing the manager. Startup ownership
+alone is not enabled enforcement. No hot reload API exists; future mode/budget/
+policy changes require fresh construction after all old work and guards quiesce.
 The body limit alone does not bound aggregate memory for these disabled requests.
 Low-level
 P2P callers still own their allocation policy; supplying a dummy guard is not a

@@ -68,6 +68,145 @@ fn reserved(outcome: PayloadReservationOutcome) -> PayloadReservation {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn admission_account_preopen_ownership_and_exclusive_attachment() -> anyhow::Result<()> {
+    let id = RostraIdSecretKey::generate().id();
+    let account = crate::PayloadAccount::disabled(id);
+    assert!(account.reserve_payload_allocation(u64::MAX)?.is_none());
+    let mut first = Database::new_in_memory(id).await?;
+    first.attach_payload_account(&account)?;
+    assert_eq!(
+        first.attach_payload_account(&account),
+        Err(crate::PayloadAccountAttachError::DatabaseAlreadyAttached)
+    );
+    configure(&first, config(1000, 1000, 5, 1000)).await?;
+    let mut second = Database::new_in_memory(id).await?;
+    assert_eq!(
+        second.attach_payload_account(&account),
+        Err(crate::PayloadAccountAttachError::AccountAlreadyAttached)
+    );
+    let mut foreign = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    assert_eq!(
+        foreign.attach_payload_account(&account),
+        Err(crate::PayloadAccountAttachError::IdentityMismatch {
+            database: foreign.self_id,
+            account: id,
+        })
+    );
+    drop(first);
+
+    // No database is attached while this unverified request starts.
+    let allocation = account.reserve_payload_allocation(700)?.unwrap();
+    assert!(matches!(
+        account.reserve_payload_allocation(301),
+        Err(PayloadAdmissionPause::InFlightBytes)
+    ));
+    second.attach_payload_account(&account)?;
+    assert_eq!(second.payload_admission_usage().buffer_bytes, 700);
+    assert!(matches!(
+        second.reserve_payload_allocation(301),
+        Err(PayloadAdmissionPause::InFlightBytes)
+    ));
+    drop(allocation);
+    assert_eq!(second.payload_admission_usage().buffer_bytes, 0);
+    let mut independently_configured = Database::new_in_memory(id).await?;
+    configure(&independently_configured, config(1000, 1000, 5, 1000)).await?;
+    assert_eq!(
+        independently_configured.attach_payload_account(&crate::PayloadAccount::disabled(id)),
+        Err(crate::PayloadAccountAttachError::DatabaseConfigured)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_account_reattach_invalidates_logical_not_buffer_ownership() -> anyhow::Result<()>
+{
+    let id = RostraIdSecretKey::generate().id();
+    let account = crate::PayloadAccount::disabled(id);
+    let mut first = Database::new_in_memory(id).await?;
+    first.attach_payload_account(&account)?;
+    ready(&first).await?;
+    configure(&first, config(1000, 1000, 5, 1000)).await?;
+    let event = content(RostraIdSecretKey::generate(), 1, "old attachment");
+    let reservation = reserved(first.reserve_payload(&event.event).await?);
+    let buffer = reservation.try_acquire_buffer()?;
+    let mut provisional = account.reserve_payload_allocation(100)?.unwrap();
+    drop(first);
+
+    let mut second = Database::new_in_memory(id).await?;
+    second.attach_payload_account(&account)?;
+    assert_eq!(second.payload_admission_usage().acquisitions, 0);
+    assert_eq!(
+        second.payload_admission_usage().buffer_bytes,
+        100 + u64::from(event.content_len())
+    );
+    assert!(matches!(
+        provisional.bind_to_reservation(&reservation),
+        Err(PayloadAdmissionPause::ReservationExpired)
+    ));
+    ready(&second).await?;
+    let replacement = reserved(second.reserve_payload(&event.event).await?);
+    drop(buffer);
+    drop(reservation);
+    assert_eq!(second.payload_admission_usage().acquisitions, 1);
+    let transferred = provisional.bind_to_reservation(&replacement)?;
+    drop(transferred);
+    drop(replacement);
+    assert_eq!(second.payload_admission_usage().buffer_bytes, 0);
+    assert_eq!(second.payload_admission_usage().acquisitions, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_account_concurrent_preparse_is_bounded_and_isolated() -> anyhow::Result<()> {
+    let id = RostraIdSecretKey::generate().id();
+    let account = crate::PayloadAccount::disabled(id);
+    let mut db = Database::new_in_memory(id).await?;
+    db.attach_payload_account(&account)?;
+    configure(&db, config(1000, 1000, 5, 1000)).await?;
+    drop(db);
+    let other_id = RostraIdSecretKey::generate().id();
+    let other_account = crate::PayloadAccount::disabled(other_id);
+    let mut other_db = Database::new_in_memory(other_id).await?;
+    other_db.attach_payload_account(&other_account)?;
+    configure(&other_db, config(1000, 1000, 5, 1000)).await?;
+
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(9));
+    let mut requests = vec![];
+    for _ in 0..8 {
+        let account = account.clone();
+        let barrier = barrier.clone();
+        requests.push(tokio::spawn(async move {
+            let result = account.reserve_payload_allocation(600);
+            barrier.wait().await;
+            result
+        }));
+    }
+    barrier.wait().await;
+    // Requests retain their results while this account attaches concurrently.
+    let mut reopened = Database::new_in_memory(id).await?;
+    reopened.attach_payload_account(&account)?;
+    assert_eq!(reopened.payload_admission_usage().buffer_bytes, 600);
+    let independent = other_account.reserve_payload_allocation(1000)?.unwrap();
+    assert_eq!(other_db.payload_admission_usage().buffer_bytes, 1000);
+    let mut allocations = vec![];
+    let mut paused = 0;
+    for request in requests {
+        match request.await? {
+            Ok(Some(allocation)) => allocations.push(allocation),
+            Err(PayloadAdmissionPause::InFlightBytes) => paused += 1,
+            other => panic!("unexpected preparse result: {other:?}"),
+        }
+    }
+    assert_eq!(allocations.len(), 1);
+    assert_eq!(paused, 7);
+    drop(allocations);
+    assert_eq!(reopened.payload_admission_usage().buffer_bytes, 0);
+    assert_eq!(other_db.payload_admission_usage().buffer_bytes, 1000);
+    drop(independent);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn admission_provisional_growth_transfer_and_late_release() -> anyhow::Result<()> {
     let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
     assert!(db.reserve_payload_allocation(u64::MAX)?.is_none());

@@ -211,11 +211,58 @@ There is no universal GiB default. `experimental_low_water` computes floor(90%)
 without overflow; this is an experimental starting point for future hysteresis,
 not a worker or an automatic deletion rule.
 
-**Production admission remains disabled by construction.** The database owns an
-empty optional configuration, and only disposable unit tests can populate it.
-There is no public setter, runtime config wiring, clock assertion, worker,
+**Production admission remains disabled by construction.** The shared ledger owns
+an empty optional configuration, and only disposable unit tests can populate it.
+There is no public setter, runtime config wiring, clock assertion, retention worker,
 automatic quota decision, collection or service activation. This safety
 checkpoint deliberately precedes complete client integration.
+
+`PayloadAccount::disabled` creates an account-scoped ledger without filesystem
+work. `MultiClient::new_with_payload_accounts` installs explicitly listed handles
+before publication; duplicate identities are rejected. Raw HTTP consults this
+immutable registry before parsing, and the later database attaches the same ledger.
+Unlisted unverified identities do not grow the registry. Lazy open/build/eviction
+is serialized across manager clones, and only one database can attach each account
+ledger at a time. Reattachment invalidates old logical reservations without
+releasing still-owned buffer bytes; lease IDs are never reset. Account identity
+must match the storing `RostraId`.
+
+LRU eviction removes a strong client-cache entry, not discoverability of live
+request/task ownership. Reload reuses a surviving client, or its shared database
+and surviving endpoint if only those remain; it does not reopen or reattach live
+storage. A retained, cancellation-safe shared join future waits for actual old-task
+termination before DB-only reconstruction or removal of its retired record.
+The manager retains completion before task startup, with unique abort ownership
+transferred from partial construction into the client. A constructor error or
+panic cannot let retry bypass old-task joining, even for workers holding no DB.
+The public builder retains consuming `Database` ownership; only a crate-private
+constructor accepts shared storage.
+Retired database keepers are atomically unwrapped and closed under the
+load lock before a fresh open can occur. A weak-manager reaper checks at one-second
+intervals, visiting at most 32 records and checking a 10-ms cooperative time budget
+between records. File closure runs on a blocking worker; an indivisible database
+close can exceed that time. The ordered
+cursor prevents externally held entries from starving later cleanup.
+Thus `max_clients` bounds strong LRU entries, not all externally retained live
+resources; released retired DBs may remain briefly until the reaper runs.
+This reaper only closes storage handles; it is not quota pruning or payload GC.
+
+Cold initialization is manager-owned: cancelling one verified request does not
+abandon the open/attach-to-publication interval or lose storage discoverability.
+It finishes publication or failure; a still-waiting caller receives the result,
+but a cancelled sole caller receives nothing. A task failure reaches its live
+waiter as a distinct initialization-task error. Failed-build storage remains
+discoverable until reuse or quiescent cleanup. While sleeping, the cleanup task
+holds weak references to the registry/load lock and strong cursor/running-flag
+metadata; that metadata owns no clients or databases and cannot keep a dropped
+manager or its storage alive.
+
+These are ownership foundations, **not runtime policy configuration**: every
+constructible account is still disabled. No live configuration setter exists.
+The approved runtime configuration is startup-only; changing mode, budgets or
+policy requires orderly shutdown and fresh construction after old workers,
+acquisitions and guards have quiesced. This checkpoint neither implements nor
+performs a service restart.
 
 `reserve_payload` retains a verified envelope and returns Disabled, Unneeded,
 Deferred or a unique logical `PayloadReservation`. Admission rechecks ready
@@ -276,7 +323,7 @@ share one stored hash.
 | Pushed `FEED_EVENT` | Owned guarded ingestion | Reserve read and conversion before success/BAO read; terminal/reused payloads return AlreadyHave, temporary pressure uses existing DoesNotNeed response |
 | Local publication / head merger | Guarded DB ingestion; empty merges need no payload room | Provisional CBOR writer charges before growth, separate conversion capacity, then binds surviving bytes to reservation; clear storage-capacity error |
 | Omni remote publication | Outgoing content does not materialize in this DB | Same bounded serializer retains provisional capacity through outbound attempts; no extra payload-sized allocation for Arc clones |
-| Raw signed web API (`routes/api.rs`) | Guarded owned ingestion after verification; disabled atomic ingestion preserved | Fixed 2-MiB HTTP body limit regardless of Content-Length; an already-loaded client's ledger supplies five conservative 2-MiB provisional slots for body, strings/scratch and Vec/Arc overlap before parse; one survives until ingestion |
+| Raw signed web API (`routes/api.rs`) | Guarded owned ingestion after verification; disabled atomic ingestion preserved | Fixed 2-MiB HTTP body limit regardless of Content-Length; startup account ownership is available before lazy load, with loaded-DB fallback for unlisted accounts. When configured, the ledger supplies five conservative 2-MiB provisional slots for body, strings/scratch and Vec/Arc overlap before parse; one survives until ingestion |
 | Hash-store reuse | Single-event reuse API uses the same gate | Capacity for owned copy and conversion before copying; pause without refetching shared bytes |
 | Public direct DB ingestion | All three fallible ingestion variants and panic wrappers converge on the gate | External holders of already-allocated bytes own that memory; use the explicit pre-read guard API for controlled acquisition |
 | Direct P2P connection/cache APIs | Cache owns database acquisition/ingestion | Removed unguarded convenience read; `get_event_content_with_guard` retains caller-owned guard through transport without reversing DB→P2P dependency |
@@ -291,10 +338,11 @@ allocator overhead, post-acquisition notification/caller clones and database fil
 growth remain outside this declared acquisition-capacity accounting.
 Unverified raw publish paths must not create/open/compact databases: unloaded
 accounts are loaded only after JSON, author, signature and content verification.
-They have no configured admission ledger in this checkpoint. Runtime configuration
-must supply their pre-parse policy without loading a database (including concurrent
-lazy-load/configuration races) before activation; the existing per-request HTTP
-body limit alone is not an aggregate capacity bound for these requests.
+Their account ledger can now exist before database load, but no runtime policy can
+be installed in this checkpoint. Runtime configuration must populate that immutable
+startup ownership before activation. Ownership alone does not close the unloaded
+preparse policy gap: the existing per-request HTTP body limit is still not an
+aggregate capacity bound for disabled requests.
 
 The payload race schedules at most four attempts. A peer is consumed only after
 its read/conversion capacity is acquired; tight budgets wait for active reads and
@@ -326,7 +374,7 @@ origins remain. This checkpoint does not implement or activate that worker.
 
 ## Next checkpoint
 
-The next checkpoint adds runtime configuration and worker integration, including
+The next checkpoint adds runtime configuration and retention-worker integration, including
 the unloaded-account HTTP policy boundary above, before any activation path.
 Logical quota release may reclaim no physical bytes when another reference
 survives. Headers and index overhead remain outside logical payload accounting.

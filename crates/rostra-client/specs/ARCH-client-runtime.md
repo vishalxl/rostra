@@ -53,8 +53,13 @@ periodic discovery to:
 
 The tasks coordinate through durable database state and subscriptions rather
 than owning a second graph state. They must tolerate duplicate wakeups,
-temporary peer failure, and out-of-order delivery. Task handles are owned by
-the client, so dropping the client stops its background work.
+temporary peer failure, and out-of-order delivery. Dropping the client requests
+cancellation of its background work. Internal multi-client ownership retains
+shared join completion so DB-only reconstruction waits until every old task has
+actually terminated. Completion is retained before construction starts any task;
+a unique abort-on-drop owner moves from partial construction into the client.
+Failed or panicked initialization therefore follows the same join-before-retry
+rule, including workers that hold no database reference.
 
 Retained current-state subscriptions expose owned snapshots of the self head,
 followees, followers, and Web of Trust. Runtime tasks may keep those snapshots
@@ -79,6 +84,25 @@ without depending on the database crate. Local publication returns a clear stora
 capacity error, while pushed payloads can receive the existing refusal response
 before sending bytes. Production admission remains disabled without a setter;
 caller integration alone does not authorize runtime pruning.
+
+Multi-client hosting can install immutable, explicitly listed account acquisition
+ledgers before exposing HTTP or loading a database. The same ledger follows a
+verified request into lazy loading, and only one database may attach it at a time.
+Manager clones serialize lazy open/build/publication to prevent duplicate opens.
+LRU removal retains discoverability of request/task-owned clients and databases:
+reload reuses surviving ownership rather than reopening live storage. Retired
+database keepers close under the load lock only after atomic sole-ownership
+acquisition; a bounded weak-manager reaper releases them after external owners
+finish and old tasks terminate. The public builder still consumes its database;
+shared-database reconstruction is private to the crate. The cache count therefore
+does not bound all live resources. Cold
+initialization completes independently of request cancellation so open storage
+cannot become undiscoverable before publication.
+Unverified unlisted identities do not create registry entries or databases.
+Account ownership is implemented, but every constructible account is still
+disabled: runtime mode/budget/policy configuration and enforcement remain absent.
+There is no live reconfiguration API; startup configuration changes require fresh
+construction after old client work and guards have quiesced.
 
 Head handling depends on the operation. Local publication and retained state
 use the minimum event ID as a deterministic representative. Incremental

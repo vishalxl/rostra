@@ -8,6 +8,7 @@ mod migration_ops;
 mod models;
 pub mod news;
 mod paginate;
+mod payload_account;
 mod payload_accounting;
 #[cfg(test)]
 mod payload_accounting_tests;
@@ -65,6 +66,7 @@ pub use self::extension::{
     EXTENSION_RESERVED_TABLE_PREFIXES, ExtensionReadTransaction, ExtensionTableDefinition,
     ExtensionWriteTransaction,
 };
+pub use self::payload_account::{PayloadAccount, PayloadAccountAttachError};
 pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, PayloadUsage};
 pub use self::payload_admission::{PayloadIngestOutcome, PayloadReservationOutcome};
 pub use self::payload_admission_config::{PayloadAdmissionConfig, PayloadAdmissionLimits};
@@ -487,6 +489,8 @@ pub struct Database {
 
     /// Shared disabled-by-construction logical and acquisition-buffer boundary.
     payload_admission: Arc<payload_reservation::AdmissionLedger>,
+    /// Keeps an externally supplied account ledger exclusively attached.
+    payload_account_owner: Option<Arc<()>>,
 
     self_followees_updated: watch::Sender<Arc<HashMap<RostraId, IdsFolloweesRecord>>>,
     self_followers_updated: watch::Sender<Arc<HashMap<RostraId, IdsFollowersRecord>>>,
@@ -623,6 +627,7 @@ impl Database {
             db_init_time,
             write_and_publish_lock: std::sync::Mutex::new(()),
             payload_admission: Arc::default(),
+            payload_account_owner: None,
             self_followees_updated,
             self_followers_updated,
             self_wot_updated,

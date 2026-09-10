@@ -17,7 +17,10 @@
 //! A client owns its background tasks. Clone the returned [`std::sync::Arc`] to
 //! keep the runtime alive; dropping the final strong reference aborts those
 //! tasks. [`ClientHandle`] is weak and does not extend the runtime's lifetime.
-//! There is no separate shutdown protocol.
+//! There is no separate public shutdown protocol. Internal multi-client reloads
+//! wait for actual termination of a dropped runtime's tasks before
+//! reconstructing a client around still-live storage. The same ownership and
+//! joining rule covers partially constructed runtimes that fail or panic.
 //!
 //! Initialization, activation, peer connection, publication, and explicit
 //! synchronization return typed errors from [`error`] or [`DbError`]. A
