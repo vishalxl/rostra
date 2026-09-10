@@ -176,6 +176,34 @@ def_table! {
     events_dm_history_by_conversation: (RostraId, RostraId, u64, ShortEventId) => (RostraId, [u8; 16])
 }
 def_table! {
+    /// Derived local-arrival order for incoming direct messages.
+    events_dm_incoming: u64 => (RostraId, [u8; 16])
+}
+def_table! {
+    /// Derived incoming direct-message order scoped to one peer.
+    events_dm_incoming_by_peer: (RostraId, u64) => (RostraId, [u8; 16])
+}
+def_table! {
+    /// Derived reverse lookup from retained incoming history to local arrival order.
+    events_dm_incoming_sequence: (RostraId, [u8; 16]) => u64
+}
+def_table! {
+    /// Derived total incoming-message count per peer.
+    events_dm_incoming_count_by_peer: RostraId => u64
+}
+def_table! {
+    /// Exact account-local read markers keyed by browser session and arrival.
+    ids_dm_read: ([u8; 16], u64) => ()
+}
+def_table! {
+    /// Exact total rendered incoming-message count per browser session.
+    ids_dm_read_count: ([u8; 16], ()) => u64
+}
+def_table! {
+    /// Exact rendered incoming-message count per browser session and peer.
+    ids_dm_read_count_by_peer: ([u8; 16], RostraId) => u64
+}
+def_table! {
     /// Disposable background work, with the last attempted epoch key.
     events_dm_pending: ShortEventId => Option<([u8; 16], [u8; 32])>
 }

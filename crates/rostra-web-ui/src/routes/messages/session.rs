@@ -104,4 +104,9 @@ impl MessageSession {
             "This form has expired or belongs to another session. Reload the page and try again.",
         ))
     }
+
+    /// Opaque exact-session key for account-local durable read markers.
+    pub fn read_key(&self) -> [u8; 16] {
+        self.user.session_token().to_le_bytes()
+    }
 }

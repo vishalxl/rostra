@@ -114,9 +114,13 @@ pub async fn get_shoutbox(
 
     // WebSocket URL for live updates (start with 0 counts, shoutbox is current page
     // so 0)
-    let ws_url =
-        "websocket('/updates?followees=0&network=0&notifications=0&shoutbox=0&on_shoutbox=true')";
-    let badge_counts = "badgeCounts({ followees: 0, network: 0, notifications: 0, shoutbox: 0 })";
+    let messages = super::messages::unread_count(&state, &session).await;
+    let ws_url = format!(
+        "websocket('/updates?followees=0&network=0&notifications=0&shoutbox=0&messages={messages}&on_shoutbox=true')"
+    );
+    let badge_counts = format!(
+        "badgeCounts({{ followees: 0, network: 0, notifications: 0, shoutbox: 0, messages: {messages} }})"
+    );
 
     // Render the shoutbox content with chat-like layout
     let shoutbox_content = html! {
@@ -172,9 +176,13 @@ pub async fn get_shoutbox(
                     span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
                     span ."o-mainBarTimeline__newCount" x-text="formatCount(shoutbox)" {}
                 }
-                a ."o-mainBarTimeline__messages" href="/messages" {
+                a ."o-mainBarTimeline__messages"
+                    href="/messages"
+                    ":class"="{ '-pending': messages > 0 }"
+                {
                     span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
                     span ."o-mainBarTimeline__tabLabel" { "Messages" }
+                    span ."o-mainBarTimeline__newCount" x-text="formatCount(messages)" {}
                 }
             }
 

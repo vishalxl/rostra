@@ -40,6 +40,7 @@ pub struct PendingCounts {
     pub network: usize,
     pub notifications: usize,
     pub shoutbox: usize,
+    pub messages: usize,
 }
 
 fn news_vote_controls_html_id(post_id: ExternalEventId) -> String {
@@ -241,6 +242,7 @@ pub struct UpdatesQuery {
     pub network: Option<usize>,
     pub notifications: Option<usize>,
     pub shoutbox: Option<usize>,
+    pub messages: Option<usize>,
     /// If true, we're on the shoutbox page - skip shoutbox counter updates
     pub on_shoutbox: Option<bool>,
 }
@@ -256,6 +258,7 @@ pub async fn get_updates(
         network: query.network.unwrap_or(0),
         notifications: query.notifications.unwrap_or(0),
         shoutbox: query.shoutbox.unwrap_or(0),
+        messages: query.messages.unwrap_or(0),
     };
     let on_shoutbox = query.on_shoutbox.unwrap_or(false);
     ws.on_upgrade(move |ws| async move {
@@ -420,6 +423,9 @@ impl UiState {
         let mut network_count = initial_pending.network as u64;
         let mut notifications_count = initial_pending.notifications as u64;
         let mut shoutbox_count = initial_pending.shoutbox as u64;
+        let mut messages_count = initial_pending.messages as u64;
+        let mut message_badge_refresh = tokio::time::interval(Duration::from_secs(2));
+        message_badge_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -494,6 +500,9 @@ impl UiState {
                         }
                     }
                 }
+                _ = message_badge_refresh.tick() => {
+                    messages_count = super::messages::unread_count(self, user).await as u64;
+                }
             }
 
             let badge_html = self
@@ -502,6 +511,7 @@ impl UiState {
                     network_count,
                     notifications_count,
                     shoutbox_count,
+                    messages_count,
                 )
                 .into_string();
             if ws.send(badge_html.into()).await.is_err() {
@@ -518,9 +528,10 @@ impl UiState {
         network: u64,
         notifications: u64,
         shoutbox: u64,
+        messages: u64,
     ) -> Markup {
         let dispatch = format!(
-            "$dispatch('badges:updated', {{ followees: {followees}, network: {network}, notifications: {notifications}, shoutbox: {shoutbox} }})"
+            "$dispatch('badges:updated', {{ followees: {followees}, network: {network}, notifications: {notifications}, shoutbox: {shoutbox}, messages: {messages} }})"
         );
         html! {
             div x-init=(dispatch) {}
@@ -591,6 +602,10 @@ impl UiState {
         let (pending_counts, debug_info) = self
             .handle_notification_cookies(&client_ref, pagination.is_some(), cookies, mode)
             .await?;
+        let pending_counts = PendingCounts {
+            messages: super::messages::unread_count(self, session).await,
+            ..pending_counts
+        };
 
         let timeline = self
             .render_main_bar_timeline(session, mode)
@@ -748,6 +763,7 @@ impl UiState {
             network: network_count,
             notifications: notifications_count,
             shoutbox: shoutbox_count,
+            messages: 0,
         }
     }
 
@@ -845,18 +861,20 @@ impl UiState {
         // We just pass them through directly to the render functions.
 
         let ws_url = format!(
-            "websocket('/updates?followees={f}&network={n}&notifications={no}&shoutbox={s}')",
+            "websocket('/updates?followees={f}&network={n}&notifications={no}&shoutbox={s}&messages={m}')",
             f = pending_counts.followees,
             n = pending_counts.network,
             no = pending_counts.notifications,
-            s = pending_counts.shoutbox
+            s = pending_counts.shoutbox,
+            m = pending_counts.messages
         );
         let badge_counts = format!(
-            "badgeCounts({{ followees: {}, network: {}, notifications: {}, shoutbox: {} }})",
+            "badgeCounts({{ followees: {}, network: {}, notifications: {}, shoutbox: {}, messages: {} }})",
             pending_counts.followees,
             pending_counts.network,
             pending_counts.notifications,
-            pending_counts.shoutbox
+            pending_counts.shoutbox,
+            pending_counts.messages
         );
 
         Ok(html! {
@@ -937,9 +955,13 @@ impl UiState {
                             span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
                             span ."o-mainBarTimeline__newCount" x-text="formatCount(shoutbox)" {}
                         }
-                        a ."o-mainBarTimeline__messages" href="/messages" {
+                        a ."o-mainBarTimeline__messages"
+                            href="/messages"
+                            ":class"="{ '-pending': messages > 0 }"
+                        {
                             span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
                             span ."o-mainBarTimeline__tabLabel" { "Messages" }
+                            span ."o-mainBarTimeline__newCount" x-text="formatCount(messages)" {}
                         }
                     }
                 }

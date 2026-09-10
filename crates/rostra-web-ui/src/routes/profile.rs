@@ -18,6 +18,7 @@ use crate::routes::url::{RostraPathId, profile_follow_url, profile_url, redirect
 use crate::util::extractors::AjaxRequest;
 use crate::{SharedState, UiState};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn get_profile(
     state: State<SharedState>,
     session: UserSession,

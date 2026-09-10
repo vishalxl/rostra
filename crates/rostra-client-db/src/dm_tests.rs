@@ -257,6 +257,93 @@ async fn dm_history_index_pages_and_rebuilds_without_ciphertext() -> anyhow::Res
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn dm_unread_is_exact_session_scoped_and_survives_rebuild() -> anyhow::Result<()> {
+    let owner = RostraIdSecretKey::generate().id();
+    let first_peer = RostraIdSecretKey::generate().id();
+    let second_peer = RostraIdSecretKey::generate().id();
+    let db = Database::new_in_memory(owner).await?;
+    db.write_with(|tx| {
+        for (sender, timestamp, text) in [
+            (first_peer, 9000, "late signed time"),
+            (second_peer, 1, "arrived second"),
+            (first_peer, 2, "arrived third"),
+        ] {
+            let body = rostra_dm::MessageBody::new(sender, owner, text.to_owned()).unwrap();
+            Database::dm_store_history_tx(tx, &body, ShortEventId::random(), timestamp)?;
+        }
+        let outgoing =
+            rostra_dm::MessageBody::new(owner, first_peer, "outgoing".to_owned()).unwrap();
+        Database::dm_store_history_tx(tx, &outgoing, ShortEventId::random(), 0)
+    })
+    .await?;
+
+    let session = [7; 16];
+    assert_eq!(db.dm_count_unread(session, None, 99).await?, 3);
+    assert_eq!(db.dm_count_unread(session, Some(first_peer), 99).await?, 2);
+    db.dm_mark_read(session, &[1, 3]).await?;
+    assert_eq!(db.dm_count_unread(session, None, 99).await?, 1);
+    db.write_with(|tx| Database::prepare_total_migration(tx, 33))
+        .await?;
+    db.write_with(|tx| db.reprocess_migration_stash(tx)).await?;
+    assert_eq!(db.dm_count_unread(session, None, 99).await?, 1);
+    assert_eq!(db.dm_count_unread(session, Some(first_peer), 99).await?, 0);
+    assert_eq!(db.dm_count_unread([8; 16], None, 99).await?, 3);
+    db.dm_mark_read(session, &[1, 3]).await?;
+    assert_eq!(db.dm_count_unread(session, None, 99).await?, 1);
+    let history = db.dm_history_with_sequences(first_peer, None, 10).await?;
+    assert_eq!(
+        history
+            .iter()
+            .filter_map(|entry| entry.incoming_sequence)
+            .count(),
+        2
+    );
+    assert!(
+        history
+            .iter()
+            .any(|entry| entry.entry.sender == owner && entry.incoming_sequence.is_none())
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dm_read_markers_merge_concurrently_beyond_sparse_range_limits() -> anyhow::Result<()> {
+    let owner = RostraIdSecretKey::generate().id();
+    let peer = RostraIdSecretKey::generate().id();
+    let db = Database::new_in_memory(owner).await?;
+    db.write_with(|tx| {
+        for n in 0..600 {
+            let body = rostra_dm::MessageBody::new(peer, owner, format!("incoming {n}")).unwrap();
+            Database::dm_store_history_tx(tx, &body, ShortEventId::random(), n)?;
+        }
+        Ok(())
+    })
+    .await?;
+    let session = [9; 16];
+    let odd = (1..=600).step_by(2).collect::<Vec<_>>();
+    let even = (2..=600).step_by(2).collect::<Vec<_>>();
+    let (odd_result, even_result) = tokio::join!(
+        async {
+            for chunk in odd.chunks(64) {
+                db.dm_mark_read(session, chunk).await?;
+            }
+            anyhow::Ok(())
+        },
+        async {
+            for chunk in even.chunks(64) {
+                db.dm_mark_read(session, chunk).await?;
+            }
+            anyhow::Ok(())
+        }
+    );
+    odd_result?;
+    even_result?;
+    assert_eq!(db.dm_count_unread(session, None, 999).await?, 0);
+    assert_eq!(db.dm_count_unread(session, Some(peer), 999).await?, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn dm_pending_notification_follows_commit_and_retains_early_wakeup() -> anyhow::Result<()> {
     let recipient = RostraIdSecretKey::generate().id();
     let sender = RostraIdSecretKey::generate();

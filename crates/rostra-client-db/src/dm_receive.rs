@@ -99,6 +99,13 @@ impl Database {
                 history.insert(&key, &previous)?;
             }
         } else {
+            let self_id = tx
+                .open_table(&crate::ids_self::TABLE)?
+                .get(&())?
+                .ok_or(rostra_dm::Error::Invalid)
+                .context(DirectMessageSnafu)?
+                .value_try()?
+                .rostra_id;
             tx.open_table(&crate::events_dm_history_by_conversation::TABLE)?
                 .insert(
                     &(
@@ -121,6 +128,30 @@ impl Database {
                     conflicted: false,
                 },
             )?;
+            if body.recipient() == self_id {
+                let mut incoming = tx.open_table(&crate::events_dm_incoming::TABLE)?;
+                let sequence = incoming
+                    .last()?
+                    .map(|(sequence, _)| sequence.value_try())
+                    .transpose()?
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(crate::DbError::Overflow)?;
+                incoming.insert(&sequence, &key)?;
+                tx.open_table(&crate::events_dm_incoming_by_peer::TABLE)?
+                    .insert(&(body.sender(), sequence), &key)?;
+                tx.open_table(&crate::events_dm_incoming_sequence::TABLE)?
+                    .insert(&key, &sequence)?;
+                let mut counts = tx.open_table(&crate::events_dm_incoming_count_by_peer::TABLE)?;
+                let count = counts
+                    .get(&body.sender())?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(crate::DbError::Overflow)?;
+                counts.insert(&body.sender(), &count)?;
+            }
         }
         Ok(())
     }

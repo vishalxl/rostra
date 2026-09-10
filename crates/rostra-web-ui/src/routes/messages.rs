@@ -21,10 +21,40 @@ use super::{Maud, fragment, recovery};
 
 type MessageResult = Result<Response, Response>;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum MessagePageSection {
-    Conversations,
-    Devices,
+/// Count exact-session unread messages only while that session retains DM
+/// authority.
+pub(super) async fn unread_count(
+    state: &crate::UiState,
+    user: &super::unlock::session::UserSession,
+) -> usize {
+    let Some(secret) = state.id_secret(user.session_token()) else {
+        return 0;
+    };
+    let Ok(client) = state.client(user.id()).await else {
+        return 0;
+    };
+    let Ok(client) = client.client_ref() else {
+        return 0;
+    };
+    if client.require_dm_authority(secret).is_err() {
+        return 0;
+    }
+    match client
+        .db()
+        .dm_count_unread(user.session_token().to_le_bytes(), None, 99)
+        .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::warn!(
+                target: "rostra::direct_messages::http",
+                operation = "count-unread",
+                error = %error,
+                "Direct-message unread count is unavailable"
+            );
+            0
+        }
+    }
 }
 
 /// Apply private-response controls, including errors and redirects.
@@ -74,8 +104,101 @@ pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
     response
 }
 
-/// Render a complete private page without scripts, embeds, or remote resources.
-fn page(title: &str, active_section: Option<MessagePageSection>, content: Markup) -> Response {
+/// Render a complete private page without scripts, embeds, or remote
+/// resources.
+fn page(
+    title: &str,
+    conversation_panel: Markup,
+    content: Markup,
+    thread_open: bool,
+    unread: usize,
+) -> Response {
+    Maud(html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1.0";
+                meta name="color-scheme" content="light dark";
+                meta name="robots" content="noindex";
+                title { (title) " — Rostra" }
+                link rel="stylesheet" href="/assets/style.css";
+            }
+            body ."o-body" {
+                div ."o-pageLayout m-directMessagesLayout" {
+                    nav ."o-navBar m-directMessages__sidebar" ."-threadOpen"[thread_open]
+                        aria-label="Private messages"
+                    {
+                        div ."o-topNav" {
+                            a ."o-topNav__item" href="/" {
+                                span ."o-topNav__icon -home" aria-hidden="true" {}
+                                span ."o-topNav__label" { "Home" }
+                            }
+                            a ."o-topNav__item" href="https://github.com/dpc/rostra/discussions" {
+                                span ."o-topNav__icon -support" aria-hidden="true" {}
+                                span ."o-topNav__label" { "Support" }
+                            }
+                            a ."o-topNav__item" href="/settings/profile" {
+                                span ."o-topNav__icon -settings" aria-hidden="true" {}
+                                span ."o-topNav__label" { "Settings" }
+                            }
+                        }
+                        div ."m-directMessages__conversationPanel" {
+                            (conversation_panel)
+                        }
+                    }
+                    main ."o-mainBar" {
+                        div ."o-mainBarTimeline m-directMessages" {
+                            div ."o-mainBarTimeline__tabs" {
+                                a ."o-mainBarTimeline__back" href="/" aria-label="Back" {
+                                    span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+                                }
+                                a ."o-mainBarTimeline__followees" href="/following" {
+                                    span ."o-mainBarTimeline__tabIcon -followees" aria-hidden="true" {}
+                                    span ."o-mainBarTimeline__tabLabel" { "Following" }
+                                }
+                                a ."o-mainBarTimeline__network" href="/network" {
+                                    span ."o-mainBarTimeline__tabIcon -network" aria-hidden="true" {}
+                                    span ."o-mainBarTimeline__tabLabel" { "Network" }
+                                }
+                                a ."o-mainBarTimeline__news" href="/news" {
+                                    span ."o-mainBarTimeline__tabIcon -news" aria-hidden="true" {}
+                                    span ."o-mainBarTimeline__tabLabel" { "News" }
+                                }
+                                a ."o-mainBarTimeline__notifications" href="/notifications" {
+                                    span ."o-mainBarTimeline__tabIcon -notifications" aria-hidden="true" {}
+                                    span ."o-mainBarTimeline__tabLabel" { "Notifications" }
+                                }
+                                a ."o-mainBarTimeline__shoutbox" href="/shoutbox" {
+                                    span ."o-mainBarTimeline__tabIcon -shoutbox" aria-hidden="true" {}
+                                    span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
+                                }
+                                a ."o-mainBarTimeline__messages -active" href="/messages"
+                                    aria-current="page"
+                                {
+                                    span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
+                                    span ."o-mainBarTimeline__tabLabel" { "Messages" }
+                                    @if unread > 0 {
+                                        span ."o-mainBarTimeline__newCount" {
+                                            (unread.min(99))
+                                            @if unread >= 99 { "+" }
+                                        }
+                                    }
+                                }
+                            }
+                            div ."m-directMessages__thread" ."-open"[thread_open] { (content) }
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .into_response()
+}
+
+/// Render script-free message administration inside the Settings exception
+/// shell.
+fn settings_page(title: &str, content: Markup) -> Response {
     Maud(html! {
         (DOCTYPE)
         html lang="en" {
@@ -89,35 +212,30 @@ fn page(title: &str, active_section: Option<MessagePageSection>, content: Markup
             }
             body ."o-body" {
                 div ."o-pageLayout" {
-                    nav ."o-navBar" aria-label="Private messages" {
+                    nav ."o-navBar" aria-label="Settings" {
                         div ."o-topNav" {
                             a ."o-topNav__item" href="/following" {
                                 span ."o-topNav__icon -back" aria-hidden="true" {}
                                 span ."o-topNav__label" { "Back" }
                             }
-
                         }
                         div ."o-settingsNav" {
                             div ."o-settingsNav__group" {
-                                h3 ."o-settingsNav__groupHeader" { "Messages" }
-                                a ."o-settingsNav__item"
-                                    ."-active"[active_section == Some(MessagePageSection::Conversations)]
-                                    href="/messages"
-                                {
-                                    "Conversations"
-                                }
-                                a ."o-settingsNav__item"
-                                    ."-active"[active_section == Some(MessagePageSection::Devices)]
-                                    href="/settings/messages"
-                                {
-                                    "Message devices"
-                                }
+                                h3 ."o-settingsNav__groupHeader" { "Account" }
+                                a ."o-settingsNav__item" href="/settings/identity" { "Identity" }
+                                a ."o-settingsNav__item -active" href="/settings/messages"
+                                    aria-current="page" { "Message devices" }
                             }
                             div ."o-settingsNav__group" {
-                                h3 ."o-settingsNav__groupHeader" { "Session" }
-                                a ."o-settingsNav__item" href="/unlock" {
-                                    "Unlock session"
-                                }
+                                h3 ."o-settingsNav__groupHeader" { "Social" }
+                                a ."o-settingsNav__item" href="/settings/profile" { "My Profile" }
+                                a ."o-settingsNav__item" href="/settings/following" { "Following" }
+                                a ."o-settingsNav__item" href="/settings/followers" { "Followers" }
+                            }
+                            div ."o-settingsNav__group" {
+                                h3 ."o-settingsNav__groupHeader" { "Developer" }
+                                a ."o-settingsNav__item" href="/settings/events" { "Event Explorer" }
+                                a ."o-settingsNav__item" href="/settings/p2p" { "P2P Explorer" }
                             }
                         }
                     }
@@ -139,16 +257,87 @@ fn page(title: &str, active_section: Option<MessagePageSection>, content: Markup
 fn error_page(status: StatusCode, message: &str) -> Response {
     let mut response = page(
         "Private messages",
-        None,
+        html! {},
         html! {
             p role="alert" { (message) }
             p { a href="/messages" { "Return to conversations" } }
         },
+        false,
+        0,
     );
     *response.status_mut() = status;
     response
 }
 
+struct ConversationPanel {
+    rows: Vec<(rostra_client_db::dm::HistoryEntry, RostraId, usize)>,
+    unread: usize,
+}
+
+async fn conversation_panel_data(
+    db: &rostra_client_db::Database,
+    session: &MessageSession,
+    entries: &[rostra_client_db::dm::HistoryEntry],
+) -> Result<ConversationPanel, Response> {
+    let unread = db
+        .dm_count_unread(session.read_key(), None, 99)
+        .await
+        .map_err(storage_error)?;
+    let mut rows = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let peer = peer_of(entry, session.user.id());
+        let pending = db
+            .dm_count_unread(session.read_key(), Some(peer), 99)
+            .await
+            .map_err(storage_error)?;
+        rows.push((entry.clone(), peer, pending));
+    }
+    Ok(ConversationPanel { rows, unread })
+}
+
+fn render_conversation_panel(
+    panel: &ConversationPanel,
+    next: Option<&str>,
+    selected: Option<RostraId>,
+) -> Markup {
+    html! {
+        div ."m-directMessages__panelHeader" {
+            h1 { "Messages" }
+            a href="/settings/messages" { "Device settings" }
+        }
+        form ."m-directMessages__start" method="get" action="/messages/open" {
+            label for="message-peer" { "Start a conversation" }
+            div ."m-directMessages__startRow" {
+                input id="message-peer" name="peer" type="text" required
+                    autocomplete="off" placeholder="Recipient's Rostra ID";
+                (fragment::button("m-directMessages__openButton", "Open").call())
+            }
+        }
+        @if panel.rows.is_empty() {
+            p ."m-directMessages__empty" { "No conversations on this installation yet." }
+        }
+        ul ."m-directMessages__conversations" {
+            @for (entry, peer, pending) in &panel.rows {
+                li ."-active"[selected == Some(*peer)] {
+                    a href=(thread_url(*peer)) {
+                        span ."m-directMessages__conversationPeer" { (peer.to_short()) }
+                        @if *pending > 0 {
+                            span ."m-directMessages__unread" aria-label=(format!("{pending} unread messages")) {
+                                ((*pending).min(99))
+                                @if *pending >= 99 { "+" }
+                            }
+                        }
+                        span ."m-directMessages__preview" {
+                            (entry.text.chars().take(80).collect::<String>())
+                            @if entry.text.chars().count() > 80 { "…" }
+                        }
+                    }
+                }
+            }
+        }
+        @if let Some(next) = next { a href=(next) { "More conversations" } }
+    }
+}
 fn storage_error(error: rostra_client_db::DbError) -> Response {
     tracing::error!(target: "rostra::direct_messages::http", operation = "read", error = %error,
         "Private-message storage operation failed");
@@ -245,32 +434,21 @@ pub(super) async fn get_messages(
             last.sender.max(last.recipient)
         )
     });
+    let panel_data = conversation_panel_data(client.db(), &session, &entries).await?;
+    let unread = panel_data.unread;
+    let panel = render_conversation_panel(&panel_data, next.as_deref(), None);
     Ok(page(
         "Private messages",
-        Some(MessagePageSection::Conversations),
+        panel,
         html! {
-            p { "Messages are encrypted for selected devices. Local history is retained on this installation; it does not automatically appear on a new device." }
-            form method="get" action="/messages/open" {
-                label for="message-peer" { "Recipient's Rostra ID" }
-                input id="message-peer" name="peer" type="text" required autocomplete="off";
-                (fragment::button("m-directMessages__openButton", "Open").call())
+            div ."m-directMessages__welcome" {
+                h2 { "Your conversations" }
+                p { "Choose a recipient on the left, or start a new conversation." }
+                p { "History is local to this installation and does not automatically appear on another device." }
             }
-            @if entries.is_empty() { p { "No conversations on this installation yet." } }
-            ul ."m-directMessages__conversations" {
-                @for entry in &entries {
-                    li {
-                        a href=(thread_url(peer_of(entry, session.user.id()))) {
-                            (peer_of(entry, session.user.id()).to_short())
-                        }
-                        p ."m-directMessages__text" {
-                            (entry.text.chars().take(160).collect::<String>())
-                            @if entry.text.chars().count() > 160 { "…" }
-                        }
-                    }
-                }
-            }
-            @if let Some(next) = next { a href=(next) { "More conversations" } }
         },
+        false,
+        unread,
     ))
 }
 
@@ -341,7 +519,7 @@ async fn render_thread(
     error: Option<(StatusCode, &str)>,
 ) -> MessageResult {
     let entries = db
-        .dm_history_with(peer, query.before_time.zip(query.before_event), 33)
+        .dm_history_with_sequences(peer, query.before_time.zip(query.before_event), 33)
         .await
         .map_err(storage_error)?;
     let csrf = session.csrf().await?;
@@ -351,8 +529,8 @@ async fn render_thread(
         format!(
             "{}?before_time={}&before_event={}",
             thread_url(peer),
-            oldest.timestamp,
-            oldest.event_id
+            oldest.entry.timestamp,
+            oldest.entry.event_id
         )
     });
     let unavailable = match db.dm_destinations_now(peer).await {
@@ -360,12 +538,37 @@ async fn render_thread(
         Err(rostra_client_db::DbError::DmRecipientUnavailable) => true,
         Err(error) => return Err(storage_error(error)),
     };
+    let conversations = db.dm_conversations(None, 32).await.map_err(storage_error)?;
+    let mut panel_data = conversation_panel_data(db, session, &conversations).await?;
+    if error.is_none() {
+        let sequences = entries
+            .iter()
+            .filter_map(|entry| entry.incoming_sequence)
+            .collect::<Vec<_>>();
+        let marked = db
+            .dm_mark_read(session.read_key(), &sequences)
+            .await
+            .map_err(storage_error)?;
+        panel_data.unread = panel_data.unread.saturating_sub(marked);
+        if let Some((_, _, unread)) = panel_data
+            .rows
+            .iter_mut()
+            .find(|(_, row_peer, _)| *row_peer == peer)
+        {
+            *unread = unread.saturating_sub(marked);
+        }
+    }
+    let unread_after = panel_data.unread;
+    let panel = render_conversation_panel(&panel_data, None, Some(peer));
     let mut response = page(
         "Conversation",
-        Some(MessagePageSection::Conversations),
+        panel,
         html! {
-            p ."m-directMessages__identity" { "With " (peer) }
-            p { "Only selected devices can decrypt new messages. There are no delivery or read receipts." }
+            header ."m-directMessages__threadHeader" {
+                a ."m-directMessages__mobileBack" href="/messages" { "← Conversations" }
+                h1 ."m-directMessages__identity" { (peer.to_short()) }
+                p { "Private conversation" }
+            }
             @if let Some((_, error)) = error { p role="alert" { (error) } }
             @if unavailable {
                 p role="status" { "Sending is unavailable: this installation may be retired, or no eligible recipient device is known. No message will be queued." }
@@ -374,14 +577,14 @@ async fn render_thread(
             @if entries.is_empty() { p { "No messages on this installation yet." } }
             ol ."m-directMessages__history" {
                 @for entry in entries.iter().rev() {
-                    li ."m-directMessages__message" ."-outgoing"[entry.sender == session.user.id()] {
+                    li ."m-directMessages__message" ."-outgoing"[entry.entry.sender == session.user.id()] {
                         p {
-                            strong { @if entry.sender == session.user.id() { "You" } @else { "Peer" } }
+                            strong { @if entry.entry.sender == session.user.id() { "You" } @else { "Peer" } }
                             " · "
-                            (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.timestamp)))
+                            (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.entry.timestamp)))
                         }
-                        p ."m-directMessages__text" { (&entry.text) }
-                        @if entry.conflicted {
+                        p ."m-directMessages__text" { (&entry.entry.text) }
+                        @if entry.entry.conflicted {
                             p role="status" { "A conflicting authenticated message reused this message ID. The first saved text is shown." }
                         }
                     }
@@ -394,8 +597,9 @@ async fn render_thread(
                     maxlength="16384" autocomplete="off" { (draft) }
                 (fragment::button("m-directMessages__sendButton", "Send").call())
             }
-            p { a href=(thread_url(peer)) { "Refresh latest messages" } }
         },
+        true,
+        unread_after,
     );
     if let Some((status, _)) = error {
         *response.status_mut() = status;

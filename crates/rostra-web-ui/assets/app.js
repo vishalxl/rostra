@@ -1146,6 +1146,7 @@ document.addEventListener("alpine:init", () => {
     network: initial?.network || 0,
     notifications: initial?.notifications || 0,
     shoutbox: initial?.shoutbox || 0,
+    messages: initial?.messages || 0,
     init() {
       // Set up reactive title updates based on notifications
       this.$watch("notifications", (count) => {
@@ -1169,6 +1170,9 @@ document.addEventListener("alpine:init", () => {
       this.network = detail.network || 0;
       this.notifications = detail.notifications || 0;
       this.shoutbox = detail.shoutbox || 0;
+      if (detail.messages !== undefined) {
+        this.messages = detail.messages || 0;
+      }
     },
     formatCount(count) {
       return count > 9 ? " (9+)" : count > 0 ? ` (${count})` : "";

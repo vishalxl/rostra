@@ -3625,6 +3625,72 @@ body.-keyboard-nav * {
   min-width: 0;
 }
 
+.m-directMessages__sidebar {
+  width: min(22rem, 100%);
+}
+
+.m-directMessages__conversationPanel {
+  min-width: 0;
+}
+
+.m-directMessages__panelHeader,
+.m-directMessages__startRow,
+.m-directMessages__threadHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.m-directMessages__panelHeader {
+  justify-content: space-between;
+  margin-top: 1.25rem;
+}
+
+.m-directMessages__panelHeader h1,
+.m-directMessages__threadHeader h1 {
+  margin: 0;
+}
+
+.m-directMessages__start {
+  margin-block: 1rem;
+}
+
+.m-directMessages__startRow input {
+  min-width: 0;
+}
+
+.m-directMessages__startRow .u-button {
+  flex: 0 0 auto;
+}
+
+.m-directMessages__thread {
+  min-height: 32rem;
+  padding: 1rem;
+}
+
+.m-directMessages__threadHeader {
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--color-timeline-item-border);
+  padding-bottom: 0.75rem;
+}
+
+.m-directMessages__threadHeader p {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.m-directMessages__mobileBack {
+  display: none;
+}
+
+.m-directMessages__welcome {
+  max-width: 28rem;
+  margin: 6rem auto;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
 .m-directMessages form {
   display: flex;
   flex-direction: column;
@@ -3654,6 +3720,57 @@ body.-keyboard-nav * {
   padding: 0;
 }
 
+.m-directMessages__conversations {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.m-directMessages__conversations > li {
+  margin: 0;
+  padding: 0;
+}
+
+.m-directMessages__conversations > li > a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.5rem;
+  padding: 0.75rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.m-directMessages__conversations > li.-active {
+  background: var(--color-pre-bg);
+  border-color: var(--color-link);
+}
+
+.m-directMessages__conversationPeer {
+  overflow: hidden;
+  font-weight: bold;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-directMessages__preview {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-directMessages__unread {
+  min-width: 1.35rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 1rem;
+  background: var(--color-link);
+  color: var(--color-bg-default);
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-align: center;
+}
+
 .m-directMessages__message,
 .m-directMessages__conversations > li,
 .m-directMessages__devices > li {
@@ -3665,6 +3782,11 @@ body.-keyboard-nav * {
 
 .m-directMessages__message.-outgoing {
   background-color: var(--color-pre-bg);
+  margin-left: 15%;
+}
+
+.m-directMessages__message:not(.-outgoing) {
+  margin-right: 15%;
 }
 
 .m-directMessages__text {
@@ -3690,6 +3812,51 @@ body.-keyboard-nav * {
 
 .m-directMessages__retireButtonIcon {
   background: url('/assets/icons/circle-xmark.svg') center/contain no-repeat;
+}
+
+@media (max-width: 767px) {
+  .m-directMessagesLayout {
+    display: flex;
+  }
+
+  .m-directMessagesLayout > .m-directMessages__sidebar {
+    display: contents;
+  }
+
+  .m-directMessagesLayout > .m-directMessages__sidebar > .o-topNav {
+    order: 1;
+    padding: 5pt;
+  }
+
+  .m-directMessagesLayout > .o-mainBar {
+    order: 2;
+  }
+
+  .m-directMessagesLayout .m-directMessages__conversationPanel {
+    order: 3;
+    padding: 5pt;
+  }
+
+  .m-directMessages__sidebar.-threadOpen .m-directMessages__conversationPanel {
+    display: none;
+  }
+
+  .m-directMessages__sidebar.-threadOpen {
+    width: auto;
+  }
+
+  .m-directMessages__mobileBack {
+    display: inline;
+  }
+
+  .m-directMessages__thread {
+    min-height: 0;
+  }
+
+  .m-directMessages__thread:not(.-open),
+  .m-directMessages__welcome {
+    display: none;
+  }
 }
 
 .o-shoutbox__submitButtonIcon {

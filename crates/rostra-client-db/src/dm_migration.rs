@@ -1,8 +1,9 @@
 //! Preserve non-replayable messaging state across total migration.
 
 use redb::TableHandle as _;
+use snafu::ResultExt as _;
 
-use crate::{Database, DbResult, WriteTransactionCtx};
+use crate::{Database, DbResult, DirectMessageSnafu, WriteTransactionCtx};
 
 pub(crate) const DM_SCHEMA_VERSION: u64 = 32;
 
@@ -19,6 +20,13 @@ impl Database {
     pub(crate) fn init_dm_tables_tx(tx: &WriteTransactionCtx) -> DbResult<()> {
         tx.open_table(&crate::events_dm_pending::TABLE)?;
         tx.open_table(&crate::events_dm_history_by_conversation::TABLE)?;
+        tx.open_table(&crate::events_dm_incoming::TABLE)?;
+        tx.open_table(&crate::events_dm_incoming_by_peer::TABLE)?;
+        tx.open_table(&crate::events_dm_incoming_sequence::TABLE)?;
+        tx.open_table(&crate::events_dm_incoming_count_by_peer::TABLE)?;
+        tx.open_table(&crate::ids_dm_read::TABLE)?;
+        tx.open_table(&crate::ids_dm_read_count::TABLE)?;
+        tx.open_table(&crate::ids_dm_read_count_by_peer::TABLE)?;
         tx.open_table(&crate::ids_dm_devices_by_interval::TABLE)?;
         macro_rules! init {
             ($tx:expr, $name:ident) => {
@@ -48,6 +56,12 @@ impl Database {
             };
         }
         dm_tables!(stash, tx);
+        if 33 <= source_ver {
+            stash!(tx, events_dm_incoming_sequence);
+            stash!(tx, ids_dm_read);
+            stash!(tx, ids_dm_read_count);
+            stash!(tx, ids_dm_read_count_by_peer);
+        }
         Ok(())
     }
 
@@ -82,6 +96,12 @@ impl Database {
             }};
         }
         dm_tables!(restore, tx);
+        if 33 <= source_ver {
+            restore!(tx, events_dm_incoming_sequence);
+            restore!(tx, ids_dm_read);
+            restore!(tx, ids_dm_read_count);
+            restore!(tx, ids_dm_read_count_by_peer);
+        }
         Self::rebuild_dm_history_index_tx(tx)?;
         Self::rebuild_dm_device_index_tx(tx)?;
         Ok(())
@@ -89,10 +109,34 @@ impl Database {
 
     pub(crate) fn rebuild_dm_history_index_tx(tx: &WriteTransactionCtx) -> DbResult<()> {
         let mut index = tx.open_table(&crate::events_dm_history_by_conversation::TABLE)?;
+        let mut incoming = tx.open_table(&crate::events_dm_incoming::TABLE)?;
+        let mut incoming_by_peer = tx.open_table(&crate::events_dm_incoming_by_peer::TABLE)?;
+        let mut incoming_sequence = tx.open_table(&crate::events_dm_incoming_sequence::TABLE)?;
+        let mut incoming_count_by_peer =
+            tx.open_table(&crate::events_dm_incoming_count_by_peer::TABLE)?;
         index.retain(|_, _| false)?;
+        incoming.retain(|_, _| false)?;
+        incoming_by_peer.retain(|_, _| false)?;
+        incoming_count_by_peer.retain(|_, _| false)?;
+        let self_id = tx
+            .open_table(&crate::ids_self::TABLE)?
+            .get(&())?
+            .ok_or(rostra_dm::Error::Invalid)
+            .context(DirectMessageSnafu)?
+            .value_try()?
+            .rostra_id;
+        let mut next_sequence = incoming_sequence
+            .range(..)?
+            .filter_map(|row| row.ok())
+            .filter_map(|(_, sequence)| sequence.value_try().ok())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(crate::DbError::Overflow)?;
         for row in tx.open_table(&crate::events_dm_history::TABLE)?.range(..)? {
             let (key, entry) = row?;
             let entry = entry.value_try()?;
+            let key = key.value_try()?;
             index.insert(
                 &(
                     entry.sender.min(entry.recipient),
@@ -100,8 +144,30 @@ impl Database {
                     entry.timestamp,
                     entry.event_id,
                 ),
-                &key.value_try()?,
+                &key,
             )?;
+            if entry.recipient == self_id {
+                let sequence = incoming_sequence
+                    .get(&key)?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or_else(|| {
+                        let sequence = next_sequence;
+                        next_sequence = next_sequence.saturating_add(1);
+                        sequence
+                    });
+                incoming.insert(&sequence, &key)?;
+                incoming_by_peer.insert(&(entry.sender, sequence), &key)?;
+                incoming_sequence.insert(&key, &sequence)?;
+                let count = incoming_count_by_peer
+                    .get(&entry.sender)?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(crate::DbError::Overflow)?;
+                incoming_count_by_peer.insert(&entry.sender, &count)?;
+            }
         }
         Ok(())
     }
@@ -117,6 +183,10 @@ impl Database {
             };
         }
         dm_tables!(cleanup, tx);
+        cleanup!(tx, events_dm_incoming_sequence);
+        cleanup!(tx, ids_dm_read);
+        cleanup!(tx, ids_dm_read_count);
+        cleanup!(tx, ids_dm_read_count_by_peer);
         Ok(())
     }
 }

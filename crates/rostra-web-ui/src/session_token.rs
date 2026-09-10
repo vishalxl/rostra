@@ -32,4 +32,9 @@ impl SessionToken {
     pub(crate) fn as_i128(self) -> i128 {
         self.0
     }
+
+    /// Encode the opaque session identifier for account-local durable state.
+    pub(crate) fn to_le_bytes(self) -> [u8; 16] {
+        self.0.to_le_bytes()
+    }
 }

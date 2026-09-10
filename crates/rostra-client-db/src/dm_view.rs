@@ -10,6 +10,15 @@ use snafu::ResultExt as _;
 use crate::dm::HistoryEntry;
 use crate::{Database, DbResult, DirectMessageSnafu};
 
+/// Retained history paired with its local incoming-arrival sequence, when any.
+pub struct SequencedHistoryEntry {
+    /// Retained authenticated message.
+    pub entry: HistoryEntry,
+    /// Monotonic local sequence for incoming messages; outgoing messages have
+    /// none.
+    pub incoming_sequence: Option<u64>,
+}
+
 /// Public local installation metadata, without epoch secrets.
 pub struct LocalInstallation {
     /// Stable random identifier, replaced only by explicit re-enrollment.
@@ -19,6 +28,125 @@ pub struct LocalInstallation {
 }
 
 impl Database {
+    /// Read a bounded newest-first history page with local incoming sequences.
+    pub async fn dm_history_with_sequences(
+        &self,
+        peer: RostraId,
+        before: Option<(u64, ShortEventId)>,
+        limit: usize,
+    ) -> DbResult<Vec<SequencedHistoryEntry>> {
+        let entries = self.dm_history_with(peer, before, limit).await?;
+        self.read_with(|tx| {
+            let sequences = tx.open_table(&crate::events_dm_incoming_sequence::TABLE)?;
+            entries
+                .into_iter()
+                .map(|entry| {
+                    let incoming_sequence = sequences
+                        .get(&(entry.sender, entry.message_id))?
+                        .map(|row| row.value_try())
+                        .transpose()?;
+                    Ok(SequencedHistoryEntry {
+                        entry,
+                        incoming_sequence,
+                    })
+                })
+                .collect()
+        })
+        .await
+    }
+
+    /// Count exact unread incoming messages for one account-local browser
+    /// session.
+    pub async fn dm_count_unread(
+        &self,
+        session: [u8; 16],
+        peer: Option<RostraId>,
+        limit: usize,
+    ) -> DbResult<usize> {
+        self.read_with(|tx| {
+            let (total, read) = if let Some(peer) = peer {
+                let total = tx
+                    .open_table(&crate::events_dm_incoming_count_by_peer::TABLE)?
+                    .get(&peer)?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or(0);
+                let read = tx
+                    .open_table(&crate::ids_dm_read_count_by_peer::TABLE)?
+                    .get(&(session, peer))?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or(0);
+                (total, read)
+            } else {
+                let total = tx
+                    .open_table(&crate::events_dm_incoming::TABLE)?
+                    .last()?
+                    .map(|(sequence, _)| sequence.value_try())
+                    .transpose()?
+                    .unwrap_or(0);
+                let read = tx
+                    .open_table(&crate::ids_dm_read_count::TABLE)?
+                    .get(&(session, ()))?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or(0);
+                (total, read)
+            };
+            Ok(total.saturating_sub(read).min(limit as u64) as usize)
+        })
+        .await
+    }
+
+    /// Atomically mark only the supplied incoming local-arrival sequences read.
+    pub async fn dm_mark_read(&self, session: [u8; 16], sequences: &[u64]) -> DbResult<usize> {
+        let sequences = sequences.iter().copied().take(64).collect::<Vec<_>>();
+        self.write_with(|tx| {
+            let incoming = tx.open_table(&crate::events_dm_incoming::TABLE)?;
+            let history = tx.open_table(&crate::events_dm_history::TABLE)?;
+            let mut markers = tx.open_table(&crate::ids_dm_read::TABLE)?;
+            let mut total_counts = tx.open_table(&crate::ids_dm_read_count::TABLE)?;
+            let mut peer_counts = tx.open_table(&crate::ids_dm_read_count_by_peer::TABLE)?;
+            let mut marked = 0usize;
+            for sequence in sequences {
+                if markers.get(&(session, sequence))?.is_some() {
+                    continue;
+                }
+                let key = incoming
+                    .get(&sequence)?
+                    .ok_or(rostra_dm::Error::Invalid)
+                    .context(DirectMessageSnafu)?
+                    .value_try()?;
+                let peer = history
+                    .get(&key)?
+                    .ok_or(rostra_dm::Error::Invalid)
+                    .context(DirectMessageSnafu)?
+                    .value_try()?
+                    .sender;
+                markers.insert(&(session, sequence), &())?;
+                let total = total_counts
+                    .get(&(session, ()))?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(crate::DbError::Overflow)?;
+                total_counts.insert(&(session, ()), &total)?;
+                let peer_count = peer_counts
+                    .get(&(session, peer))?
+                    .map(|value| value.value_try())
+                    .transpose()?
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(crate::DbError::Overflow)?;
+                peer_counts.insert(&(session, peer), &peer_count)?;
+                marked += 1;
+            }
+            Ok(marked)
+        })
+        .await
+    }
+
     /// Return at most 64 conversations in participant-pair order.
     ///
     /// Each conversation uses two index seeks, regardless of its history size.

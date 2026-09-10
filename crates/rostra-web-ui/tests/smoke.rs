@@ -128,8 +128,11 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     let response = driver.get("/messages").await;
     assert_eq!(response.status(), 200);
     let document = Html::parse_document(&response.text().await.unwrap());
-    {
-        let (href, label) = ("/following", "Back");
+    for (href, label) in [
+        ("/", "Home"),
+        ("https://github.com/dpc/rostra/discussions", "Support"),
+        ("/settings/profile", "Settings"),
+    ] {
         let selector = Selector::parse(&format!(".o-topNav a[href='{href}']")).unwrap();
         let item = document
             .select(&selector)
@@ -144,30 +147,35 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
         assert!(item.text().any(|text| text.trim() == label));
     }
     for (href, label) in [
-        ("/messages", "Conversations"),
-        ("/settings/messages", "Message devices"),
-        ("/unlock", "Unlock session"),
+        ("/following", "Following"),
+        ("/network", "Network"),
+        ("/news", "News"),
+        ("/notifications", "Notifications"),
+        ("/shoutbox", "Shoutbox"),
+        ("/messages", "Messages"),
     ] {
-        let selector = Selector::parse(&format!(".o-settingsNav a[href='{href}']")).unwrap();
+        let selector =
+            Selector::parse(&format!(".o-mainBarTimeline__tabs a[href='{href}']")).unwrap();
         let item = document
             .select(&selector)
             .next()
-            .unwrap_or_else(|| panic!("missing private-message navigation item {href}"));
+            .unwrap_or_else(|| panic!("missing private-message top-level tab {href}"));
         assert!(item.text().any(|text| text.trim() == label));
     }
     assert!(
         document
-            .select(
-                &Selector::parse(
-                    "main.o-mainBar .o-mainBarTimeline .o-mainBarTimeline__settingsTitle",
-                )
-                .unwrap(),
-            )
-            .any(|title| title.text().any(|text| text.trim() == "Private messages"))
+            .select(&Selector::parse(".m-directMessages__conversationPanel").unwrap())
+            .next()
+            .is_some()
     );
     assert!(
         document
-            .select(&Selector::parse(".o-settingsNav__item.-active[href='/messages']").unwrap())
+            .select(
+                &Selector::parse(
+                    ".o-mainBarTimeline__messages.-active[href='/messages'][aria-current='page']",
+                )
+                .unwrap(),
+            )
             .next()
             .is_some()
     );

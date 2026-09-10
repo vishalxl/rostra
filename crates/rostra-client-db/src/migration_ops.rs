@@ -84,7 +84,9 @@ pub(crate) struct LegacyEventReceivedRecord {
 /// Version 30 adds disposable retention policy indexes with bounded rebuilding.
 /// Version 31 adds disposable bounded-runtime pressure state.
 /// Version 32 adds authoritative, non-replayable direct-message source tables.
-const DB_VER: u64 = 32;
+/// Version 33 adds derived local-arrival indexes for direct-message unread
+/// state.
+const DB_VER: u64 = 33;
 
 /// Versions older than this require a total migration.
 ///
@@ -299,6 +301,9 @@ impl Database {
                 if init_time_table.get(&())?.is_none() {
                     init_time_table.insert(&(), &Timestamp::now())?;
                 }
+            }
+            if cur_db_ver < 33 {
+                Self::rebuild_dm_history_index_tx(dbtx)?;
             }
         }
 
@@ -596,7 +601,6 @@ impl Database {
         Self::init_tables_tx(dbtx)?;
 
         // Step 4: Restore stable database metadata.
-        Self::restore_dm_tables_tx(dbtx, source_ver)?;
         {
             let temp_table = dbtx.open_table(&ids_self_temp)?;
             let mut ids_self_table = dbtx.open_table(&ids_self::TABLE)?;
@@ -604,6 +608,7 @@ impl Database {
                 ids_self_table.insert(&(), &record)?;
             }
         }
+        Self::restore_dm_tables_tx(dbtx, source_ver)?;
         {
             let temp_table = dbtx.open_table(&db_init_time_temp)?;
             let mut db_init_time_table = dbtx.open_table(&crate::db_init_time::TABLE)?;
