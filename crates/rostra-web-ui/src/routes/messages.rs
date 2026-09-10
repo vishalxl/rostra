@@ -16,6 +16,7 @@ use serde::Deserialize;
 
 use self::session::MessageSession;
 pub(super) use self::settings::{get_retirement, get_settings, post_settings};
+use super::post::metadata::display_name_or_short_id;
 use super::url::{RostraPathId, redirect_to_canonical};
 use super::{Maud, fragment, recovery};
 
@@ -571,6 +572,14 @@ async fn render_thread(
         Err(rostra_client_db::DbError::DmRecipientUnavailable) => true,
         Err(error) => return Err(storage_error(error)),
     };
+    let peer_profile = db.get_social_profile(peer).await;
+    let peer_display_name = peer_profile
+        .as_ref()
+        .map(|profile| profile.display_name.as_str())
+        .map(str::trim)
+        .filter(|display_name| !display_name.is_empty());
+    let peer_short_id = peer.to_short().to_string();
+    let peer_label = display_name_or_short_id(peer_display_name, &peer_short_id);
     let conversations = db.dm_conversations(None, 32).await.map_err(storage_error)?;
     let mut panel_data = conversation_panel_data(db, session, &conversations).await?;
     if error.is_none() {
@@ -599,7 +608,10 @@ async fn render_thread(
         html! {
             header ."m-directMessages__threadHeader" {
                 a ."m-directMessages__mobileBack" href="/messages" { "← Conversations" }
-                h1 ."m-directMessages__identity" { (peer.to_short()) }
+                h1 { (peer_label) }
+                @if peer_display_name.is_some() {
+                    p ."m-directMessages__identity" { (peer_short_id) }
+                }
                 p { "Private conversation" }
             }
             @if let Some((_, error)) = error { p role="alert" { (error) } }

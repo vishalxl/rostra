@@ -306,6 +306,28 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     let page = response.text().await.unwrap();
     let document = Html::parse_document(&page);
     assert_conversation_panel_keeps_its_workflow_controls(&document);
+    let header = document
+        .select(&Selector::parse(".m-directMessages__threadHeader").unwrap())
+        .next()
+        .expect("conversation header");
+    assert_eq!(
+        header
+            .select(&Selector::parse("h1").unwrap())
+            .next()
+            .expect("recipient name")
+            .text()
+            .collect::<String>(),
+        "Bob Example"
+    );
+    assert_eq!(
+        header
+            .select(&Selector::parse(".m-directMessages__identity").unwrap())
+            .next()
+            .expect("recipient ID")
+            .text()
+            .collect::<String>(),
+        bob_id.to_short().to_string()
+    );
     assert!(
         document
             .select(&Selector::parse(".m-directMessages__availabilityWarning").unwrap())
@@ -635,5 +657,99 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     );
     drop(alice_client);
     drop(bob_client);
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conversation_header_falls_back_to_ids_and_escapes_local_profile_names() {
+    let server = TestServer::start().await;
+    let alice = server.driver();
+    let bob = server.driver();
+    let charlie = server.driver();
+    let (alice_id, _) = alice.login_new_identity().await;
+    let (bob_id, bob_secret) = bob.login_new_identity().await;
+    let (charlie_id, _) = charlie.login_new_identity().await;
+    replicate_device(&server, bob_id, alice_id).await;
+    replicate_device(&server, charlie_id, alice_id).await;
+
+    let fallback = alice
+        .get(&format!("/messages/{}", charlie_id.to_short()))
+        .await;
+    assert_eq!(fallback.status(), StatusCode::OK);
+    private_headers(&fallback);
+    let fallback = Html::parse_document(&fallback.text().await.unwrap());
+    let fallback_header = fallback
+        .select(&Selector::parse(".m-directMessages__threadHeader").unwrap())
+        .next()
+        .expect("conversation header");
+    assert_eq!(
+        fallback_header
+            .select(&Selector::parse("h1").unwrap())
+            .next()
+            .expect("fallback identity")
+            .text()
+            .collect::<String>(),
+        charlie_id.to_short().to_string()
+    );
+    assert!(
+        fallback_header
+            .select(&Selector::parse(".m-directMessages__identity").unwrap())
+            .next()
+            .is_none(),
+        "the fallback ID should not repeat as secondary context"
+    );
+
+    let malicious_name = "<img src=x onerror=alert(1)>".to_owned();
+    server
+        .client(bob_id)
+        .await
+        .post_social_profile_update(bob_secret, malicious_name.clone(), String::new(), None)
+        .await
+        .unwrap();
+    let profile_event = server
+        .client(bob_id)
+        .await
+        .db()
+        .get_social_profile(bob_id)
+        .await
+        .unwrap()
+        .event_id;
+    replicate_event(&server, bob_id, alice_id, profile_event).await;
+
+    let page = alice.get(&format!("/messages/{}", bob_id.to_short())).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    private_headers(&page);
+    let page = page.text().await.unwrap();
+    assert!(!page.contains(&malicious_name));
+    let document = Html::parse_document(&page);
+    let header = document
+        .select(&Selector::parse(".m-directMessages__threadHeader").unwrap())
+        .next()
+        .expect("conversation header");
+    assert_eq!(
+        header
+            .select(&Selector::parse("h1").unwrap())
+            .next()
+            .expect("escaped recipient name")
+            .text()
+            .collect::<String>(),
+        malicious_name
+    );
+    assert_eq!(
+        header
+            .select(&Selector::parse(".m-directMessages__identity").unwrap())
+            .next()
+            .expect("recipient ID")
+            .text()
+            .collect::<String>(),
+        bob_id.to_short().to_string()
+    );
+    assert!(
+        header
+            .select(&Selector::parse("img, script, iframe").unwrap())
+            .next()
+            .is_none(),
+        "profile names must remain escaped text"
+    );
     server.shutdown().await;
 }

@@ -32,7 +32,7 @@ use crate::util::extractors::AjaxRequest;
 use crate::util::time::{format_timestamp, format_timestamp_iso};
 use crate::{SharedState, UiState};
 
-mod metadata;
+pub(crate) mod metadata;
 #[cfg(test)]
 mod tests;
 

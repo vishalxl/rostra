@@ -3642,6 +3642,8 @@ body.-keyboard-nav * {
 
 .m-directMessages__threadHeader h1 {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .m-directMessages__start {
