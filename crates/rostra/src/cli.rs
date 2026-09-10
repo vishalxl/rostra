@@ -78,6 +78,11 @@ pub enum OptsCmd {
 
 #[derive(Debug, Args)]
 pub struct WebUiOpts {
+    /// Startup-only per-account JSON retention config; omitted means Disabled.
+    /// Experimental scoring and 90% targets; no hot reload or disk-space
+    /// promise.
+    #[arg(long)]
+    pub payload_retention_config: Option<PathBuf>,
     /// Path to the secret file for authentication
     #[arg(long)]
     pub secret_file: Option<PathBuf>,

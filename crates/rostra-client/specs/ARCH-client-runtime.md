@@ -82,8 +82,8 @@ queue-front event cannot starve other authors. The connection cache owns shared-
 reuse and per-attempt buffer admission; transport APIs retain caller-owned guards
 without depending on the database crate. Local publication returns a clear storage
 capacity error, while pushed payloads can receive the existing refusal response
-before sending bytes. Production admission remains disabled without a setter;
-caller integration alone does not authorize runtime pruning.
+before sending bytes. Immutable startup account configuration selects Disabled
+(the default), observation-only DryRun, or experimental Enforce.
 
 Multi-client hosting can install immutable, explicitly listed account acquisition
 ledgers before exposing HTTP or loading a database. The same ledger follows a
@@ -99,8 +99,11 @@ does not bound all live resources. Cold
 initialization completes independently of request cancellation so open storage
 cannot become undiscoverable before publication.
 Unverified unlisted identities do not create registry entries or databases.
-Account ownership is implemented, but every constructible account is still
-disabled: runtime mode/budget/policy configuration and enforcement remain absent.
+Configured retention starts before request handlers and signing tasks, even when
+optional replication tasks are disabled. It belongs to the same pre-retained
+task group: cancellation, partial-constructor failure and panic all require actual
+old-task joins, including tasks without database references, before reconstruction.
+DryRun keeps forecast policy separate from the actual Disabled admission ledger.
 There is no live reconfiguration API; startup configuration changes require fresh
 construction after old client work and guards have quiesced.
 

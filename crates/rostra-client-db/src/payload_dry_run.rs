@@ -23,21 +23,21 @@ use crate::{
 
 /// Explicit whole-snapshot bounds; no continuation can enlarge this model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DryRunLimits {
+pub struct DryRunLimits {
     /// All visited headers, including terminal and Missing events.
-    pub(crate) events: NonZeroUsize,
+    pub events: NonZeroUsize,
     /// Distinct retained authors kept in bounded model memory.
-    pub(crate) authors: NonZeroUsize,
+    pub authors: NonZeroUsize,
     /// Sum of retained signed lengths admitted to the model, not allocated
     /// bytes.
-    pub(crate) logical_bytes: u64,
+    pub logical_bytes: u64,
     /// Cooperative allowance including reading, ranking and projection.
-    pub(crate) time: Duration,
+    pub time: Duration,
 }
 
 /// Why this replacement does or does not contain a complete projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DryRunStatus {
+pub enum DryRunStatus {
     /// All source headers fit and accounted retained totals agree.
     Complete,
     /// Accounting is unready; DryRun does not rebuild it.
@@ -54,22 +54,22 @@ pub(crate) enum DryRunStatus {
 
 /// A retained-only, fresh-start pressure projection, never actual releases.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DryRunProjection {
+pub struct DryRunProjection {
     /// Effective forecast ceilings for every retained author in this snapshot;
     /// bounded by the author limit, not by the configured override map.
-    pub(crate) author_high_waters: BTreeMap<RostraId, u64>,
+    pub author_high_waters: BTreeMap<RostraId, u64>,
     /// Logical victims in model order; never newly pruned events.
-    pub(crate) victims: Vec<(EventId, QuotaPruneReason)>,
+    pub victims: Vec<(EventId, QuotaPruneReason)>,
     /// Projected logical bytes removed, charging shared hashes per event.
-    pub(crate) logical_victim_bytes: u64,
+    pub logical_victim_bytes: u64,
     /// Projected retained bytes after author-first/global 90% targets.
-    pub(crate) logical_remaining_bytes: u64,
+    pub logical_remaining_bytes: u64,
     /// Observed retained bytes excluded by kind, identity, origins or grace.
-    pub(crate) protected_logical_bytes: u64,
+    pub protected_logical_bytes: u64,
     /// Triggered author targets still unmet by eligible retained content.
-    pub(crate) unmet_authors: usize,
+    pub unmet_authors: usize,
     /// Whether a triggered global low-water target remains unmet.
-    pub(crate) unmet_global: bool,
+    pub unmet_global: bool,
 }
 
 /// One immutable as-of observation, not a current-state or reclamation promise.
@@ -80,27 +80,27 @@ pub(crate) struct DryRunProjection {
 /// Reservations, demand, future arrivals and pre-existing Enforce hysteresis
 /// are NOT simulated.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DryRunReport {
+pub struct DryRunReport {
     /// Fixed trusted walltime sampled after opening the read transaction.
-    pub(crate) as_of: Timestamp,
+    pub as_of: Timestamp,
     /// Immutable forecast policy and storing identity, independent of indexes.
-    pub(crate) generation: RetentionGeneration,
+    pub generation: RetentionGeneration,
     /// Allowances that can make a large database permanently incomplete.
-    pub(crate) limits: DryRunLimits,
+    pub limits: DryRunLimits,
     /// Forecast global high water; the target is floor(90% of this value).
-    pub(crate) database_high_water: u64,
+    pub database_high_water: u64,
     /// Completeness or the first exhausted allowance.
-    pub(crate) status: DryRunStatus,
+    pub status: DryRunStatus,
     /// Successfully visited source rows, at most the event allowance.
-    pub(crate) visited: usize,
+    pub visited: usize,
     /// Exact persisted accounting at this snapshot, absent while unready.
-    pub(crate) observed_usage: Option<PayloadUsage>,
+    pub observed_usage: Option<PayloadUsage>,
     /// Guarded ledger counters sampled before the read transaction. Disabled
     /// means zero ledger ownership, NOT zero actual buffers or aggregate RAM.
     /// Reservations and demand are not part of the projected workload.
-    pub(crate) observed_guarded_admission: crate::PayloadAdmissionUsage,
+    pub observed_guarded_admission: crate::PayloadAdmissionUsage,
     /// Only complete snapshots contain projections.
-    pub(crate) projection: Option<DryRunProjection>,
+    pub projection: Option<DryRunProjection>,
 }
 
 /// Immutable observation-only configuration and one bounded replacement report.
@@ -161,8 +161,8 @@ struct Candidate {
 }
 
 impl DryRun {
-    /// Private fixture construction; no partial production activation surface.
-    #[cfg(test)]
+    /// Validate explicit snapshot allowances without reading or changing
+    /// storage.
     pub(crate) fn new(config: PayloadAdmissionConfig, limits: DryRunLimits) -> Option<Self> {
         if limits.events.get() > crate::PAYLOAD_MAINTENANCE_MAX
             || limits.authors.get() > limits.events.get()

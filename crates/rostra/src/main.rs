@@ -1,4 +1,7 @@
 mod cli;
+mod payload_retention;
+#[cfg(test)]
+mod payload_retention_tests;
 
 use std::io;
 use std::net::SocketAddr;
@@ -218,13 +221,21 @@ async fn handle_cmd(opts: Opts) -> CliResult<serde_json::Value> {
             pending().await
         }
         cli::OptsCmd::WebUi(ref web_opts) => {
+            let payload_accounts =
+                payload_retention::read(web_opts.payload_retention_config.as_deref())
+                    .await
+                    .context(DataDirSnafu)?;
             let pkarr_client = Client::make_pkarr_client().context(InitSnafu)?;
-            let clients = MultiClient::new(
+            let clients = MultiClient::new_with_payload_accounts(
                 opts.global.data_dir().to_owned(),
                 web_opts.max_clients,
                 web_opts.public,
                 pkarr_client,
-            );
+                payload_accounts,
+            )
+            .map_err(|error| CliError::Other {
+                source: Box::new(error),
+            })?;
             let ui_opts = make_web_opts(opts.global.data_dir(), web_opts);
 
             if !web_opts.skip_xdg_open {

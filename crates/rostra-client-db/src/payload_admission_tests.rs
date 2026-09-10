@@ -48,7 +48,8 @@ async fn ready(db: &Database) -> anyhow::Result<()> {
     Ok(())
 }
 
-// This is the only activation path: no production API or config wiring exists.
+// Primitive fixtures can replace config to exercise stale-owner rejection;
+// production configuration is immutable account startup input.
 async fn configure(db: &Database, config: PayloadAdmissionConfig) -> anyhow::Result<()> {
     db.write_with(|_| {
         let mut state = db.payload_admission.state.lock().unwrap();

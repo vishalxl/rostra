@@ -196,7 +196,8 @@ origins are local source data, not reception-order projection timestamps.
 Schema-27 cutover leaves older events without origins; neither replay nor late
 payload delivery invents their missing history. Missing origins must fail closed
 for quota eligibility. Wall-clock observations alone do not establish clock
-reliability; no destructive quota worker is enabled.
+reliability. The configured runtime trusts system time, including startup, without
+a clock acknowledgement or monitoring subsystem.
 
 Durable local quota decisions retain their reason and decision timestamp across
 total migration. Replay applies them during the envelope pass before available
@@ -219,9 +220,9 @@ and reaction contributions, receipt, mention and news indexes without inventing
 author deletion. Canonical replacement/deletion lineage and the materialization
 feed remain intact. Lifecycle, original reason/time, reference and usage changes,
 fetch removal and quota GC nomination commit together, with lossy invalidation
-notifications only after commit. Accounting must be ready. Quota pressure,
-budgets and a concrete clock-trust policy remain caller responsibilities;
-no automatic destructive worker or restoration path is enabled.
+notifications only after commit. Accounting must be ready. The configured Enforce
+runtime supplies pressure, explicit budgets and system-clock trust within the same
+writer authority boundary. No restoration path is enabled.
 
 Disposable candidate indexes contain only nonempty Processed remote SocialPosts
 with known immutable origins after first-materialization grace. The complete
@@ -236,20 +237,21 @@ Index readiness is independent of accounting and quota-nomination recovery.
 Ordered selection is bounded by visited index rows, not only returned candidates,
 and rechecks current lifecycle and immutable eligibility times. An untrusted clock
 returns no candidates; a backwards clock cannot use a previously promoted row to
-bypass grace or origin protection. Detecting clock jumps and establishing trust
-remain external responsibilities. Advisory selection does not authorize eviction:
+bypass grace or origin protection. The runtime does not detect clock jumps;
+forward jumps may expire grace. Advisory selection does not authorize eviction:
 active-generation, eligibility and pressure rechecks must compose with the checked
 quota transition in one write transaction.
 
-The non-activatable internal driver composes those checks under writer and demand
+The configured Enforce driver composes those checks under writer and demand
 cancellation arbitration, trusting the system clock including startup. General
 author-first/global pressure counts logical reservations and preserves triggered
 low-water targets across bounded turns. Fits and exact partially serviced demand
 ownership prevent general pressure from spending acquisition-freed room twice.
 Targets and candidate cursors are disposable, never authority to replay a quota
-decision. Every production account remains Disabled-only.
+decision. Disabled remains the default; enabled modes require immutable,
+explicit per-account startup configuration before acquisition or Client exposure.
 
-In that private driver, a ranked Missing rejection requires a fresh currently
+In that driver, a ranked Missing rejection requires a fresh currently
 eligible retained index head strictly above the incoming full rank, retained-only
 pressure independent of reservations, and no Fits/exact partial-plan barrier or
 live incoming reservation. Protected bytes count against caps but do not alone
@@ -260,11 +262,11 @@ logical bytes. It is a current-policy decision, not a promise about future fit.
 
 ## Deduplication and retrieval
 
-The shared admission foundation is disabled in production: no configuration
-activation path or destructive worker exists yet. Its database boundary guards
+The shared admission boundary is Disabled by default; explicit Enforce startup
+configuration installs admission and a caller-owned retention worker. It guards
 materialization rather than only network downloads, so local publication,
 direct verified-content callers and hash-store reuse cannot bypass logical
-ceilings when the foundation is exercised. Temporary admission deferral is not
+ceilings. Temporary admission deferral is not
 Invalid, Pruned or a failed peer fetch. Admission-aware ingestion retains the
 envelope and Missing schedule while deferring projections; legacy fallible
 ingestion instead returns a structured capacity error and rolls back atomically.
@@ -284,10 +286,11 @@ HTTP parsing consult provisional capacity before a verified envelope exists, the
 bind the surviving allocation to its logical reservation. Explicit startup account
 ownership is shared across preparse and lazy database load, with exclusive database
 attachment. Reattachment invalidates old logical leases, not still-owned buffers.
-All constructible accounts remain disabled. Unloaded HTTP accounts retain the
-ordinary per-request body limit and are loaded only after validation; runtime
-activation must still supply startup preparse policy without creating databases
-from unverified paths. This bounds declared
+Unloaded configured accounts have the same immutable preparse policy before
+opening storage. HTTP retains its ordinary per-request body limit and loads
+accounts only after validation; unverified paths create neither registry entries
+nor databases. Disabled and DryRun do not enforce aggregate buffer capacity.
+Enforce bounds declared
 acquisition capacities, not whole-process memory or physical disk.
 
 Content bytes are keyed by hash and may satisfy multiple events, but each

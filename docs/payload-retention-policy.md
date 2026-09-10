@@ -1,30 +1,35 @@
 # Experimental payload retention policy
 
+**Current integration:** the pure policy below now feeds the explicitly configured,
+joined Client retention runtime. See the [startup guide](payload-retention-startup.md).
+Disabled remains the default, but immutable startup opt-in is available. Broad operational tuning and
+holder-distance fetch ordering are separate work.
+
 `rostra_core::retention` implements the pure ranking portion of the
 [pruning proposal](payload-pruning.md), plus an in-memory logical-byte simulator.
 It does not enable pruning, change database state, or change fetching. The
-proposal's lifecycle, projection, admission and garbage-collection work remains
-necessary before any destructive integration. The database now records immutable
+database's lifecycle, projection, admission and garbage-collection integration is
+separate from this pure library. The database records immutable
 retention origins and preserves quota-decision source metadata across replay;
 see the [database checkpoint](payload-retention-database.md). The database now
 also exposes explicit checked quota transitions, projection dematerialization,
-and quota-only nominations/recovery. No automatic destructive worker is enabled;
+and quota-only nominations/recovery. Explicit startup Enforce enables the worker;
 accounting readiness does not establish policy-index readiness. Disposable database
 indexes now store full policy/holder generations, bound rebuild and grace work,
 and expose advisory author/global selection. Pressure, runtime clock trust and
-transactional worker integration remain separate requirements.
-The database also has a production-disabled shared admission foundation with
+transactional worker integration supply authority, not the pure score.
+The database also has a default-Disabled shared admission boundary with
 explicit logical ceilings and separate acquisition-buffer leases. Client reads,
 shared-store reuse, local serialization and raw signed HTTP parsing now use those
-leases; no production activation API or production destructive worker exists.
-An internal test-installed driver now connects bounded demand preemption,
+leases when Enforce is configured.
+The retained Client driver connects bounded demand preemption,
 author-first/global hysteresis, quota-only collection and maintenance to buffer-free
-acquisition waiting; it is not a complete runtime or an enabled deployment option.
+acquisition waiting.
 Its demand worker also supports conservative ranked durable Missing rejection:
 a fresh currently eligible retained index head must outrank the incoming event,
 and retained-only pressure must independently exceed the applicable cap. Skipped
 or protected-only boundaries still defer; this does not simulate future fit.
-The same private driver has an observation-only DryRun branch. Its independent
+The same driver has an observation-only DryRun branch. Its independent
 forecast config leaves acquisition Disabled; bounded whole-source snapshots
 project retained-only author-first/global pressure without writes or GC.
 Incomplete snapshots publish no projection, and repeated reports are as-of
@@ -94,10 +99,10 @@ empirically selected deployment defaults.
   content state, projection readiness and zero-length payloads. A key or
   elapsed grace is not permission to discard content. See
   [SPEC-event-content-lifecycle](../crates/rostra-client-db/specs/SPEC-event-content-lifecycle.md).
-- Production runtime opt-in and Client worker integration are absent.
-  Author-specific ceilings and reservation primitives now live in the disabled
+- Immutable startup opt-in and Client worker integration live outside this module.
+  Author-specific ceilings and reservation primitives live in the default-Disabled
   database foundation, not this pure policy module. The executable pressure path
-   includes a non-activatable database driver alongside the pure simulator, both
+   includes the configured database driver alongside the pure simulator, both
    with explicit budgets. No production GiB quota is supplied.
 
 ## Reproducible simulation

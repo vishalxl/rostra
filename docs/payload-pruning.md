@@ -3,13 +3,14 @@
 **Status: proposal, not an adopted specification.** The pure experimental
 ranking policy, in-memory simulator, and durable database retention source
 metadata are implemented; see the [implementation guide](payload-retention-policy.md)
-and [database checkpoint](payload-retention-database.md). Admission/fetch ownership
-and a private, test-installed driver now integrate bounded demand/general pressure,
+and [database guide](payload-retention-database.md). Admission/fetch ownership
+and the configured runtime integrate bounded demand/general pressure,
 hysteresis, conservative ranked durable Missing rejection and quota-only collection.
-The private driver also supports bounded read-only whole-snapshot DryRun projections,
-with a separate forecast config and Disabled acquisition. No production runtime
-pruning or enabled quota configuration is available; complete Client/startup/ingress
-integration remains unfinished.
+The driver also supports bounded read-only whole-snapshot DryRun projections,
+with a separate forecast config and Disabled acquisition. Immutable per-account
+[startup configuration](payload-retention-startup.md) explicitly opts into DryRun
+or experimental Enforce; Disabled remains the default. No live configuration,
+deployment, holder-distance fetch ordering, or broad operational tuning is implied.
 
 ## Recommendation
 
@@ -64,9 +65,9 @@ Sources: [content lifecycle specification](../crates/rostra-client-db/specs/SPEC
 and [client construction](../crates/rostra-client/src/client.rs).
 These describe current behavior; the sections below propose changes.
 
-Disposable global logical/unique-byte accounting is implemented. No production
-background pruning/GC worker is enabled; only the private test-installed driver
-performs automatic pressure relief and quota-only collection.
+Disposable global logical/unique-byte accounting is implemented. Explicit startup
+Enforce enables the joined driver for automatic pressure relief and quota-only
+collection; Disabled remains the default.
 The existing `prune_event_content_tx` helper is used for oversized payloads at
 initial envelope ingestion, before ordinary projection processing. Reusing it
 for already processed payloads requires the additional lifecycle work below.

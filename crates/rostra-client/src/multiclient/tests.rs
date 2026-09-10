@@ -8,6 +8,74 @@ use tokio::sync::Notify;
 use super::MultiClient;
 use crate::Client;
 
+fn enforcing_account(id: rostra_core::id::RostraId) -> PayloadAccount {
+    use std::num::{NonZeroU64, NonZeroUsize};
+
+    use rostra_client_db::{
+        PayloadAdmissionConfig, PayloadAdmissionLimits, PayloadRetentionConfig,
+        PayloadRuntimeLimits,
+    };
+
+    PayloadAccount::configured(
+        id,
+        PayloadRetentionConfig::Enforce {
+            policy: rostra_core::retention::RetentionPolicy::new(1, 1, 0, 0, 1, 0).unwrap(),
+            admission: PayloadAdmissionConfig::new(PayloadAdmissionLimits {
+                database_bytes: NonZeroU64::new(100_000).unwrap(),
+                author_bytes: NonZeroU64::new(100_000).unwrap(),
+                overrides: Default::default(),
+                in_flight_count: NonZeroUsize::new(8).unwrap(),
+                in_flight_bytes: NonZeroU64::new(100_000).unwrap(),
+            })
+            .unwrap(),
+            limits: PayloadRuntimeLimits {
+                operations: NonZeroUsize::new(32).unwrap(),
+                bytes: 100_000,
+                gc_bytes: 100_000,
+                time: Duration::from_millis(20),
+            },
+        },
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configured_retention_runs_without_replication_and_joins_before_database_release()
+-> anyhow::Result<()> {
+    let id = RostraIdSecretKey::generate().id();
+    let mut db = Database::new_in_memory(id).await?;
+    db.attach_payload_account(&enforcing_account(id))?;
+    let client = Client::builder(id)
+        .db(db)
+        .start_request_handler(false)
+        .start_background_tasks(false)
+        .build()
+        .await?;
+    assert_eq!(client.task_handles.len(), 1);
+    let completion = (*client.task_handles).clone();
+    let database = Arc::downgrade(client.db());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if client
+                .db()
+                .retention_index_progress()
+                .await
+                .unwrap()
+                .is_some_and(|p| p.ready)
+                && client.db().get_payload_usage().await.unwrap().is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(10), completion.terminated()).await?;
+    assert!(database.upgrade().is_none());
+    Ok(())
+}
+
 /// One-shot gate at the open/attach-to-publication cancellation boundary.
 #[derive(Default)]
 pub(super) struct LoadPause {
@@ -114,7 +182,7 @@ async fn database_only_eviction_reuses_storage_then_reaps_and_reopens() -> anyho
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelled_loader_keeps_attachment_discoverable_until_publication() -> anyhow::Result<()> {
     let id = RostraIdSecretKey::generate().id();
-    let account = PayloadAccount::disabled(id);
+    let account = enforcing_account(id);
     let (_directory, manager) = manager(vec![account.clone()])?;
     let pause = Arc::new(LoadPause::default());
     *manager.load_pause.lock().unwrap() = Some(pause.clone());
@@ -180,7 +248,7 @@ async fn retired_reaper_is_bounded_and_advances_past_live_owners() -> anyhow::Re
 async fn database_rebuild_waits_for_actual_old_task_termination() -> anyhow::Result<()> {
     let a = RostraIdSecretKey::generate().id();
     let b = RostraIdSecretKey::generate().id();
-    let (_directory, manager) = manager(vec![PayloadAccount::disabled(a)])?;
+    let (_directory, manager) = manager(vec![enforcing_account(a)])?;
     let first = manager.load(a).await?;
     let started = Arc::new(Notify::new());
     let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -297,12 +365,13 @@ async fn panicked_constructor_retry_waits_for_db_less_task_join() -> anyhow::Res
     use futures::FutureExt as _;
 
     let id = RostraIdSecretKey::generate().id();
-    let (_directory, manager) = manager(vec![PayloadAccount::disabled(id)])?;
+    let (_directory, manager) = manager(vec![enforcing_account(id)])?;
     let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let task_finished = finished.clone();
     let (release, blocked) = std::sync::mpsc::channel::<()>();
     *manager.build_hook.lock().unwrap() = Some(Box::new(move |client| {
         async move {
+            assert!(client.db().has_payload_retention_runtime());
             let started = Arc::new(Notify::new());
             let task_started = started.clone();
             client

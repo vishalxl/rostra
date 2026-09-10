@@ -17,27 +17,23 @@ mod payload_admission_config;
 #[cfg(test)]
 mod payload_admission_tests;
 mod payload_allocation;
-// Runtime integration is intentionally withheld until the complete enforcement
-// worker and all acquisition paths can be enabled together.
-#[expect(dead_code)]
 mod payload_demand;
 mod payload_demand_request;
-#[allow(dead_code)]
 mod payload_demand_scan;
 mod payload_demand_state;
 #[cfg(test)]
 mod payload_demand_tests;
-#[allow(dead_code)]
 mod payload_dry_run;
 #[cfg(test)]
 mod payload_dry_run_tests;
-#[allow(dead_code)]
 mod payload_pressure;
 mod payload_reservation;
-#[allow(dead_code)]
+mod payload_retention_config;
 mod payload_runtime;
 #[cfg(test)]
 mod payload_runtime_tests;
+#[cfg(test)]
+mod payload_startup_tests;
 mod process_event_content_ops;
 mod process_event_ops;
 mod quota_pruning;
@@ -91,9 +87,12 @@ pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, 
 pub use self::payload_admission::{PayloadIngestOutcome, PayloadReservationOutcome};
 pub use self::payload_admission_config::{PayloadAdmissionConfig, PayloadAdmissionLimits};
 pub use self::payload_allocation::PayloadAllocation;
+pub use self::payload_dry_run::{DryRunLimits, DryRunProjection, DryRunReport, DryRunStatus};
 pub use self::payload_reservation::{
     PayloadAdmissionPause, PayloadAdmissionUsage, PayloadBuffer, PayloadReservation,
 };
+pub use self::payload_retention_config::PayloadRetentionConfig;
+pub use self::payload_runtime::RuntimeLimits as PayloadRuntimeLimits;
 pub use self::quota_pruning::{
     QuotaPruneOutcome, QuotaPruneRequest, QuotaPruneTarget, RetentionClock,
 };
@@ -507,11 +506,11 @@ pub struct Database {
     /// the durable transaction is still valid.
     write_and_publish_lock: std::sync::Mutex<()>,
 
-    /// Shared disabled-by-construction logical and acquisition-buffer boundary.
+    /// Shared default-Disabled logical and acquisition-buffer boundary.
     payload_admission: Arc<payload_reservation::AdmissionLedger>,
     /// Keeps an externally supplied account ledger exclusively attached.
     payload_account_owner: Option<Arc<()>>,
-    /// Non-activatable runtime integration; installed only by private tests.
+    /// Immutable startup worker and admission binding, absent when Disabled.
     payload_runtime: Option<payload_runtime::PayloadRuntime>,
 
     self_followees_updated: watch::Sender<Arc<HashMap<RostraId, IdsFolloweesRecord>>>,
@@ -1131,7 +1130,8 @@ impl Database {
     ///
     /// With admission configured, temporary capacity refusal returns
     /// [`DbError::PayloadAdmissionPaused`] with the same complete rollback.
-    /// Admission currently has no production activation path.
+    /// Input already allocated by external callers is outside pre-read
+    /// capacity; the logical materialization boundary still applies.
     pub async fn try_process_event_with_content(
         &self,
         content: &VerifiedEventContent,

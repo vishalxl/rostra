@@ -357,7 +357,8 @@ impl Client {
         #[builder(start_fn)] id: RostraId,
         #[builder(default = true)] start_request_handler: bool,
         /// When false, skips spawning background tasks (head checker, event
-        /// fetchers, etc.) even when a DB is provided. Useful for tests.
+        /// fetchers, etc.) even when a DB is provided. Configured storage
+        /// retention still starts and is joined with all other client tasks.
         #[builder(default = true)]
         start_background_tasks: bool,
         db: Option<Database>,
@@ -487,6 +488,16 @@ impl Client {
         });
 
         trace!(target: LOG_TARGET, id = %id, "Starting client tasks");
+        // Retention is part of configured storage ownership, not optional
+        // replication. Retain it before any ingress or signing task starts.
+        if client.db.has_payload_retention_runtime() {
+            let db = client.db.clone();
+            client.spawn_task(async move {
+                if let Err(error) = db.run_payload_retention().await {
+                    tracing::error!(target: LOG_TARGET, id = %id, %error, "Payload retention worker stopped");
+                }
+            });
+        }
         if start_request_handler {
             client.start_request_handler();
         }

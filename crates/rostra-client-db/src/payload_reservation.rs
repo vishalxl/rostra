@@ -58,8 +58,8 @@ pub(crate) struct AdmissionLedger {
     /// Arbitration for demand cancellation and logical lease release. Lock
     /// before `state`; writer transactions serialize logical additions.
     pub(crate) demands: Mutex<crate::payload_demand_state::DemandState>,
-    /// No production setter exists until every acquisition caller is
-    /// integrated.
+    /// Startup-installed immutable configuration plus mutable acquisition
+    /// state.
     pub(crate) state: Mutex<AdmissionState>,
     /// Lossy capacity/configuration/lifecycle wakeup; callers must recheck
     /// state.
@@ -83,7 +83,7 @@ impl AdmissionLedger {
 pub(crate) struct AdmissionState {
     /// Exclusive database attachment; HTTP owners may outlive an unloaded DB.
     pub(crate) database_owner: std::sync::Weak<()>,
-    /// Absent in every production database in this checkpoint.
+    /// Absent for Disabled and DryRun; immutable for an attached account.
     pub(crate) config: Option<PayloadAdmissionConfig>,
     /// Each full event has at most one logical acquisition owner.
     pub(crate) events: BTreeMap<EventId, ReservedEvent>,

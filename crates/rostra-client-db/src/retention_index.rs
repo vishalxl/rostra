@@ -203,25 +203,34 @@ impl Database {
         policy: RetentionPolicy,
     ) -> DbResult<RetentionIndexProgress> {
         self.write_with(|tx| {
-            let generation = RetentionGeneration::new(policy, self.self_id);
-            if Self::retention_record_tx(tx)?.is_none_or(|record| record.generation != generation) {
-                self.invalidate_retention_scans()?;
-                let ledger = self.payload_admission.clone();
-                tx.on_commit(move || {
-                    ledger.demands.lock().unwrap().clear();
-                    ledger.changed.notify_waiters();
-                });
-            }
-            let record = Self::retention_record_tx(tx)?
-                .filter(|record| record.generation == generation)
-                .unwrap_or(IndexRecord {
-                    generation,
-                    stage: IndexStage::Clearing,
-                });
-            tx.open_table(&state::TABLE)?.insert(&(), &record)?;
-            Ok(record.progress(0))
+            self.configure_retention_index_tx(tx, RetentionGeneration::new(policy, self.self_id))
         })
         .await
+    }
+
+    /// Bind disposable indexes; runtime callers also check their immutable
+    /// ledger.
+    pub(crate) fn configure_retention_index_tx(
+        &self,
+        tx: &WriteTransactionCtx,
+        generation: RetentionGeneration,
+    ) -> DbResult<RetentionIndexProgress> {
+        if Self::retention_record_tx(tx)?.is_none_or(|record| record.generation != generation) {
+            self.invalidate_retention_scans()?;
+            let ledger = self.payload_admission.clone();
+            tx.on_commit(move || {
+                ledger.demands.lock().unwrap().clear();
+                ledger.changed.notify_waiters();
+            });
+        }
+        let record = Self::retention_record_tx(tx)?
+            .filter(|record| record.generation == generation)
+            .unwrap_or(IndexRecord {
+                generation,
+                stage: IndexStage::Clearing,
+            });
+        tx.open_table(&state::TABLE)?.insert(&(), &record)?;
+        Ok(record.progress(0))
     }
 
     /// Read generation/backfill readiness independently of accounting and GC.

@@ -3,6 +3,40 @@ mod common;
 use common::TestServer;
 use rostra_core::id::RostraIdSecretKey;
 
+fn enforcing_account(
+    id: rostra_core::id::RostraId,
+    slots: usize,
+) -> rostra_client_db::PayloadAccount {
+    use std::num::{NonZeroU64, NonZeroUsize};
+    use std::time::Duration;
+
+    use rostra_client_db::{
+        PayloadAccount, PayloadAdmissionConfig, PayloadAdmissionLimits, PayloadRetentionConfig,
+        PayloadRuntimeLimits,
+    };
+    PayloadAccount::configured(
+        id,
+        PayloadRetentionConfig::Enforce {
+            policy: rostra_core::retention::RetentionPolicy::new(1, 1, 0, 0, 1, 0).unwrap(),
+            admission: PayloadAdmissionConfig::new(PayloadAdmissionLimits {
+                database_bytes: NonZeroU64::new(100_000).unwrap(),
+                author_bytes: NonZeroU64::new(100_000).unwrap(),
+                overrides: Default::default(),
+                in_flight_count: NonZeroUsize::new(slots).unwrap(),
+                in_flight_bytes: NonZeroU64::new(10 * 1024 * 1024).unwrap(),
+            })
+            .unwrap(),
+            limits: PayloadRuntimeLimits {
+                operations: NonZeroUsize::new(32).unwrap(),
+                bytes: 100_000,
+                gc_bytes: 100_000,
+                time: Duration::from_millis(20),
+            },
+        },
+    )
+    .unwrap()
+}
+
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn raw_signed_publish_bounds_body_before_envelope_validation() {
     let server = TestServer::start().await;
@@ -44,7 +78,7 @@ async fn unloaded_raw_body_and_concurrent_load_share_startup_account() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let id = RostraIdSecretKey::generate().id();
-    let account = rostra_client_db::PayloadAccount::disabled(id);
+    let account = enforcing_account(id, 5);
     let server = TestServer::start_with_payload_accounts(vec![account.clone()]).await;
     let mut stream = tokio::net::TcpStream::connect(server.address())
         .await
@@ -73,6 +107,13 @@ async fn unloaded_raw_body_and_concurrent_load_share_startup_account() {
     assert_eq!(interim, b"HTTP/1.1 100 Continue\r\n\r\n");
     assert!(!server.is_client_loaded(id).await);
     assert!(!server.has_database_file(id));
+    assert!(account.reserve_payload_allocation(1).is_err());
+    let refused = server
+        .driver()
+        .api_post_json(&format!("/api/{id}/publish"), None, &serde_json::json!({}))
+        .await;
+    assert_eq!(refused.status(), 503);
+    assert!(!server.has_database_file(id));
 
     let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         tokio::join!(server.client(id), server.client(id))
@@ -80,6 +121,12 @@ async fn unloaded_raw_body_and_concurrent_load_share_startup_account() {
     .await
     .unwrap();
     assert!(std::sync::Arc::ptr_eq(&first, &second));
+    assert!(first.db().has_payload_retention_runtime());
+    assert_eq!(first.db().payload_admission_usage().buffers, 5);
+    assert_eq!(
+        first.db().payload_admission_usage().buffer_bytes,
+        10 * 1024 * 1024
+    );
     let mut probe = rostra_client_db::Database::new_in_memory(id).await.unwrap();
     assert_eq!(
         probe.attach_payload_account(&account),
@@ -95,8 +142,44 @@ async fn unloaded_raw_body_and_concurrent_load_share_startup_account() {
     .unwrap()
     .unwrap();
     assert!(response.starts_with("HTTP/1.1 422"));
+    assert_eq!(first.db().payload_admission_usage().buffers, 0);
     drop(first);
     drop(second);
+    server.shutdown().await;
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn enabled_raw_preparse_tight_slots_refuse_without_loading_and_release_partial_capacity() {
+    let id = RostraIdSecretKey::generate().id();
+    let account = enforcing_account(id, 4);
+    let server = TestServer::start_with_payload_accounts(vec![account.clone()]).await;
+    for _ in 0..3 {
+        let response = server
+            .driver()
+            .api_post_json(&format!("/api/{id}/publish"), None, &serde_json::json!({}))
+            .await;
+        assert_eq!(response.status(), 503);
+        assert!(!server.has_database_file(id));
+        assert!(!server.is_client_loaded(id).await);
+        let owners: Vec<_> = (0..4)
+            .map(|_| account.reserve_payload_allocation(1).unwrap().unwrap())
+            .collect();
+        assert!(account.reserve_payload_allocation(1).is_err());
+        drop(owners);
+    }
+    // Arbitrary paths have Disabled's pinned per-request limit, not this
+    // account's ledger, and never add an account or create storage.
+    let unlisted = RostraIdSecretKey::generate().id();
+    let response = server
+        .driver()
+        .api_post_json(
+            &format!("/api/{unlisted}/publish"),
+            None,
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), 422);
+    assert!(!server.has_database_file(unlisted));
     server.shutdown().await;
 }
 

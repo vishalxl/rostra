@@ -1,12 +1,17 @@
 # Payload retention database foundation
 
+**Current runtime status:** immutable per-account Disabled/DryRun/Enforce startup
+configuration and the joined Client worker are implemented. See the
+[startup and combined activation audit](payload-retention-startup.md) for the
+current interface, allocation scope and limitations.
+
 This checkpoint implements durable source metadata, checked lifecycle counters,
 global/unique-byte accounting, checked quota transitions and a bounded quota-only
-collector, policy-generation candidate indexes, and a production-disabled shared
+collector, policy-generation candidate indexes, and a default-Disabled shared
 admission/reservation boundary. Explicit callers can
 dematerialize an eligible Processed remote SocialPost or permanently decline a Missing payload and nominate its hash
-atomically. It does not enable automatic eviction/admission, a client worker,
-or production quotas.
+atomically. Immutable startup Enforce opts into automatic admission/eviction and
+the joined Client worker; DryRun keeps actual admission Disabled.
 The storing account's `RostraId`, not its rotating transport key, remains the
 identity for candidate indexing.
 
@@ -57,7 +62,7 @@ The approved runtime policy is to trust the system clock, including startup.
 It adds no acknowledgement, clock authority, or high-water latch. Forward jumps
 can expire grace; unknown origins and timestamps in the future remain protected.
 The internal demand primitive samples a fixed trusted timestamp inside each
-writer transaction; no production worker invokes it yet.
+writer transaction.
 
 ## Accounting and quota-only physical reclamation
 
@@ -211,14 +216,12 @@ caps, optional full-`RostraId` author overrides, and independent in-flight
 count/byte limits. Counts are bounded by 4096. Author caps are strict ceilings,
 not reserved shares; a ceiling above the database cap does not permit borrowing.
 There is no universal GiB default. `experimental_low_water` computes floor(90%)
-without overflow; the private driver's experimental hysteresis uses it.
+without overflow; the configured driver's experimental hysteresis uses it.
 The arithmetic alone is not a worker or an automatic deletion rule.
 
-**Production admission remains disabled by construction.** The shared ledger owns
-an empty optional configuration, and only disposable unit tests can populate it.
-There is no public setter, production runtime configuration, Client worker or
-service activation. The private test-installed driver described below deliberately
-precedes complete client integration.
+**Admission is Disabled by default.** `PayloadAccount::configured` validates
+explicit startup mode/policy/budgets before publication. Only Enforce installs
+admission limits; DryRun owns separate forecast ceilings. No live setter exists.
 
 `PayloadAccount::disabled` creates an account-scoped ledger without filesystem
 work. `MultiClient::new_with_payload_accounts` installs explicitly listed handles
@@ -260,19 +263,17 @@ holds weak references to the registry/load lock and strong cursor/running-flag
 metadata; that metadata owns no clients or databases and cannot keep a dropped
 manager or its storage alive.
 
-These are ownership foundations, **not runtime policy configuration**: every
-constructible account is still disabled. No live configuration setter exists.
+This ownership carries immutable validated startup configuration. No live setter exists.
 The approved runtime configuration is startup-only; changing mode, budgets or
 policy requires orderly shutdown and fresh construction after old workers,
-acquisitions and guards have quiesced. This checkpoint neither implements nor
-performs a service restart.
+acquisitions and guards have quiesced. No service restart is performed here.
 
 `reserve_payload` retains a verified envelope and returns Disabled, Unneeded,
 Deferred or a unique logical `PayloadReservation`. Admission rechecks ready
 accounting and current author/database logical usage plus pending reservations
 inside the serialized writer boundary. Materialization rechecks capacity in its
 own transaction. This one-attempt API does not rank pressure or reject permanently;
-the private runtime can submit a deferred acquisition to the ranked demand worker.
+the Enforce runtime can submit a deferred acquisition to the ranked demand worker.
 
 Each lease can acquire distinct `PayloadBuffer` guards, one per payload-sized
 allocation. Four racing downloads plus their Vec-to-Arc conversions can charge
@@ -326,12 +327,12 @@ share one stored hash.
 | Pushed `FEED_EVENT` | Owned guarded ingestion | Reserve read and conversion before success/BAO read; terminal/reused payloads return AlreadyHave, temporary pressure uses existing DoesNotNeed response |
 | Local publication / head merger | Guarded DB ingestion; empty merges need no payload room | Provisional CBOR writer charges before growth, separate conversion capacity, then binds surviving bytes to reservation; clear storage-capacity error |
 | Omni remote publication | Outgoing content does not materialize in this DB | Same bounded serializer retains provisional capacity through outbound attempts; no extra payload-sized allocation for Arc clones |
-| Raw signed web API (`routes/api.rs`) | Guarded owned ingestion after verification; disabled atomic ingestion preserved | Fixed 2-MiB HTTP body limit regardless of Content-Length; startup account ownership is available before lazy load, with loaded-DB fallback for unlisted accounts. When configured, the ledger supplies five conservative 2-MiB provisional slots for body, strings/scratch and Vec/Arc overlap before parse; one survives until ingestion |
+| Raw signed web API (`routes/api.rs`) | Guarded owned ingestion after verification; disabled atomic ingestion preserved | Fixed 2-MiB HTTP body limit regardless of Content-Length; startup account ownership is available before lazy load, with loaded-DB fallback for unlisted accounts. In Enforce, the ledger supplies five conservative 2-MiB provisional slots for body, strings/scratch and Vec/Arc overlap before parse; one survives until ingestion |
 | Hash-store reuse | Single-event reuse API uses the same gate | Capacity for owned copy and conversion before copying; pause without refetching shared bytes |
 | Public direct DB ingestion | All three fallible ingestion variants and panic wrappers converge on the gate | External holders of already-allocated bytes own that memory; use the explicit pre-read guard API for controlled acquisition |
 | Direct P2P connection/cache APIs | Cache owns database acquisition/ingestion | Removed unguarded convenience read; `get_event_content_with_guard` retains caller-owned guard through transport without reversing DB→P2P dependency |
 
-This is still a **non-activatable checkpoint**. Low-level P2P callers and direct DB
+Low-level P2P callers and direct DB
 callers that already own bytes remain responsible for their allocation policy.
 A dummy transport guard is not a supported client acquisition path. HTTP's
 conservative five-slot reservation can reject an otherwise small request under
@@ -341,11 +342,9 @@ allocator overhead, post-acquisition notification/caller clones and database fil
 growth remain outside this declared acquisition-capacity accounting.
 Unverified raw publish paths must not create/open/compact databases: unloaded
 accounts are loaded only after JSON, author, signature and content verification.
-Their account ledger can now exist before database load, but no runtime policy can
-be installed in this checkpoint. Runtime configuration must populate that immutable
-startup ownership before activation. Ownership alone does not close the unloaded
-preparse policy gap: the existing per-request HTTP body limit is still not an
-aggregate capacity bound for disabled requests.
+Their immutable configured ledger exists before database load. The existing
+per-request HTTP body limit is still not an aggregate capacity bound for Disabled
+or DryRun requests, including unlisted accounts.
 
 The payload race schedules at most four attempts. A peer is consumed only after
 its read/conversion capacity is acquired; tight budgets wait for active reads and
@@ -353,8 +352,8 @@ then try the same pending peer. They must not repeatedly skip a later available
 holder merely because an earlier unavailable holder owns the buffer slots.
 Each cache connect/read attempt has the existing 30-second peer-operation deadline,
 so a hanging first holder cannot retain tight-capacity slots indefinitely.
-Configured raw HTTP body parsing also has a 30-second deadline before releasing
-provisional capacity; unconfigured parsing retains ordinary disabled behavior.
+Enforce raw HTTP body parsing also has a 30-second deadline before releasing
+provisional capacity; Disabled and DryRun parsing retain ordinary disabled behavior.
 FEED senders count AlreadyHave as acknowledged delivery, avoiding repeated
 broadcasts after a peer accepted an earlier attempt. DoesNotNeed remains retryable
 because it can mean temporary capacity pressure rather than permanent refusal.
@@ -367,25 +366,24 @@ authors can proceed. Missing notifications register before peeking, with bounded
 empty-queue recovery polling. Ancestor/head sync leaves durable Missing retries
 instead of stopping its worker on temporary pressure.
 
-Production activation still requires immutable startup policy and complete Client/ingress integration
-and audit. The private driver below
-already composes generation/pressure/reducer atomicity, independent readiness,
+The [startup guide](payload-retention-startup.md) describes immutable policy,
+Client/ingress integration and the combined audit. The driver below composes
+generation/pressure/reducer atomicity, independent readiness,
 hysteresis and bounded yielding batches.
 The user-approved runtime clock assumption is to **trust the system clock**,
 including startup: no acknowledgement workflow or omission of otherwise known
 origins is required. Existing future/grace checks and protection for unknown legacy
-origins remain. No production worker is activated.
+origins remain.
 
-## Next checkpoint
+## Runtime scheduling
 
-### Non-activatable pending-demand foundation
+### Bounded pending demand
 
-The database includes **crate-private, non-activatable** demand registration,
+The database includes crate-private demand registration,
 one-step preemption, and an internal maintenance/acquisition integration driver.
-Only disposable configured tests install that driver; production acquisition
-does not register demand and every production account remains Disabled. No
-startup mode/budget API or live reconfiguration exists. The private test-installed
-driver also performs bounded general pressure and quota-only collection.
+Enforce startup construction installs this driver; Disabled and DryRun
+acquisitions do not register demand. No live reconfiguration exists.
+The driver also performs bounded general pressure and quota-only collection.
 
 A failed reservation can occur at `cap - 1` even though retained plus reserved
 usage is below the cap. A metadata-only `PayloadDemand` expresses intent to make
@@ -468,14 +466,15 @@ does not collect nominated bytes and does not implement general over-cap pressur
 90% low-water hysteresis or DryRun. It can reject ranked Missing demands as
 described below.
 The internal integration below adds bounded scheduling, general pressure/GC and
-acquisition ownership while paused, not a complete enabled runtime. The full activation obligations in the
-phase-3 handoff remain blockers for exposing enabled runtime modes.
+acquisition ownership while paused. The combined startup/ingress audit covers the
+original eight activation obligations rather than treating these primitives alone
+as proof of complete enabled behavior.
 
-### Non-activatable maintenance and acquisition integration
+### Maintenance and acquisition integration
 
-Private test construction can bind `PayloadRuntime` to the exact policy/holder
-generation and immutable admission-config incarnation before exposing a disposable
-database. There is no production constructor or setter. The ordinary
+Startup account attachment binds `PayloadRuntime` to the exact policy/holder
+generation and immutable admission-config incarnation before exposing a
+database. There is no live setter. The ordinary
 `prepare_payload_acquisition` method then exercises the real preparation path,
 including shared-store reuse, while retaining only the verified header and one
 metadata-only demand owner between attempts. Internal copy/conversion guards have
@@ -506,25 +505,23 @@ cause immediate repeated pruning attempts or be skipped for a larger-ranked one.
 `run` borrows the database and has a unique RAII runner owner. It spawns no task
 and performs synchronous, indivisible DB transactions; dropping or aborting its
 owning future releases exclusivity after the current transaction finishes. Tests
-scope runner futures to acquisition completion and cancellation. Before production
-activation, Client must own and join this runner through its existing retained
-task-completion machinery. This checkpoint does not start it in Client or claim
-that end-to-end Client teardown and every ingress path are already integrated.
+scope runner futures to acquisition completion and cancellation. Client owns and
+joins the runner through its pre-retained task-completion machinery before
+reconstruction or reopen, including constructor failure and DB-less tasks.
 
 The integration tests cover cap-minus-one preparation through preemption,
 reservation and actual ingestion; independent single-operation maintenance;
 deduplication/cancellation/expiry with zero paused buffer charges; shared-store
 reuse; alternate-author progress behind an exhausted higher-ranked demand;
 bounded continuation past a previously promoted future prefix;
-and byte-blocked waiting with runner cancellation/exclusivity. Immutable enabled
-startup policy and the complete enabled bypass/load/body/race/overload audit remain
-activation blockers. General pressure and quota-only collection are integrated
-only in this non-activatable driver; unique stored bytes may remain after logical
+and byte-blocked waiting with runner cancellation/exclusivity. Enabled startup,
+Client and real HTTP fixtures supplement these primitive tests. General pressure
+and quota-only collection are integrated in the driver; unique stored bytes may remain after logical
 eviction, and no physical reclamation is claimed.
 
 ### Bounded observation-only DryRun
 
-The private test constructor can instead install an immutable **forecast**
+Startup DryRun construction instead installs an immutable **forecast**
 configuration. It refuses an enforcing or nonempty admission ledger and a
 mismatched storing identity. Forecast ceilings never enter that ledger: ordinary
 preparation, shared-store reuse and ingestion retain Disabled behavior, including
@@ -533,8 +530,7 @@ acquisitions nor registers demand, reserves payloads, prunes, collects, or write
 any database table. Its runner does **no derived maintenance**, including accounting,
 index, grace, nomination recovery or pressure-latch updates. The existing Enforce
 constructor and writer-side expected-config authority checks are unchanged.
-Both constructors remain test-only. There is no public partial-mode opt-in or
-production Client runner, and no hot switching between modes.
+Both modes use the joined Client runner, with no hot switching between modes.
 
 Each attempt reads one coherent MVCC source snapshot at one fresh trusted system
 timestamp. It examines retained signed headers, lifecycle and immutable origins,
@@ -596,12 +592,12 @@ shared/protected/grace/unknown content, author overrides/global targets, mutatio
 time/config changes, all incomplete bounds, complete-to-incomplete replacement,
 Disabled preparation/reuse/ingestion, pacing/cancellation/exclusivity and logical
 projection parity with a disposable Enforce fixture without concurrent demand.
-The complete startup/Client/HTTP/body/serialization ingress audit and combined
-eight-obligation activation review remain required; these DB tests are not that audit.
+The [combined audit](payload-retention-startup.md) includes startup/Client/HTTP/
+body/serialization ownership; these DB tests alone are not that audit.
 
 ### Ranked durable Missing admission rejection
 
-The same non-activatable demand step can now reject a verified eligible remote
+The same demand step can reject a verified eligible remote
 Missing SocialPost instead of fetching it only to evict it. It requires a fresh
 author/global **index head**, revalidated as currently eligible, whose complete
 48-byte rank is strictly higher than the incoming rank. It also requires that
@@ -645,8 +641,8 @@ Tests exercise both scopes, better incoming retention followed by lower-ranked
 rejection, full EventId ties, shared hashes under sustained duplicate delivery and
 two total replays, protected-only/coexisting protected usage, reservation-only and
 live-lease deferral, stale generation/config/readiness/origins, future-prefix
-recovery, rollback signals and cancellation linearization. The complete enabled
-ingress and lifecycle audit remains an activation obligation.
+recovery, rollback signals and cancellation linearization. These supplement the
+combined enabled ingress and lifecycle audit.
 
 ### General pressure, hysteresis and quota collection
 
@@ -726,8 +722,8 @@ leave oversized values unreclaimed indefinitely. The existing collector's checke
 RC, historical local/non-social protection and quota-only provenance rules remain;
 unrelated signed-delete, invalid and legacy garbage is not newly nominated.
 
-Remaining checkpoints must add runtime configuration and retention-worker integration, including
-the unloaded-account HTTP policy boundary above, before any activation path.
+Immutable startup configuration and the joined worker preserve the unloaded-account
+HTTP policy boundary above.
 Logical quota release may reclaim no physical bytes when another reference
 survives. Headers and index overhead remain outside logical payload accounting.
 

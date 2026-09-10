@@ -160,7 +160,8 @@ Accounting upgrades and total replay require an
 explicit bounded accounting rebuild before totals or physical reclamation are
 usable; ordinary ingestion maintains cursor-covered changes transactionally.
 This readiness is separate from retention policy-index generations.
-The collector is not a general legacy garbage collector and starts no worker.
+The collector is not a general legacy garbage collector and spawns no work itself;
+the configured Enforce runner schedules it.
 
 Schema 30 adds disposable author/global static-key candidate indexes and a
 grace schedule. The full versioned policy and storing account `RostraId` identify
@@ -173,8 +174,8 @@ Ready indexes provide bounded advisory selection, not pressure or pruning
 authorization. Caller-asserted clock trust and current origin/grace eligibility
 are rechecked even for previously promoted candidates.
 
-Schema31 adds disposable runtime-incarnation pressure state. A private,
-test-installed driver performs bounded author-first/global hysteresis over
+Schema31 adds disposable runtime-incarnation pressure state. The configured
+runtime performs bounded author-first/global hysteresis over
 retained-plus-reserved logical bytes, atomically composing current pressure and
 candidate checks with the quota reducer. Disk-backed author targets avoid an
 author-sized RAM map. Quota-only collection uses separate strict unique-store-byte
@@ -182,9 +183,14 @@ and bounded cursor scheduling; neither operation promises physical reclamation.
 The same demand boundary can durably decline eligible Missing content against a
 fresh higher-ranked retained minimum under retained-only pressure; cursor
 exhaustion and temporary reservations never authorize that decision.
-Production construction remains Disabled-only, with no Client runner or opt-in.
+Disabled is the startup default. Explicit immutable per-account configuration
+installs Enforce before acquisition or selects a separate, bounded read-only
+DryRun forecast with actual Disabled admission. Client owns and joins the runner;
+the database never spawns detached destructive work. Mode or budget changes require
+quiescent fresh construction, not live ledger replacement.
 See the [database retention guide](../../../docs/payload-retention-database.md)
-for the derived-state lifecycle and remaining activation boundary.
+for the derived-state lifecycle and [startup guide](../../../docs/payload-retention-startup.md)
+for configuration and accounting scope.
 
 Replay trusts that retained rows crossed the authentication boundary during
 normal ingestion; it is not a cryptographic integrity scrub. Typed decoding and

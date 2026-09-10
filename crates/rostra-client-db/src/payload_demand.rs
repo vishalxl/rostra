@@ -190,8 +190,7 @@ impl Database {
     /// retains a payload buffer, prunes, or promises capacity. Distinct count
     /// and bytes independently reuse the explicit acquisition count/byte
     /// limits as intent bounds (not as a charge against buffers or reserved
-    /// logical bytes). This crate-private foundation has no production
-    /// enabled caller.
+    /// logical bytes).
     pub(crate) async fn register_payload_demand(
         &self,
         event: EventId,
@@ -287,7 +286,7 @@ impl Database {
     ///
     /// Rechecks all authority inside the writer transaction. Demand arbitration
     /// prevents cancellation/logical release races until the reducer returns.
-    /// Config remains absent in production. This is not general quota pressure,
+    /// This is not general quota pressure,
     /// low-water hysteresis, a worker or DryRun. A fresh eligible index minimum
     /// can instead authorize durable rejection of a lower-ranked Missing
     /// demand.

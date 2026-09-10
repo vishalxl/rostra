@@ -1,5 +1,4 @@
-//! Shared logical admission and separate buffer ownership. No runtime
-//! activation.
+//! Shared logical admission and separate buffer ownership.
 
 use std::sync::Arc;
 
@@ -17,7 +16,7 @@ use crate::{
 /// Admission of one logical event, before any payload acquisition is started.
 #[derive(Debug)]
 pub enum PayloadReservationOutcome {
-    /// Production behavior remains unchanged: admission has not been activated.
+    /// Ordinary behavior: startup configuration leaves admission disabled.
     Disabled,
     /// This Missing event owns logical room; buffers must be reserved
     /// separately.
@@ -89,9 +88,8 @@ impl Database {
     /// No payload is downloaded/allocated and no quota pruning occurs. Ordinary
     /// envelope effects (including signed deletion and size rejection) still
     /// apply. A temporary refusal commits the header and leaves Missing
-    /// resumable. Disabled is always
-    /// returned in production until the complete runtime integration adds
-    /// an activation path.
+    /// resumable. Disabled is returned when no enforcing startup account is
+    /// attached, including observation-only DryRun.
     pub async fn reserve_payload(
         &self,
         event: &VerifiedEvent,

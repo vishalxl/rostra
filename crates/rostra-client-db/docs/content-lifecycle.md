@@ -7,8 +7,8 @@ not invent or refresh them. Quota decisions constrain envelope replay before
 shared content can materialize, with signed deletion remaining stronger.
 Explicit checked quota transitions now dematerialize eligible remote
 SocialPosts or decline Missing admission and nominate their hashes atomically.
-No production victim selection, quota budgets or destructive worker is enabled.
-A private test-installed driver integrates author-first/global pressure with
+Disabled is the default; immutable startup Enforce supplies explicit policy and
+budgets to the joined Client driver. It integrates author-first/global pressure with
 reservation-aware low-water hysteresis and bounded quota-only collection.
 Schema31 pressure targets/frontiers are disposable runtime-incarnation advice,
 not sources for replay; every reduction still uses current writer-transaction
@@ -46,15 +46,16 @@ content-derived projections. The lower-level `process_event_content_tx` helper
 assumes an existing envelope and remains internal for transaction composition
 and migration replay.
 
-The shared admission foundation currently has no production activation path.
-When exercised with configured limits, all legacy fallible content APIs return
+The shared admission boundary uses explicit immutable Enforce startup limits.
+When configured, all legacy fallible content APIs return
 `DbError::PayloadAdmissionPaused` on temporary refusal and roll back the entire
 ingestion transaction; their panic wrappers also panic on that refusal.
 `try_process_admitted_event_content` instead returns Deferred while preserving
 ordinary header effects and Missing scheduling, separately from Processed,
 Invalid and Unchanged. Temporary pressure is neither a peer failure nor a
 quota-prune decision. See the [database retention guide](../../../docs/payload-retention-database.md)
-for buffer ownership and the remaining client integration boundary.
+for buffer ownership and the [startup guide](../../../docs/payload-retention-startup.md)
+for the combined Client/HTTP integration boundary.
 
 Content may be empty (`content_len == 0`). Empty content is handled as normal
 content — it gets an RC entry and is stored in `content_store` immediately at
@@ -213,7 +214,7 @@ Zero RC is necessary, but not sufficient, for quota garbage collection.
   atomically. Reference/history-blocked nominations are consumed without removal; historical
   quota-hash provenance allows a later final reference release to requeue only
   quota-owned work. `prune_quota_payload` is the explicit checked nominator,
-  not itself an automatic quota worker. The private driver also enforces a strict
+  not itself an automatic quota worker. The Enforce driver also enforces a strict
   unique-store bytes-removed allowance: oversized nominations remain queued,
   an exclusive cursor lets later small hashes proceed, and full-sweep exhaustion
   waits before retry. Such bytes can remain indefinitely under an unchanged
@@ -596,12 +597,12 @@ fetch work.
 
 ## Potential Concerns
 
-### 1. No Automatic Garbage Collection
+### 1. No General Garbage Collection
 
 When RC reaches 0, content remains in `content_store`. The bounded quota
 collector only handles hashes nominated by explicit checked quota transitions,
 later final releases carrying quota provenance, or bounded reconstruction from
-quota source rows. It starts no automatic worker and does not collect general
+quota source rows. The configured Enforce worker invokes it but does not collect general
 signed-deleted, invalid or legacy-pruned garbage. Row limits do not bound total bytes or database-file
 allocation. See the [retention checkpoint](../../../docs/payload-retention-database.md)
 for its accounting/readiness and replay boundary.
@@ -625,14 +626,15 @@ ownership or partial lifecycle bookkeeping.
 
 ### Admission Foundation Tests
 
-`payload_admission_tests` covers production-disabled behavior, named explicit
+`payload_admission_tests` covers default-Disabled behavior, named explicit
 limit validation, readiness and both logical ceilings, common/override author
 caps, configured envelope scheduling of shared-store bytes, deferred reuse,
 local/unknown protections without capacity exemptions, Invalid/temporary/terminal
 outcome separation, independent acquisition/buffer count and byte limits,
 duplicate reservations, racing writers and peer buffers, cancellation wakeups,
 aborted materialization, foreign/stale guards and terminal late delivery.
-Tests only activate disposable databases; no runtime pruning worker is exercised.
+These primitive tests activate only disposable databases. Separate runtime/startup
+and Client/HTTP suites exercise the worker and enabled ingress/lifecycle ownership.
 
 ### Core Flow Tests
 
@@ -827,7 +829,7 @@ The content lifecycle model handles:
 - Content deletion and pruning (with double-decrement prevention)
 - Checked counters, global logical/unique-byte accounting, explicit checked quota
   transitions and a quota-only collector, with separate bounded accounting and
-  nomination-recovery readiness and no automatic worker
+  nomination-recovery readiness, plus explicitly configured bounded worker scheduling
 - Fetch scheduling (exponential backoff for missing content, event-driven wake-up)
 
 The `Missing` state is the key to idempotency - it ensures content side

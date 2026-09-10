@@ -1,8 +1,5 @@
-//! Internal vertical slice, deliberately not a production activation surface.
-//!
-//! The caller owns and joins `run`; this module never spawns a task. It must be
-//! integrated with Client's retained task completion before production
-//! activation.
+//! Caller-owned retention maintenance, joined by the client's retained task
+//! group.
 
 use std::num::NonZeroUsize;
 use std::sync::Weak;
@@ -21,15 +18,15 @@ use crate::{
 
 /// Explicit turn bounds, independent of acquisition and logical byte budgets.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RuntimeLimits {
+pub struct RuntimeLimits {
     /// Maximum one-row maintenance/selection operations per turn.
-    pub(crate) operations: NonZeroUsize,
+    pub operations: NonZeroUsize,
     /// Maximum logical eviction bytes per turn; an oversized minimum blocks.
-    pub(crate) bytes: u64,
+    pub bytes: u64,
     /// Maximum unique content-store bytes removed per turn, not physical pages.
-    pub(crate) gc_bytes: u64,
+    pub gc_bytes: u64,
     /// Cooperative time allowance; one DB transaction is indivisible.
-    pub(crate) time: Duration,
+    pub time: Duration,
 }
 
 /// Immutable policy binding and exclusive runner arbitration.
@@ -137,7 +134,6 @@ impl Drop for Running<'_> {
 
 impl PayloadRuntime {
     /// Bind explicit validated allowances to an already configured account.
-    #[cfg(test)]
     pub(crate) fn new(
         generation: RetentionGeneration,
         config: Weak<()>,
@@ -161,8 +157,7 @@ impl PayloadRuntime {
         })
     }
 
-    /// Install only in disposable tests; forecast caps never enter admission.
-    #[cfg(test)]
+    /// Construct a separate forecast; its caps never enter admission.
     pub(crate) fn new_dry_run(
         db: &Database,
         generation: RetentionGeneration,
@@ -287,6 +282,14 @@ impl PayloadRuntime {
             return Err(DbError::PayloadAccountingInvariant);
         }
         let _running = Running(&self.running);
+        if self.dry_run.is_none() {
+            db.write_with(|tx| {
+                self.check_config(db)?;
+                db.configure_retention_index_tx(tx, self.generation)?;
+                Ok(())
+            })
+            .await?;
+        }
         let mut cursor = RuntimeCursor::default();
         loop {
             let notified = db.payload_admission_changed();
@@ -466,5 +469,29 @@ impl PayloadRuntime {
             cursor.gc_done = false;
         }
         Ok(outcome)
+    }
+}
+
+impl Database {
+    /// Whether immutable startup configuration requires a retained worker.
+    pub fn has_payload_retention_runtime(&self) -> bool {
+        self.payload_runtime.is_some()
+    }
+
+    /// Run configured maintenance under the caller's retained, joined task.
+    ///
+    /// This spawns no work. Cancellation stops between indivisible database
+    /// operations; callers must join before reopening or reconstructing a
+    /// client.
+    pub async fn run_payload_retention(&self) -> DbResult<()> {
+        if let Some(runtime) = &self.payload_runtime {
+            runtime.run(self).await?;
+        }
+        Ok(())
+    }
+
+    /// Return the last bounded read-only snapshot, not cumulative pruning work.
+    pub fn payload_retention_forecast(&self) -> Option<crate::DryRunReport> {
+        self.payload_runtime.as_ref()?.dry_run_report()
     }
 }

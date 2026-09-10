@@ -21,8 +21,8 @@ pub struct PayloadAdmissionLimits {
 
 /// Explicit logical payload ceilings and independent acquisition-buffer limits.
 ///
-/// This foundation has no production configuration setter. Installing a policy
-/// requires the complete client admission/worker integration, not just a cap.
+/// Install through immutable [`crate::PayloadAccount`] startup construction,
+/// never by replacing a live ledger's configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PayloadAdmissionConfig {
     /// Validated immutable input, including the bounded maximum lease count.

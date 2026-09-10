@@ -51,11 +51,13 @@ not yet started materialization grace. Clock trust is an explicit caller
 assertion; the approved runtime assumption trusts the system wall clock, including
 startup. No special acknowledgement or clock-monitor subsystem is required.
 Unknown legacy origins and existing future/grace checks remain protected.
-No automatic destructive worker is enabled.
+Automatic destructive work requires explicit immutable Enforce startup
+configuration; Disabled is the default and DryRun performs no writes.
 
-The shared admission boundary remains production-disabled: its config
-is `None`, with no production setter or worker. Adding an activation path is a
-security/reliability revisit trigger, not routine configuration plumbing.
+The shared admission boundary is installed before publishing an account, client or
+HTTP manager. DryRun keeps actual admission Disabled and owns separate forecast
+ceilings. No live setter exists. Changes to activation or acquisition paths require
+a combined security/reliability audit, not merely constructor tests.
 Configured admission rechecks ready accounting and author/database current usage
 plus pending logical reservations inside the materialization writer transaction.
 One full EventId has one logical acquisition owner; each racing payload attempt
@@ -64,8 +66,8 @@ logical ownership after commit, while buffers remain charged until their owners
 drop. Cancellation drops unfinished ownership; rollback never publishes a
 terminal release.
 
-Crate-private pending-demand registration and one-victim preemption are likewise
-non-activatable: no production acquisition or worker invokes them. Metadata-only
+Enforce acquisition invokes crate-private pending-demand registration and
+one-victim preemption through its retained worker. Metadata-only
 weak/RAII ownership deduplicates full event IDs, expires after a nonrenewable
 30 seconds, and independently bounds intent count/bytes by explicit acquisition
 limits without promising reservations or owning buffers. The primitive selects
@@ -97,11 +99,11 @@ after acquiring writer and arbitration, so lock waits cannot preserve expired
 pre-lock authority. They reuse that timestamp for expiry, due-prefix, rank and
 checked reduction. Completion, reservation, reattachment and policy replacement
 invalidate demands. See the [database guide](../../docs/payload-retention-database.md)
-for the staged scope and remaining enabled-runtime requirements.
+and [startup audit](../../docs/payload-retention-startup.md) for the scope.
 
-An internal, test-installed runtime now connects ordinary acquisition preparation
+The configured runtime connects ordinary acquisition preparation
 to metadata-only demand waiting and a bounded maintenance/preemption driver.
-No production account can install it. It independently maintains accounting,
+It independently maintains accounting,
 quota-nomination recovery, candidate backfill and fixed-time grace prefixes, with
 fresh writer-time authority checks for every prune. Explicit per-turn operation,
 logical-byte and cooperative-time bounds do not preempt an indivisible database
@@ -121,10 +123,12 @@ headers, late content and shared-store reuse cannot resurrect that terminal stat
 
 The runner spawns nothing; its caller must own and join its future. Unique RAII
 runner ownership releases on cancellation/panic, after any synchronous transaction
-finishes. Production Client task integration, immutable startup policy and complete
-enabled ingress/audit coverage remain required before any startup opt-in.
+finishes. Client retains the worker before ingress/signing task startup, including
+when optional replication is disabled. The manager retains all task completions
+before construction; errors, panic and cancelled join waiters cannot bypass actual
+old-task termination, including DB-less tasks, before reconstruction or reopen.
 
-The private DryRun branch owns separate immutable forecast ceilings and requires
+The DryRun branch owns separate immutable forecast ceilings and requires
 Disabled, empty admission ownership; it never installs enforcing acquisition caps.
 Preparation and ingestion retain Disabled behavior. Its bounded whole-source read
 snapshot performs no writes at all: no lifecycle/projection/counter/source changes,
@@ -139,7 +143,7 @@ Large databases can remain incomplete indefinitely. Guarded ledger zeroes under
 Disabled do not measure actual acquisition memory. Neither logical victims nor
 observed unique-store bytes promise physical reclamation.
 
-The private driver includes general author-first/global pressure on retained plus
+The Enforce driver includes general author-first/global pressure on retained plus
 logically reserved bytes, with experimental floor90% low-water hysteresis.
 Schema31 stores disposable epoch-scoped author targets/frontiers and a global
 target, not replay authority. A new runtime ignores previous-incarnation targets
@@ -164,7 +168,7 @@ before retrying. RC/history/provenance checks remain transactional. Protected or
 oversized values may remain forever; unrelated legacy/signed-delete garbage is
 not newly nominated. Neither logical eviction nor collection claims physical-page
 reclamation, whole-process RAM bounds, or hard time bounds for indivisible DB
-operations. No production account can install this runtime.
+operations.
 
 The buffer limit is declared capacity, not a whole-process memory measurement.
 Existing APIs' already-allocated external content, transport/codec working memory,
@@ -181,9 +185,10 @@ buffer charges. Unlisted HTTP identities cannot grow the account registry.
 Client-cache eviction preserves discoverability of still-live clients or storage.
 Database keepers are released through atomic sole-ownership cleanup before fresh
 opens, not a race-prone check of reference counts or failed weak upgrades.
-Every constructible account remains disabled: activation must still install
-validated preparse capacity policy before publishing the manager. Startup ownership
-alone is not enabled enforcement. No hot reload API exists; future mode/budget/
+Explicitly listed Enforce accounts install validated preparse capacity before
+publishing the manager. Five 2-MiB slots cover raw-body/string/scratch/conversion
+overlap; insufficient capacity refuses before parsing and releases partial owners.
+No hot reload API exists; mode/budget/
 policy changes require fresh construction after all old work and guards quiesce.
 The body limit alone does not bound aggregate memory for these disabled requests.
 Low-level
@@ -191,9 +196,9 @@ P2P callers still own their allocation policy; supplying a dummy guard is not a
 supported client admission path. Adding any acquisition path or changing buffer
 representations is a capacity-audit trigger.
 
-Production activation still requires complete ranking-aware admission and Client
-worker integration, the complete enabled-mode ingress audit,
-and independent review of the complete enabled runtime. Protecting local/state/
+Changes to ranking-aware admission, Client worker ownership or startup configuration
+must preserve the complete enabled-mode ingress audit and independently reviewed
+writer authority, not rely on isolated checkpoint reviews. Protecting local/state/
 unknown content from eviction does not exempt it from admission caps. Runtime
 clock policy trusts the system wall clock, per the operator decision; unknown
 legacy origins and existing future/grace checks remain conservative.
@@ -201,9 +206,10 @@ legacy origins and existing future/grace checks remain conservative.
 Admission notifications are lossy: callers must register before checking work,
 then recheck, and also wake for startup, configuration, accounting readiness and
 bounded retry/grace deadlines. Deferred Missing work must not spin on its queue
-row or treat temporary pressure as a peer failure. The current primitive tests
-do not prove worker liveness, clock trust or complete pre-read memory bounds;
-those remain explicit activation prerequisites.
+row or treat temporary pressure as a peer failure. Primitive tests alone do not
+prove combined worker liveness or complete ingress coverage. Enabled startup,
+Client lifecycle and real HTTP fixtures supplement the race/overload suites;
+stable-input conditional liveness and declared acquisition scope remain limits.
 
 Schema 28 adds disposable global logical/unique-byte accounting and a quota-only
 physical collector. All databases start unready; totals remain unavailable and
