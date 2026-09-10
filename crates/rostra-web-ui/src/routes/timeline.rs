@@ -867,14 +867,23 @@ impl UiState {
                     x-data=(badge_counts)
                     "@badges:updated.window"="onUpdate($event.detail)"
                 {
-                    a ."o-mainBarTimeline__back" href="/" onclick="history.back(); return false;" { "<" }
+                    a ."o-mainBarTimeline__back"
+                        href="/"
+                        onclick="history.back(); return false;"
+                        aria-label="Back"
+                    {
+                        span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+                    }
 
                     @if let TimelineMode::Profile(profile_id) = mode {
                         a ."o-mainBarTimeline__profile"
                             ."-active"[mode.is_profile()]
                             href=(mode.to_path())
                             aria-current=[mode.is_profile().then_some("page")]
-                        { "Profile" }
+                        {
+                            span ."o-mainBarTimeline__tabIcon -profile" aria-hidden="true" {}
+                            span ."o-mainBarTimeline__tabLabel" { "Profile" }
+                        }
                         a ."o-mainBarTimeline__feedLink"
                             href=(profile_feed_url(profile_id))
                             title="Atom feed"
@@ -889,7 +898,8 @@ impl UiState {
                             href=(TimelineMode::Followees.to_path())
                             aria-current=[mode.is_followees().then_some("page")]
                         {
-                            "Following"
+                            span ."o-mainBarTimeline__tabIcon -followees" aria-hidden="true" {}
+                            span ."o-mainBarTimeline__tabLabel" { "Following" }
                             span ."o-mainBarTimeline__newCount" x-text="formatCount(followees)" {}
                         }
                         a ."o-mainBarTimeline__network"
@@ -897,7 +907,8 @@ impl UiState {
                             href=(TimelineMode::Network.to_path())
                             aria-current=[mode.is_network().then_some("page")]
                         {
-                            "Network"
+                            span ."o-mainBarTimeline__tabIcon -network" aria-hidden="true" {}
+                            span ."o-mainBarTimeline__tabLabel" { "Network" }
                             span ."o-mainBarTimeline__newCount" x-text="formatCount(network)" {}
                         }
                         a ."o-mainBarTimeline__news"
@@ -905,7 +916,8 @@ impl UiState {
                             href=(TimelineMode::News.to_path())
                             aria-current=[mode.is_news().then_some("page")]
                         {
-                            "News"
+                            span ."o-mainBarTimeline__tabIcon -news" aria-hidden="true" {}
+                            span ."o-mainBarTimeline__tabLabel" { "News" }
                         }
                         a ."o-mainBarTimeline__notifications"
                             ."-active"[mode.is_notifications()]
@@ -913,18 +925,21 @@ impl UiState {
                             aria-current=[mode.is_notifications().then_some("page")]
                             ":class"="{ '-pending': notifications > 0 }"
                         {
-                            "Notifications"
+                            span ."o-mainBarTimeline__tabIcon -notifications" aria-hidden="true" {}
+                            span ."o-mainBarTimeline__tabLabel" { "Notifications" }
                             span ."o-mainBarTimeline__pendingNotifications" x-text="formatCount(notifications)" {}
                         }
                         a ."o-mainBarTimeline__shoutbox"
                             href="/shoutbox"
                             ":class"="{ '-pending': shoutbox > 0 }"
                         {
-                            "Shoutbox"
+                            span ."o-mainBarTimeline__tabIcon -shoutbox" aria-hidden="true" {}
+                            span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
                             span ."o-mainBarTimeline__newCount" x-text="formatCount(shoutbox)" {}
                         }
                         a ."o-mainBarTimeline__messages" href="/messages" {
-                            "Messages"
+                            span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
+                            span ."o-mainBarTimeline__tabLabel" { "Messages" }
                         }
                     }
                 }

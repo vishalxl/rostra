@@ -84,11 +84,23 @@ fn page(title: &str, content: Markup) -> Response {
             body ."o-body" {
                 div ."o-pageLayout" {
                     nav ."o-navBar" aria-label="Private messages" {
-                        div ."o-topNav" {
-                            a ."o-topNav__item" href="/following" { "Back to timeline" }
-                            a ."o-topNav__item" href="/messages" { "Conversations" }
-                            a ."o-topNav__item" href="/settings/messages" { "Message devices" }
-                            a ."o-topNav__item" href="/unlock" { "Unlock session" }
+                        div ."o-topNav -dense" {
+                            a ."o-topNav__item" href="/following" {
+                                span ."o-topNav__icon -back" aria-hidden="true" {}
+                                span ."o-topNav__label" { "Back to timeline" }
+                            }
+                            a ."o-topNav__item" href="/messages" {
+                                span ."o-topNav__icon -messages" aria-hidden="true" {}
+                                span ."o-topNav__label" { "Conversations" }
+                            }
+                            a ."o-topNav__item" href="/settings/messages" {
+                                span ."o-topNav__icon -devices" aria-hidden="true" {}
+                                span ."o-topNav__label" { "Message devices" }
+                            }
+                            a ."o-topNav__item" href="/unlock" {
+                                span ."o-topNav__icon -unlock" aria-hidden="true" {}
+                                span ."o-topNav__label" { "Unlock session" }
+                            }
                         }
                     }
                     main ."o-mainBarTimeline m-directMessages" {

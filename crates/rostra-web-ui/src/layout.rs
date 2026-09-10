@@ -190,7 +190,13 @@ impl UiState {
     pub fn render_page_tab_bar(title: &str) -> Markup {
         html! {
             div ."o-mainBarTimeline__tabs" {
-                a ."o-mainBarTimeline__back" href="/" onclick="history.back(); return false;" { "<" }
+                a ."o-mainBarTimeline__back"
+                    href="/"
+                    onclick="history.back(); return false;"
+                    aria-label="Back"
+                {
+                    span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+                }
                 span ."-active" { (title) }
             }
         }
@@ -201,16 +207,18 @@ impl UiState {
         html! {
             div ."o-topNav" {
                 a ."o-topNav__item" href="/" {
-                    span ."o-topNav__icon -home" {}
-                    "Home"
+                    span ."o-topNav__icon -home" aria-hidden="true" {}
+                    span ."o-topNav__label" { "Home" }
                 }
-                a ."o-topNav__item" href="https://github.com/dpc/rostra/discussions" {
-                    span ."o-topNav__icon -support" {}
-                    "Support"
+                a ."o-topNav__item"
+                    href="https://github.com/dpc/rostra/discussions"
+                {
+                    span ."o-topNav__icon -support" aria-hidden="true" {}
+                    span ."o-topNav__label" { "Support" }
                 }
                 a ."o-topNav__item" href="/settings/profile" {
-                    span ."o-topNav__icon -settings" {}
-                    "Settings"
+                    span ."o-topNav__icon -settings" aria-hidden="true" {}
+                    span ."o-topNav__label" { "Settings" }
                 }
             }
         }

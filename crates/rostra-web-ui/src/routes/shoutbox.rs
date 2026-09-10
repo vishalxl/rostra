@@ -128,29 +128,39 @@ pub async fn get_shoutbox(
                 x-data=(badge_counts)
                 "@badges:updated.window"="onUpdate($event.detail)"
             {
-                a ."o-mainBarTimeline__back" href="/" onclick="history.back(); return false;" { "<" }
+                a ."o-mainBarTimeline__back"
+                    href="/"
+                    onclick="history.back(); return false;"
+                    aria-label="Back"
+                {
+                    span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+                }
                 a ."o-mainBarTimeline__followees"
                     href="/following"
                 {
-                    "Following"
+                    span ."o-mainBarTimeline__tabIcon -followees" aria-hidden="true" {}
+                    span ."o-mainBarTimeline__tabLabel" { "Following" }
                     span ."o-mainBarTimeline__newCount" x-text="formatCount(followees)" {}
                 }
                 a ."o-mainBarTimeline__network"
                     href="/network"
                 {
-                    "Network"
+                    span ."o-mainBarTimeline__tabIcon -network" aria-hidden="true" {}
+                    span ."o-mainBarTimeline__tabLabel" { "Network" }
                     span ."o-mainBarTimeline__newCount" x-text="formatCount(network)" {}
                 }
                 a ."o-mainBarTimeline__news"
                     href="/news"
                 {
-                    "News"
+                    span ."o-mainBarTimeline__tabIcon -news" aria-hidden="true" {}
+                    span ."o-mainBarTimeline__tabLabel" { "News" }
                 }
                 a ."o-mainBarTimeline__notifications"
                     href="/notifications"
                     ":class"="{ '-pending': notifications > 0 }"
                 {
-                    "Notifications"
+                    span ."o-mainBarTimeline__tabIcon -notifications" aria-hidden="true" {}
+                    span ."o-mainBarTimeline__tabLabel" { "Notifications" }
                     span ."o-mainBarTimeline__pendingNotifications" x-text="formatCount(notifications)" {}
                 }
                 a ."o-mainBarTimeline__shoutbox -active"
@@ -158,8 +168,13 @@ pub async fn get_shoutbox(
                     aria-current="page"
                     ":class"="{ '-pending': shoutbox > 0 }"
                 {
-                    "Shoutbox"
+                    span ."o-mainBarTimeline__tabIcon -shoutbox" aria-hidden="true" {}
+                    span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
                     span ."o-mainBarTimeline__newCount" x-text="formatCount(shoutbox)" {}
+                }
+                a ."o-mainBarTimeline__messages" href="/messages" {
+                    span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
+                    span ."o-mainBarTimeline__tabLabel" { "Messages" }
                 }
             }
 

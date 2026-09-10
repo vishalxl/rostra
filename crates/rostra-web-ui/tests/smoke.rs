@@ -34,6 +34,146 @@ fn assert_link_precedes(document: &Html, first: &str, second: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let (id, _) = driver.login_new_identity().await;
+
+    let response = driver.get("/following").await;
+    assert_eq!(response.status(), 200);
+    let document = Html::parse_document(&response.text().await.unwrap());
+
+    for (selector, label) in [
+        (".o-topNav__item[href='/']", "Home"),
+        (
+            ".o-topNav__item[href='https://github.com/dpc/rostra/discussions']",
+            "Support",
+        ),
+        (".o-topNav__item[href='/settings/profile']", "Settings"),
+        (".o-mainBarTimeline__followees", "Following"),
+        (".o-mainBarTimeline__network", "Network"),
+        (".o-mainBarTimeline__news", "News"),
+        (".o-mainBarTimeline__notifications", "Notifications"),
+        (".o-mainBarTimeline__shoutbox", "Shoutbox"),
+        (".o-mainBarTimeline__messages", "Messages"),
+    ] {
+        let item = document
+            .select(&Selector::parse(selector).unwrap())
+            .next()
+            .unwrap_or_else(|| panic!("missing navigation item {selector}"));
+        assert_eq!(
+            item.value().attr("aria-label"),
+            None,
+            "{label} should use its descendant text as its accessible name"
+        );
+        assert!(
+            item.select(&Selector::parse("[aria-hidden='true']").unwrap())
+                .next()
+                .is_some(),
+            "{label} should have a decorative icon"
+        );
+        assert!(
+            item.text().any(|text| text.trim() == label),
+            "{label} should retain its server-rendered visible label"
+        );
+    }
+
+    let notifications = document
+        .select(&Selector::parse(".o-mainBarTimeline__notifications").unwrap())
+        .next()
+        .unwrap();
+    assert!(
+        notifications
+            .select(&Selector::parse(".o-mainBarTimeline__pendingNotifications[x-text]").unwrap())
+            .next()
+            .is_some(),
+        "the dynamic notification count should remain inside the link's accessible name"
+    );
+
+    for path in [
+        "/shoutbox".to_owned(),
+        format!("/profile/{}", id.to_short()),
+    ] {
+        let response = driver.get(&path).await;
+        assert_eq!(response.status(), 200, "{path}");
+        let document = Html::parse_document(&response.text().await.unwrap());
+        assert!(
+            document
+                .select(&Selector::parse(".o-mainBarTimeline__tabIcon").unwrap())
+                .next()
+                .is_some(),
+            "{path} should render tab icons"
+        );
+        if path == "/shoutbox" {
+            let messages = document
+                .select(&Selector::parse(".o-mainBarTimeline__messages[href='/messages']").unwrap())
+                .next()
+                .expect("shoutbox should link to private messages");
+            assert!(
+                messages
+                    .select(
+                        &Selector::parse(
+                            ".o-mainBarTimeline__tabIcon.-messages[aria-hidden='true']",
+                        )
+                        .unwrap(),
+                    )
+                    .next()
+                    .is_some()
+            );
+            assert!(messages.text().any(|text| text.trim() == "Messages"));
+            assert_eq!(messages.value().attr("aria-label"), None);
+        }
+    }
+
+    let response = driver.get("/messages").await;
+    assert_eq!(response.status(), 200);
+    let document = Html::parse_document(&response.text().await.unwrap());
+    for (href, label) in [
+        ("/following", "Back to timeline"),
+        ("/messages", "Conversations"),
+        ("/settings/messages", "Message devices"),
+        ("/unlock", "Unlock session"),
+    ] {
+        let selector = Selector::parse(&format!(".o-topNav.-dense a[href='{href}']")).unwrap();
+        let item = document
+            .select(&selector)
+            .next()
+            .unwrap_or_else(|| panic!("missing private-message navigation item {href}"));
+        assert!(
+            item.select(&Selector::parse("[aria-hidden='true']").unwrap())
+                .next()
+                .is_some(),
+            "{label} should have a decorative icon"
+        );
+        assert!(item.text().any(|text| text.trim() == label));
+    }
+
+    let generic_tab_bar =
+        Html::parse_fragment(&rostra_web_ui::UiState::render_page_tab_bar("Post").into_string());
+    let back = generic_tab_bar
+        .select(&Selector::parse(".o-mainBarTimeline__back").unwrap())
+        .next()
+        .unwrap();
+    assert_eq!(back.value().attr("aria-label"), Some("Back"));
+    assert!(
+        back.select(&Selector::parse(".o-mainBarTimeline__tabIcon.-back").unwrap())
+            .next()
+            .is_some()
+    );
+
+    let stylesheet = include_str!("../assets/style.css");
+    assert!(stylesheet.contains("@container (max-width: 15.625rem)"));
+    assert!(stylesheet.contains("@media (max-width: 32rem)"));
+    assert!(stylesheet.contains("@container (max-width: 48.75rem)"));
+    assert!(stylesheet.contains("clip-path: inset(50%)"));
+    assert!(stylesheet.contains(
+        ".o-shoutbox {\n  display: flex;\n  flex-direction: column;\n  container-type: inline-size;"
+    ));
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn retention_diagnostics_are_authenticated_read_only_and_session_scoped() {
     let server = TestServer::start().await;
     let anonymous = server.driver();

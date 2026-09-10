@@ -411,8 +411,8 @@ impl UiState {
             nav ."o-navBar" {
                 div ."o-topNav" {
                     a ."o-topNav__item" href="/following" {
-                        span ."o-topNav__icon -back" {}
-                        "Back"
+                        span ."o-topNav__icon -back" aria-hidden="true" {}
+                        span ."o-topNav__label" { "Back" }
                     }
                 }
 

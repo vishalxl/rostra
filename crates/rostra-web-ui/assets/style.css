@@ -400,6 +400,7 @@ img.u-userImage {
   gap: 1rem;
   padding: 5pt;
   justify-items: flex-start;
+  container-type: inline-size;
 }
 
 @media (min-width: 768px
@@ -427,14 +428,16 @@ img.u-userImage {
 
 .o-topNav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1rem;
+  flex-wrap: nowrap;
+  gap: 0.25rem;
 }
 
 .o-topNav__item {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .o-topNav__icon {
@@ -458,6 +461,46 @@ img.u-userImage {
 
 .o-topNav__icon.-settings {
   background: url('/assets/icons/gear.svg') center/contain no-repeat;
+}
+
+.o-topNav__icon.-messages {
+  background: url('/assets/icons/comment.svg') center/contain no-repeat;
+}
+
+.o-topNav__icon.-devices {
+  background: url('/assets/icons/id-card.svg') center/contain no-repeat;
+}
+
+.o-topNav__icon.-unlock {
+  background: url('/assets/icons/right-to-bracket.svg') center/contain no-repeat;
+}
+
+@container (max-width: 15.625rem) {
+  .o-topNav__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+@media (max-width: 32rem) {
+  .o-topNav.-dense .o-topNav__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 
@@ -1460,11 +1503,12 @@ emoji-picker {
 
 .o-mainBarTimeline {
   position: static;
+  container-type: inline-size;
 }
 
 .o-mainBarTimeline__tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
 
   position: sticky;
@@ -1476,14 +1520,73 @@ emoji-picker {
 }
 
 .o-mainBarTimeline__tabs>* {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   font-weight: 600;
 
-  padding: clamp(0px, 0.4vw, 0.5rem) clamp(0.5rem, 1vw, 4rem);
+  padding: clamp(0px, 0.4vw, 0.5rem) clamp(0.375rem, 1cqw, 0.75rem);
+  min-width: 0;
   text-align: center;
+  white-space: nowrap;
 }
 
 .o-mainBarTimeline__tabs>*.-active {
   background-color: var(--color-timeline-bg);
+}
+
+.o-mainBarTimeline__tabIcon {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  filter: invert(var(--invert));
+}
+
+.o-mainBarTimeline__tabIcon.-back {
+  background: url('/assets/icons/arrow-left.svg') center/contain no-repeat;
+}
+
+.o-mainBarTimeline__tabIcon.-profile {
+  background: url('/assets/icons/circle-user.svg') center/contain no-repeat;
+}
+
+.o-mainBarTimeline__tabIcon.-followees {
+  background: url('/assets/icons/heart.svg') center/contain no-repeat;
+}
+
+.o-mainBarTimeline__tabIcon.-network {
+  background: url('/assets/icons/cloud-arrow-up.svg') center/contain no-repeat;
+}
+
+.o-mainBarTimeline__tabIcon.-news {
+  background: url('/assets/icons/file.svg') center/contain no-repeat;
+}
+
+.o-mainBarTimeline__tabIcon.-notifications {
+  background: url('/assets/icons/circle-check.svg') center/contain no-repeat;
+}
+
+.o-mainBarTimeline__tabIcon.-shoutbox {
+  background: url('/assets/icons/comment.svg') center/contain no-repeat;
+}
+
+.o-mainBarTimeline__tabIcon.-messages {
+  background: url('/assets/icons/comment.svg') center/contain no-repeat;
+}
+
+@container (max-width: 48.75rem) {
+  .o-mainBarTimeline__tabLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 .o-mainBarTimeline__feedLink {
@@ -3214,6 +3317,7 @@ h4.o-settingsContent__sectionHeader {
 .o-shoutbox {
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
   /* Use flex-grow to fill available space in parent */
   flex: 1;
   min-height: 0;
