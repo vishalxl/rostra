@@ -16,6 +16,7 @@ use rostra_core::event::{EventExt as _, EventKind, VerifiedEvent};
 use rostra_core::id::ToShort as _;
 use rostra_core::{EventId, Timestamp};
 
+use crate::payload_demand_scan::DemandScan;
 use crate::payload_demand_state::DemandEntry;
 use crate::payload_reservation::AdmissionLedger;
 use crate::{
@@ -83,12 +84,18 @@ pub(crate) enum DemandStep {
     /// Active config/generation, accounting, or fixed-time due prefix is not
     /// ready. Promotion's backfill-ready flag alone is insufficient.
     NotReady,
-    /// Highest ranked demand fits now; do not evict for aggregate lower demand
+    /// A ranked demand fits now; do not evict for aggregate lower demand
     /// while that caller has yet to acquire its reservation.
     Fits(EventId),
     /// Eligible lower-ranked candidates cannot relieve the selected pressure.
     /// A caller must sleep/reconcile, not immediately retry the same minimum.
-    NoVictim,
+    NoVictim {
+        /// Earliest demand expiry or skipped future row becoming eligible.
+        /// Notifications can warrant an earlier retry; walltime is not latched.
+        retry_at: Timestamp,
+    },
+    /// A bounded frontier advanced; yield before continuing. No eviction.
+    Continue,
     /// Row, logical-byte or cooperative time bound prevented further work.
     /// One DB operation/reducer is indivisible and may exceed the time bound.
     Bounded,
@@ -239,6 +246,7 @@ impl Database {
             demands.entries.insert(
                 event,
                 DemandEntry {
+                    scan: None,
                     owner: Arc::downgrade(&owner),
                     id,
                     bytes,
@@ -314,7 +322,7 @@ impl Database {
                 demands.clear();
                 return Ok(DemandStep::NotReady);
             }
-            let mut selected = None;
+            let mut plans = Vec::new();
             // The ledger is explicitly count-bounded; stop cooperatively between
             // rows rather than hiding an unbounded pending-header scan.
             let mut stale = Vec::new();
@@ -330,108 +338,187 @@ impl Database {
                     stale.push(*id);
                     continue;
                 };
-                if selected.as_ref().is_none_or(|(_, old)| key > *old) {
-                    selected = Some((event, key));
-                }
+                plans.push((event, key));
             }
             for id in stale {
                 demands.entries.remove(&id);
             }
-            let Some((incoming, key)) = selected else {
+            if plans.is_empty() {
+                demands.active = None;
                 return Ok(DemandStep::Idle);
-            };
-            let pressure = Self::payload_capacity_pause_tx(tx, &incoming, &state)?;
-            let author = match pressure {
-                None => return Ok(DemandStep::Fits(incoming.event_id)),
-                Some(PayloadAdmissionPause::AuthorCapacity) => Some(incoming.author()),
-                Some(PayloadAdmissionPause::DatabaseCapacity) => None,
-                _ => return Ok(DemandStep::NotReady),
-            };
-            drop(state);
-            let policy =
-                rostra_core::retention::RetentionPolicy::from_bytes(generation.policy_bytes())
-                    .ok_or(DbError::PayloadAccountingInvariant)?;
-            // The due prefix was checked in this same transaction. Visit the
-            // ordered minimum, counting future rows after wallclock rollback.
-            let rows = if let Some(author) = author {
-                tx.open_table(&crate::content_retention_author::TABLE)?
-                    .range((author, [0; 48])..=(author, [255; 48]))?
-                    .take(scan_limit.get())
-                    .map(|row| {
-                        let (k, v) = row?;
-                        Ok((k.value_try()?.1, v.value_try()?))
-                    })
-                    .collect::<DbResult<Vec<_>>>()?
-            } else {
-                tx.open_table(&crate::content_retention_global::TABLE)?
-                    .range::<[u8; 48]>(..)?
-                    .take(scan_limit.get())
-                    .map(|row| {
-                        let (k, v) = row?;
-                        Ok((k.value_try()?, v.value_try()?))
-                    })
-                    .collect::<DbResult<Vec<_>>>()?
-            };
-            let exhausted = rows.len() < scan_limit.get();
-            for (victim_key, id) in rows {
+            }
+            if demands.active.is_some_and(|(event, id)| {
+                demands
+                    .entries
+                    .get(&event)
+                    .is_none_or(|entry| entry.id != id)
+            }) {
+                demands.active = None;
+            }
+            plans.sort_unstable_by_key(|plan| std::cmp::Reverse(plan.1));
+            // A partially serviced plan owns further eviction until its caller
+            // reserves, cancels or expires. This is not an aggregate promise.
+            if let Some((active, _)) = demands.active {
+                plans.retain(|(event, _)| event.event_id == active);
+            }
+            // Even a previously exhausted plan may now fit after reservation
+            // release. Check all applicable plans before spending for any.
+            let mut pressures = Vec::with_capacity(plans.len());
+            for (incoming, _) in &plans {
                 if Instant::now() >= deadline {
                     return Ok(DemandStep::Bounded);
                 }
-                if victim_key >= key {
-                    return Ok(DemandStep::NoVictim);
+                pressures.push(
+                    match Self::payload_capacity_pause_tx(tx, incoming, &state)? {
+                        None => return Ok(DemandStep::Fits(incoming.event_id)),
+                        Some(PayloadAdmissionPause::AuthorCapacity) => Some(incoming.author()),
+                        Some(PayloadAdmissionPause::DatabaseCapacity) => None,
+                        _ => return Ok(DemandStep::NotReady),
+                    },
+                );
+            }
+            drop(state);
+            let revision = self
+                .payload_admission
+                .retention_revision
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let policy =
+                rostra_core::retention::RetentionPolicy::from_bytes(generation.policy_bytes())
+                    .ok_or(DbError::PayloadAccountingInvariant)?;
+            let mut remaining = scan_limit.get();
+            let mut advanced = false;
+            let mut byte_blocked = false;
+            let mut retry_at = demands
+                .entries
+                .values()
+                .map(|entry| entry.expires)
+                .min()
+                .ok_or(DbError::PayloadAccountingInvariant)?;
+            for ((incoming, key), author) in plans.into_iter().zip(pressures) {
+                if Instant::now() >= deadline {
+                    return Ok(if advanced {
+                        DemandStep::Continue
+                    } else {
+                        DemandStep::Bounded
+                    });
                 }
-                let event = tx
-                    .open_table(&crate::events::TABLE)?
-                    .get(&id)?
+                let scan = demands
+                    .entries
+                    .get_mut(&incoming.event_id)
                     .ok_or(DbError::PayloadAccountingInvariant)?
-                    .value_try()?;
-                let event = VerifiedEvent::assume_verified_from_signed(event.signed);
-                let candidate = RetentionCandidate {
-                    event: event.event_id,
-                    author: event.author(),
-                    key: victim_key,
-                };
-                if !self.retention_candidate_current_tx(
-                    tx,
-                    generation,
-                    candidate,
-                    RetentionClock::Trusted(now),
-                )? {
+                    .scan
+                    .get_or_insert_with(|| DemandScan::new(revision, author, now));
+                scan.prepare(revision, author, now);
+                if let Some(retry) = scan.retry_at {
+                    retry_at = retry_at.min(retry);
+                }
+                if scan.exhausted {
                     continue;
                 }
-                if u64::from(event.content_len()) > max_bytes {
-                    return Ok(DemandStep::Bounded);
+                if scan.blocked_bytes.is_some_and(|bytes| bytes > max_bytes) {
+                    byte_blocked = true;
+                    continue;
                 }
-                before_prune()?;
-                let outcome = self.prune_quota_payload_tx(
-                    tx,
-                    QuotaPruneRequest {
-                        id,
-                        target: QuotaPruneTarget::Processed,
-                        reason: if author.is_some() {
-                            QuotaPruneReason::AuthorQuota
+                loop {
+                    if Instant::now() >= deadline {
+                        return Ok(if advanced {
+                            DemandStep::Continue
                         } else {
-                            QuotaPruneReason::GlobalQuota
+                            DemandStep::Bounded
+                        });
+                    }
+                    if remaining == 0 {
+                        return Ok(DemandStep::Continue);
+                    }
+                    let Some((victim_key, id)) = scan.next_tx(tx)? else {
+                        scan.exhausted = true;
+                        advanced = true;
+                        break;
+                    };
+                    remaining -= 1;
+                    if victim_key >= key {
+                        scan.exhausted = true;
+                        advanced = true;
+                        break;
+                    }
+                    let event = tx
+                        .open_table(&crate::events::TABLE)?
+                        .get(&id)?
+                        .ok_or(DbError::PayloadAccountingInvariant)?
+                        .value_try()?;
+                    let event = VerifiedEvent::assume_verified_from_signed(event.signed);
+                    let candidate = RetentionCandidate {
+                        event: event.event_id,
+                        author: event.author(),
+                        key: victim_key,
+                    };
+                    if !self.retention_candidate_current_tx(
+                        tx,
+                        generation,
+                        candidate,
+                        RetentionClock::Trusted(now),
+                    )? {
+                        if let Some((entry, _)) =
+                            self.derive_retention_entry_tx(tx, generation, id)?
+                            && now.as_u64() < entry.eligible_at
+                        {
+                            let retry = Timestamp::from(entry.eligible_at);
+                            scan.retry_at = Some(scan.retry_at.map_or(retry, |old| old.min(retry)));
+                            retry_at = retry_at.min(retry);
+                        }
+                        scan.after = Some(victim_key);
+                        advanced = true;
+                        continue;
+                    }
+                    if u64::from(event.content_len()) > max_bytes {
+                        scan.blocked_bytes = Some(u64::from(event.content_len()));
+                        byte_blocked = true;
+                        break;
+                    }
+                    before_prune()?;
+                    let outcome = self.prune_quota_payload_tx(
+                        tx,
+                        QuotaPruneRequest {
+                            id,
+                            target: QuotaPruneTarget::Processed,
+                            reason: if author.is_some() {
+                                QuotaPruneReason::AuthorQuota
+                            } else {
+                                QuotaPruneReason::GlobalQuota
+                            },
+                            policy,
+                            clock: RetentionClock::Trusted(now),
                         },
-                        policy,
-                        clock: RetentionClock::Trusted(now),
-                    },
-                )?;
-                return match outcome {
-                    QuotaPruneOutcome::Pruned {
-                        logical_released_bytes,
-                    } => Ok(DemandStep::Pruned {
-                        demand: incoming.event_id,
-                        victim: event.event_id,
-                        bytes: logical_released_bytes,
-                    }),
-                    _ => Err(DbError::PayloadAccountingInvariant),
-                };
+                    )?;
+                    return match outcome {
+                        QuotaPruneOutcome::Pruned {
+                            logical_released_bytes,
+                        } => {
+                            let demand = incoming.event_id;
+                            // Publish before commit releases the writer, not in
+                            // a hook which a subsequent writer could overtake.
+                            // A commit failure can conservatively retain this
+                            // barrier, never authorize an unchecked reduction.
+                            let id = demands
+                                .entries
+                                .get(&demand)
+                                .ok_or(DbError::PayloadAccountingInvariant)?
+                                .id;
+                            demands.active = Some((demand, id));
+                            Ok(DemandStep::Pruned {
+                                demand,
+                                victim: event.event_id,
+                                bytes: logical_released_bytes,
+                            })
+                        }
+                        _ => Err(DbError::PayloadAccountingInvariant),
+                    };
+                }
             }
-            Ok(if exhausted {
-                DemandStep::NoVictim
-            } else {
+            Ok(if byte_blocked {
                 DemandStep::Bounded
+            } else {
+                DemandStep::NoVictim { retry_at }
             })
         })
         .await

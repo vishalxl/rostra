@@ -396,10 +396,16 @@ completed, newly reserved, reattached or policy-replaced demands cannot authoriz
 subsequent preemption. Unknown/future origins, protected incoming kinds and events
 larger than either applicable ceiling cannot register preemption intent.
 
-The internal step chooses the highest-ranked live demand, rederives its Missing
-rank from the durable header/origin, and uses **that one demand**, not an aggregate
-sum, to check author pressure before database pressure. If it fits, the step
-returns `Fits` without evicting for other pending callers. Otherwise it considers
+The internal step ranks live demands, rederives their Missing
+ranks from durable headers/origins, and uses **one demand**, not an aggregate
+sum, to check author pressure before database pressure. Before starting a plan,
+any fitting demand returns `Fits` without eviction. An exhausted or byte-blocked
+higher-ranked plan permits a lower-ranked author's feasible plan to proceed.
+Once a plan starts eviction, its full event/lease identity keeps priority until
+it reserves, cancels, expires or becomes invalid. Even if that partial plan becomes
+blocked, another plan cannot spend the same released capacity before its owner
+resolves. The original nonrenewable lifetime bounds this barrier; no additional
+promise or buffer is retained. Otherwise the step considers
 the lowest current candidate in the appropriate author/global index, and can
 evict only a strictly lower-ranked candidate. It checks complete generation,
 accounting, exhausted due prefix at the fixed timestamp, candidate ownership and
@@ -415,17 +421,43 @@ guards drop. Buffer-only releases need no demand arbitration. Cancellation
 linearizes at demand removal: it either precedes the checked reduction or waits
 for that reduction; it cannot retroactively undo a committed eviction.
 
-Each call can prune at most one payload, caps visited candidate rows at the
-supplied count (maximum 4096), refuses a candidate larger than the supplied
+Each call can prune at most one payload, caps visited candidate rows **across all
+plans** at the supplied count (maximum 4096), refuses a candidate larger than the supplied
 logical-byte allowance, and checks a cooperative deadline between bounded demand
 and candidate visits. Individual DB operations/projection reduction remain
-indivisible. `NotReady`, `NoVictim`, and `Bounded` are not permission to spin:
+indivisible. The count-bounded demand pass and sorting remain bounded by the
+configured intent count, independently of the candidate-row allowance.
+`Continue` means a frontier advanced or another unvisited plan remains; yield
+before another bounded turn. `NotReady`, `NoVictim`, and `Bounded` are not permission to spin:
 the later scheduler must reconcile readiness or sleep until relevant changes.
 It must not repeatedly retry protected overload or an unattainable byte budget.
 The normal internal entry points sample fresh trusted walltime after acquiring
 the writer and cancellation locks, and reuse that one timestamp for every check
 in the transaction. A blocked/paused turn therefore cannot reuse expired
 pre-lock authority. Clock injection is confined to internal test helpers.
+
+Each demand carries one constant-size advisory cursor, not a retained victim list.
+It skips only rejected rows, remembers exhaustion and the next victim's required
+byte allowance, and never skips an eligible minimum merely because it is too large.
+The cursor resets on author/global pressure-scope changes, backwards walltime,
+the earliest skipped future row's eligibility time, or an index mutation revision.
+Forward walltime before that deadline does not restart a long future prefix.
+Generation/config replacement and reattachment invalidate the entire demand.
+Lifecycle index changes, generation replacement, cleanup and grace promotion
+invalidate scans before mutation without taking the demand mutex. Even an aborted
+mutation may conservatively restart scans. Duplicate/no-op index refresh does not.
+A successful reducer records partial-plan priority before commit releases the
+writer; commit failure can conservatively retain that priority, but it never
+supplies authority independent of current transactional checks.
+
+`NoVictim` includes an advisory earliest expiry/eligibility walltime. A future
+scheduler must also observe lifecycle, admission and readiness notifications,
+register before checking, and use bounded recovery waits rather than trusting the
+hint as a clock latch. Too-small time or byte allowances return `Bounded`, not
+permission to retry the same work continuously. Under stable inputs and sufficient
+per-operation time/byte allowance, bounded turns reach alternate plans and pass
+finite future prefixes; continuous relevant mutation can restart that progress.
+This is cursor/fair-plan support, not a proof of a complete worker's liveness.
 
 Diagnostics now distinguish pending intent count/bytes from logical reservations
 and owned acquisition buffers. Demand usage is an advisory live walltime snapshot,
@@ -435,7 +467,7 @@ does not collect nominated bytes and does not implement general over-cap pressur
 or acquisition ownership while paused. The full activation obligations in the
 phase-3 handoff remain blockers for exposing enabled runtime modes.
 
-The next checkpoint adds runtime configuration and retention-worker integration, including
+Remaining checkpoints must add runtime configuration and retention-worker integration, including
 the unloaded-account HTTP policy boundary above, before any activation path.
 Logical quota release may reclaim no physical bytes when another reference
 survives. Headers and index overhead remain outside logical payload accounting.
@@ -492,3 +524,9 @@ clock sampling inside the writer boundary, policy/config invalidation,
 checked-reducer rollback with live intent preserved, and protected/no-victim
 overload without pruning. These are disposable configured primitive tests, not
 enabled-runtime liveness or acquisition-path coverage.
+Bounded continuation tests cover alternate-author progress after exhausted higher
+rank, a future prefix across forward walltime, rollback rewinding, earliest
+eligibility retry, newly promoted minima before a saved frontier, and partial-plan
+priority through cancellation, replacement ownership and expiry. They also pin
+byte-blocked alternate plans and larger-budget retry, no-op duplicate refresh, and
+conservative scan reset after an aborted lifecycle mutation.

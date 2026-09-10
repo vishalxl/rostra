@@ -6,10 +6,13 @@ use rostra_core::{EventId, ShortEventId, Timestamp};
 
 use crate::RetentionGeneration;
 use crate::payload_demand::DemandOwner;
+use crate::payload_demand_scan::DemandScan;
 
 /// Bounded metadata for one intent; no retained content or acquisition guard.
 #[derive(Debug)]
 pub(crate) struct DemandEntry {
+    /// Advisory bounded continuation, never independent pruning authority.
+    pub(crate) scan: Option<DemandScan>,
     /// Weak deduplication handle; the caller owns cancellation.
     pub(crate) owner: Weak<DemandOwner>,
     /// Identity preventing a stale owner's drop from cancelling a replacement.
@@ -25,6 +28,8 @@ pub(crate) struct DemandEntry {
 /// Account-local arbitration and bounded pending metadata.
 #[derive(Debug, Default)]
 pub(crate) struct DemandState {
+    /// Once eviction starts, finish this one plan before spending for another.
+    pub(crate) active: Option<(EventId, u64)>,
     /// One complete policy/holder identity for all current demands.
     pub(crate) generation: Option<RetentionGeneration>,
     /// Weak immutable budget incarnation; comparison/cleanup never visits or
@@ -39,6 +44,7 @@ pub(crate) struct DemandState {
 impl DemandState {
     /// Invalidate ownership without reusing cancellation identities.
     pub(crate) fn clear(&mut self) {
+        self.active = None;
         self.entries.clear();
         self.generation = None;
         self.config = Weak::new();

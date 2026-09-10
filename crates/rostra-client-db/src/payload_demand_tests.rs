@@ -44,14 +44,443 @@ async fn ingest(
     post: &VerifiedEventContent,
     materialize: bool,
 ) -> anyhow::Result<()> {
+    ingest_at(db, post, materialize, 100).await
+}
+
+async fn ingest_at(
+    db: &Database,
+    post: &VerifiedEventContent,
+    materialize: bool,
+    now: u64,
+) -> anyhow::Result<()> {
     db.write_with(|tx| {
-        db.process_event_tx(&post.event, Timestamp::from(100), tx)?;
+        db.process_event_tx(&post.event, Timestamp::from(now), tx)?;
         if materialize {
-            db.process_event_content_tx(post, Timestamp::from(100), tx)?;
+            db.process_event_content_tx(post, Timestamp::from(now), tx)?;
         }
         Ok(())
     })
     .await?;
+    Ok(())
+}
+
+async fn one_row_step(
+    db: &Database,
+    generation: RetentionGeneration,
+    now: u64,
+    bytes: u64,
+) -> anyhow::Result<DemandStep> {
+    Ok(db
+        .preempt_payload_demand_with(
+            generation,
+            || Timestamp::from(now),
+            limit(1),
+            bytes,
+            Instant::now() + Duration::from_secs(5),
+            || Ok(()),
+        )
+        .await?)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_alternate_author_progresses_past_exhausted_ranked_plan() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = RostraIdSecretKey::generate();
+    let b = RostraIdSecretKey::generate();
+    let high_victim = post(a, 95, "same");
+    let high = post(a, 90, "same");
+    let low_victim = post(b, 1, "same");
+    let low = post(b, 50, "same");
+    for event in [&high_victim, &low_victim] {
+        ingest(&db, event, true).await?;
+    }
+    for event in [&high, &low] {
+        ingest(&db, event, false).await?;
+    }
+    let bytes = u64::from(low.content_len());
+    let generation = configure(&db, 10000, bytes + 1, 5, 10000).await?;
+    let _high = demand(&db, &high, generation, 100).await?;
+    let low_owner = demand(&db, &low, generation, 100).await?;
+    assert_eq!(
+        one_row_step(&db, generation, 100, bytes).await?,
+        DemandStep::Continue
+    );
+    assert_eq!(
+        one_row_step(&db, generation, 101, bytes).await?,
+        DemandStep::Pruned {
+            demand: low.event_id(),
+            victim: low_victim.event_id(),
+            bytes
+        },
+    );
+    assert_eq!(
+        step(&db, generation, 101).await?,
+        DemandStep::Fits(low.event_id())
+    );
+    drop(low_owner);
+    assert_eq!(
+        step(&db, generation, 101).await?,
+        DemandStep::NoVictim {
+            retry_at: Timestamp::from(130),
+        }
+    );
+    assert!(
+        db.get_event_content(high_victim.event_id().to_short())
+            .await
+            .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_cursor_crosses_future_prefix_without_repeating_it() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = RostraIdSecretKey::generate();
+    let first = post(a, 1, "same");
+    let second = post(a, 2, "same");
+    let ready = post(a, 3, "same");
+    let incoming = post(a, 89, "same");
+    ingest_at(&db, &first, true, 95).await?;
+    ingest_at(&db, &second, true, 96).await?;
+    ingest_at(&db, &ready, true, 80).await?;
+    ingest_at(&db, &incoming, false, 89).await?;
+    let bytes = u64::from(ready.content_len());
+    let generation = configure(&db, 3 * bytes + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &incoming, generation, 90).await?;
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Continue
+    );
+    assert_eq!(
+        one_row_step(&db, generation, 91, bytes).await?,
+        DemandStep::Continue
+    );
+    assert_eq!(
+        one_row_step(&db, generation, 92, bytes).await?,
+        DemandStep::Pruned {
+            demand: incoming.event_id(),
+            victim: ready.event_id(),
+            bytes
+        },
+    );
+    assert!(
+        db.get_event_content(first.event_id().to_short())
+            .await
+            .is_some()
+    );
+    assert!(
+        db.get_event_content(second.event_id().to_short())
+            .await
+            .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_cursor_restarts_at_skipped_eligibility_deadline() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = RostraIdSecretKey::generate();
+    let first = post(a, 1, "same");
+    let later = post(a, 2, "same");
+    let incoming = post(a, 89, "same");
+    ingest_at(&db, &first, true, 95).await?;
+    ingest_at(&db, &later, true, 80).await?;
+    ingest_at(&db, &incoming, false, 89).await?;
+    let bytes = u64::from(later.content_len());
+    let generation = configure(&db, 2 * bytes + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &incoming, generation, 90).await?;
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Continue
+    );
+    assert_eq!(
+        one_row_step(&db, generation, 95, bytes).await?,
+        DemandStep::Pruned {
+            demand: incoming.event_id(),
+            victim: first.event_id(),
+            bytes
+        },
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_cursor_restarts_after_promotion_before_frontier() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = RostraIdSecretKey::generate();
+    let future = post(a, 1, "same");
+    let later = post(a, 2, "same");
+    let new_minimum = post(a, 0, "same");
+    let incoming = post(a, 89, "same");
+    ingest_at(&db, &future, true, 95).await?;
+    ingest_at(&db, &later, true, 80).await?;
+    ingest_at(&db, &incoming, false, 89).await?;
+    let bytes = u64::from(later.content_len());
+    let generation = configure(&db, 2 * bytes + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &incoming, generation, 90).await?;
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Continue
+    );
+    let config = db.payload_admission.state.lock().unwrap().config.take();
+    ingest_at(&db, &new_minimum, true, 80).await?;
+    db.payload_admission.state.lock().unwrap().config = config;
+    assert_eq!(step(&db, generation, 90).await?, DemandStep::NotReady);
+    db.promote_retention_grace(RetentionClock::Trusted(Timestamp::from(90)), limit(10))
+        .await?;
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Pruned {
+            demand: incoming.event_id(),
+            victim: new_minimum.event_id(),
+            bytes
+        },
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_exhausted_cursor_wakes_for_clock_and_rewinds_on_rollback() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = RostraIdSecretKey::generate();
+    let first = post(a, 1, "same");
+    let second = post(a, 2, "same");
+    let incoming = post(a, 79, "same");
+    ingest_at(&db, &first, true, 95).await?;
+    ingest_at(&db, &second, true, 96).await?;
+    ingest_at(&db, &incoming, false, 79).await?;
+    let bytes = u64::from(first.content_len());
+    let generation = configure(&db, 2 * bytes + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &incoming, generation, 80).await?;
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Continue
+    );
+    let first_cursor = db.payload_admission.demands.lock().unwrap().entries[&incoming.event_id()]
+        .scan
+        .unwrap()
+        .after;
+    assert_eq!(
+        one_row_step(&db, generation, 89, bytes).await?,
+        DemandStep::Continue
+    );
+    assert_eq!(
+        db.payload_admission.demands.lock().unwrap().entries[&incoming.event_id()]
+            .scan
+            .unwrap()
+            .after,
+        first_cursor
+    );
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Continue
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            one_row_step(&db, generation, 90, bytes).await?,
+            DemandStep::NoVictim {
+                retry_at: Timestamp::from(95),
+            }
+        );
+    }
+    assert_eq!(
+        one_row_step(&db, generation, 95, bytes).await?,
+        DemandStep::Pruned {
+            demand: incoming.event_id(),
+            victim: first.event_id(),
+            bytes
+        },
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_partial_plan_keeps_priority_until_cancellation_or_expiry() -> anyhow::Result<()> {
+    for cancel in [false, true] {
+        let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+        let a = RostraIdSecretKey::generate();
+        let first = post(a, 1, "same");
+        let second = post(a, 2, "same");
+        let incoming = post(a, 50, "a somewhat longer post");
+        let higher = post(a, 90, "same");
+        ingest(&db, &first, true).await?;
+        ingest(&db, &second, true).await?;
+        ingest(&db, &incoming, false).await?;
+        let bytes = u64::from(first.content_len());
+        assert!(bytes + 1 < u64::from(incoming.content_len()));
+        assert!(u64::from(incoming.content_len()) <= 2 * bytes + 1);
+        let generation = configure(&db, 2 * bytes + 1, 10000, 5, 10000).await?;
+        let owner = demand(&db, &incoming, generation, 100).await?;
+        assert_eq!(
+            one_row_step(&db, generation, 100, bytes).await?,
+            DemandStep::Pruned {
+                demand: incoming.event_id(),
+                victim: first.event_id(),
+                bytes
+            },
+        );
+        // Another plan fits now, but must not replace the partial plan.
+        ingest(&db, &higher, false).await?;
+        // Registration requires pressure, so temporarily reserve the remaining
+        // gap, register, then release without changing candidate membership.
+        let reservation = match db.reserve_payload(&higher.event).await? {
+            PayloadReservationOutcome::Reserved(owner) => owner,
+            other => panic!("{other:?}"),
+        };
+        let another = post(a, 91, "same");
+        ingest(&db, &another, false).await?;
+        let _another_owner = demand(&db, &another, generation, 101).await?;
+        drop(reservation);
+        if cancel {
+            drop(owner);
+            let _replacement = demand(&db, &incoming, generation, 101).await?;
+            assert_eq!(
+                step(&db, generation, 101).await?,
+                DemandStep::Fits(another.event_id())
+            );
+        } else {
+            assert_eq!(
+                one_row_step(&db, generation, 101, bytes).await?,
+                DemandStep::Pruned {
+                    demand: incoming.event_id(),
+                    victim: second.event_id(),
+                    bytes
+                },
+            );
+            assert_eq!(
+                step(&db, generation, 101).await?,
+                DemandStep::Fits(incoming.event_id())
+            );
+            assert_eq!(
+                step(&db, generation, 130).await?,
+                DemandStep::Fits(another.event_id())
+            );
+            drop(owner);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_byte_blocked_plan_yields_to_another_author_and_larger_budget() -> anyhow::Result<()>
+{
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = RostraIdSecretKey::generate();
+    let b = RostraIdSecretKey::generate();
+    let large = post(a, 1, "a much larger retained payload");
+    let small = post(b, 2, "same");
+    let high = post(a, 90, "same");
+    let low = post(b, 80, "same");
+    for event in [&large, &small] {
+        ingest(&db, event, true).await?;
+    }
+    for event in [&high, &low] {
+        ingest(&db, event, false).await?;
+    }
+    let bytes = u64::from(small.content_len());
+    let large_bytes = u64::from(large.content_len());
+    assert!(large_bytes > bytes);
+    let generation = configure(&db, 10000, bytes + 1, 5, 10000).await?;
+    let _high = demand(&db, &high, generation, 100).await?;
+    let low_owner = demand(&db, &low, generation, 100).await?;
+    assert_eq!(
+        one_row_step(&db, generation, 100, bytes).await?,
+        DemandStep::Continue
+    );
+    assert_eq!(
+        one_row_step(&db, generation, 100, bytes).await?,
+        DemandStep::Pruned {
+            demand: low.event_id(),
+            victim: small.event_id(),
+            bytes
+        },
+    );
+    assert_eq!(
+        step(&db, generation, 100).await?,
+        DemandStep::Fits(low.event_id())
+    );
+    drop(low_owner);
+    for _ in 0..2 {
+        assert_eq!(
+            one_row_step(&db, generation, 100, bytes).await?,
+            DemandStep::Bounded
+        );
+    }
+    assert_eq!(
+        one_row_step(&db, generation, 100, large_bytes).await?,
+        DemandStep::Pruned {
+            demand: high.event_id(),
+            victim: large.event_id(),
+            bytes: large_bytes
+        },
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn demand_cursor_ignores_noop_refresh_but_resets_after_aborted_mutation() -> anyhow::Result<()>
+{
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = RostraIdSecretKey::generate();
+    let future = post(a, 1, "same");
+    let later = post(a, 2, "same");
+    let new_minimum = post(a, 0, "same");
+    let incoming = post(a, 79, "same");
+    ingest_at(&db, &future, true, 95).await?;
+    ingest_at(&db, &later, true, 80).await?;
+    ingest_at(&db, &incoming, false, 79).await?;
+    let bytes = u64::from(later.content_len());
+    let generation = configure(&db, 2 * bytes + 1, 10000, 5, 10000).await?;
+    let _owner = demand(&db, &incoming, generation, 80).await?;
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Continue
+    );
+    let revision = db
+        .payload_admission
+        .retention_revision
+        .load(std::sync::atomic::Ordering::Relaxed);
+    ingest_at(&db, &future, true, 90).await?;
+    assert_eq!(
+        db.payload_admission
+            .retention_revision
+            .load(std::sync::atomic::Ordering::Relaxed),
+        revision
+    );
+    let config = db.payload_admission.state.lock().unwrap().config.take();
+    let aborted: crate::DbResult<()> = db
+        .write_with(|tx| {
+            db.process_event_tx(&new_minimum.event, Timestamp::from(80), tx)?;
+            db.process_event_content_tx(&new_minimum, Timestamp::from(80), tx)?;
+            Err(crate::DbError::PayloadAccountingInvariant)
+        })
+        .await;
+    db.payload_admission.state.lock().unwrap().config = config;
+    assert!(aborted.is_err());
+    assert!(
+        db.payload_admission
+            .retention_revision
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > revision
+    );
+    assert!(
+        db.get_event_content(new_minimum.event_id().to_short())
+            .await
+            .is_none()
+    );
+    // The aborted insert forces a conservative rewind, not a skipped prefix.
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Continue
+    );
+    assert_eq!(
+        one_row_step(&db, generation, 90, bytes).await?,
+        DemandStep::Pruned {
+            demand: incoming.event_id(),
+            victim: later.event_id(),
+            bytes
+        },
+    );
     Ok(())
 }
 
@@ -296,7 +725,12 @@ async fn demand_no_victim_and_fixed_time_due_prefix_and_work_bounds() -> anyhow:
     let bytes = u64::from(old.content_len());
     let generation = configure(&db, bytes + 1, 10000, 5, 10000).await?;
     let owner = demand(&db, &incoming, generation, 100).await?;
-    assert_eq!(step(&db, generation, 100).await?, DemandStep::NoVictim);
+    assert_eq!(
+        step(&db, generation, 100).await?,
+        DemandStep::NoVictim {
+            retry_at: Timestamp::from(130),
+        }
+    );
     drop(owner);
     let newer = post(a, 3, "same");
     ingest(&db, &newer, false).await?;
@@ -469,7 +903,12 @@ async fn demand_protected_overload_and_impossible_payload_do_not_prune() -> anyh
     let generation = configure(&db, bytes + 1, 10000, 5, 10000).await?;
     let _owner = demand(&db, &incoming, generation, 100).await?;
     for _ in 0..3 {
-        assert_eq!(step(&db, generation, 100).await?, DemandStep::NoVictim);
+        assert_eq!(
+            step(&db, generation, 100).await?,
+            DemandStep::NoVictim {
+                retry_at: Timestamp::from(130),
+            }
+        );
     }
     assert!(matches!(
         db.register_payload_demand_with(oversized.event_id(), generation, || Timestamp::from(100))

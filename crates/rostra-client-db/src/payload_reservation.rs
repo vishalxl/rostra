@@ -50,6 +50,8 @@ pub struct PayloadAdmissionUsage {
 /// database's writer lock.
 #[derive(Debug, Default)]
 pub(crate) struct AdmissionLedger {
+    /// Conservative process-local invalidation of demand scan frontiers.
+    pub(crate) retention_revision: std::sync::atomic::AtomicU64,
     /// Arbitration for demand cancellation and logical lease release. Lock
     /// before `state`; writer transactions serialize logical additions.
     pub(crate) demands: Mutex<crate::payload_demand_state::DemandState>,

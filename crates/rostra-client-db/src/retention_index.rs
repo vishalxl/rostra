@@ -94,7 +94,7 @@ pub(crate) struct IndexEntry {
     /// Canonical ordered key including the full verified event ID.
     key: [u8; 48],
     /// Earliest representable eligibility time, including the header origin.
-    eligible_at: u64,
+    pub(crate) eligible_at: u64,
     /// Promotion only changes membership, never the static key.
     promoted: bool,
 }
@@ -142,6 +142,20 @@ impl IndexRecord {
 }
 
 impl Database {
+    /// Invalidate advisory scans before index mutations, including aborted
+    /// ones. Does not take demand arbitration (the checked reducer already
+    /// holds it).
+    fn invalidate_retention_scans(&self) -> DbResult<()> {
+        self.payload_admission
+            .retention_revision
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |revision| revision.checked_add(1),
+            )
+            .map_err(|_| crate::DbError::Overflow)?;
+        Ok(())
+    }
     /// Require complete backfill and an exhausted due prefix at this exact
     /// walltime before an internal pressure operation can choose a minimum.
     pub(crate) fn retention_selection_ready_tx(
@@ -191,6 +205,7 @@ impl Database {
         self.write_with(|tx| {
             let generation = RetentionGeneration::new(policy, self.self_id);
             if Self::retention_record_tx(tx)?.is_none_or(|record| record.generation != generation) {
+                self.invalidate_retention_scans()?;
                 let ledger = self.payload_admission.clone();
                 tx.on_commit(move || {
                     ledger.demands.lock().unwrap().clear();
@@ -320,7 +335,7 @@ impl Database {
         Ok(())
     }
 
-    fn derive_retention_entry_tx(
+    pub(crate) fn derive_retention_entry_tx(
         &self,
         tx: &WriteTransactionCtx,
         generation: RetentionGeneration,
@@ -412,6 +427,7 @@ impl Database {
                 return Ok(());
             }
         }
+        self.invalidate_retention_scans()?;
         Self::remove_retention_entry_tx(tx, id)?;
         if let Some(entry) = next {
             tx.open_table(&grace::TABLE)?
@@ -449,6 +465,7 @@ impl Database {
                             tx.open_table(&state::TABLE)?.insert(&(), &record)?;
                             continue;
                         };
+                        self.invalidate_retention_scans()?;
                         Self::remove_retention_entry_tx(tx, id)?;
                     }
                     IndexStage::Events(cursor) => {
@@ -520,6 +537,7 @@ impl Database {
                 if entry.promoted || entry.eligible_at != deadline {
                     return crate::PayloadAccountingInvariantSnafu.fail();
                 }
+                self.invalidate_retention_scans()?;
                 tx.open_table(&grace::TABLE)?.remove(&(deadline, id))?;
                 entry.promoted = true;
                 tx.open_table(&global::TABLE)?.insert(&entry.key, &id)?;

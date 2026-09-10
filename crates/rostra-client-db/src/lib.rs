@@ -21,6 +21,8 @@ mod payload_allocation;
 // worker and all acquisition paths can be enabled together.
 #[expect(dead_code)]
 mod payload_demand;
+#[allow(dead_code)]
+mod payload_demand_scan;
 mod payload_demand_state;
 #[cfg(test)]
 mod payload_demand_tests;

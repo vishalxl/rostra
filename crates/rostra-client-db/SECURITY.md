@@ -75,6 +75,17 @@ reservations, and current lower-ranked candidate ownership in the same writer
 transaction as checked pruning. It never collects bytes. Per-call candidate
 visits and logical bytes are bounded, with at most one indivisible reduction and
 cooperative time checks; `NoVictim`/`NotReady`/`Bounded` are not busy-loop signals.
+One constant-size cursor per bounded intent skips rejected rows across turns;
+`Continue` permits a yielded continuation, not an internal loop. Scope changes,
+backwards time, skipped-row eligibility and any relevant index mutation invalidate
+advice. Mutation revision increments precede index changes, so rollback can only
+force extra rescanning. Cursor validity never replaces current transaction checks.
+Exhausted/byte-blocked plans permit alternate authors before eviction starts;
+afterwards one full event/lease identity retains priority until reservation,
+cancellation, expiry or invalidation. This avoids spending released capacity for
+aggregate demand. A commit failure can conservatively keep that metadata-only
+priority, never grant unchecked authority. Retry walltime is advisory; insufficient
+budgets and continuous mutation do not have an unconditional liveness guarantee.
 
 The lock order is DB writer, demand arbitration, then admission state. Logical
 lease drops take arbitration before state, preventing disappearing reservation
