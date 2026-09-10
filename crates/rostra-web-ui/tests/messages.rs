@@ -235,7 +235,33 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     private_headers(&response);
     let response = alice.get(&path).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let csrf = token(&response.text().await.unwrap());
+    let page = response.text().await.unwrap();
+    let document = Html::parse_document(&page);
+    assert!(
+        document
+            .select(&Selector::parse(".m-directMessages__availabilityWarning").unwrap())
+            .next()
+            .is_none()
+    );
+    assert!(
+        document
+            .select(&Selector::parse("textarea[name=text]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("disabled")
+            .is_none()
+    );
+    assert!(
+        document
+            .select(&Selector::parse(".m-directMessages__sendButton").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("disabled")
+            .is_none()
+    );
+    let csrf = token(&page);
     let text = "<img src=\"https://outsider.invalid/pixel\"> **not markup**\nsecond line";
     let response = alice
         .post_form(&path, &[("text", text), ("csrf", "wrong")])
@@ -432,12 +458,27 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .post_form(&path, &[("text", "not queued"), ("csrf", csrf.as_str())])
         .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let document = Html::parse_document(&response.text().await.unwrap());
     assert!(
-        response
-            .text()
-            .await
-            .unwrap()
-            .contains("not queued</textarea>")
+        document
+            .select(
+                &Selector::parse(".m-directMessages__availabilityWarning[role=status]").unwrap()
+            )
+            .any(|warning| warning
+                .text()
+                .collect::<String>()
+                .contains("No message will be queued."))
+    );
+    assert!(
+        document
+            .select(&Selector::parse("textarea[name=text][disabled]").unwrap())
+            .any(|textarea| textarea.text().collect::<String>() == "not queued")
+    );
+    assert!(
+        document
+            .select(&Selector::parse(".m-directMessages__sendButton[disabled]").unwrap())
+            .next()
+            .is_some()
     );
     assert_eq!(
         alice_client

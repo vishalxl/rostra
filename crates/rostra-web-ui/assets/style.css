@@ -3691,6 +3691,14 @@ body.-keyboard-nav * {
   color: var(--color-text-muted);
 }
 
+.m-directMessages__availabilityWarning {
+  margin-block: 1rem;
+  padding: 0.75rem;
+  border: 2px solid #b91c1c;
+  border-radius: var(--border-radius-std);
+  background-color: oklch(45% 0.12 25 / 0.2);
+}
+
 .m-directMessages form {
   display: flex;
   flex-direction: column;

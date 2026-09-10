@@ -571,7 +571,9 @@ async fn render_thread(
             }
             @if let Some((_, error)) = error { p role="alert" { (error) } }
             @if unavailable {
-                p role="status" { "Sending is unavailable: this installation may be retired, or no eligible recipient device is known. No message will be queued." }
+                p ."m-directMessages__availabilityWarning" role="status" {
+                    "Sending is unavailable: this installation may be retired, or no eligible recipient device is known. No message will be queued."
+                }
             }
             @if let Some(next) = next { a href=(next) { "Older messages" } }
             @if entries.is_empty() { p { "No messages on this installation yet." } }
@@ -594,8 +596,10 @@ async fn render_thread(
                 input type="hidden" name="csrf" value=(csrf);
                 label for="message-text" { "Plain-text message (up to 16 KiB of UTF-8)" }
                 textarea id="message-text" name="text" rows="5" required
-                    maxlength="16384" autocomplete="off" { (draft) }
-                (fragment::button("m-directMessages__sendButton", "Send").call())
+                    maxlength="16384" autocomplete="off" disabled[unavailable] { (draft) }
+                (fragment::button("m-directMessages__sendButton", "Send")
+                    .disabled(unavailable)
+                    .call())
             }
         },
         true,
