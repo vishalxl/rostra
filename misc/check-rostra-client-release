@@ -10,6 +10,7 @@ readonly packages=(
   rostra-p2p-api
   rostra-djot
   rostra-p2p
+  rostra-dm
   rostra-client-db
   rostra-client
 )
@@ -85,7 +86,7 @@ package_dir() {
   case "$1" in
     rostra-util | rostra-util-error | rostra-util-fmt | rostra-util-dedup-chan | \
       rostra-core | rostra-p2p-api | rostra-djot | rostra-p2p | \
-      rostra-client-db | rostra-client)
+      rostra-dm | rostra-client-db | rostra-client)
       printf 'crates/%s\n' "$1"
       ;;
     *)
@@ -97,7 +98,7 @@ package_dir() {
 
 content_roots() {
   case "$1" in
-    rostra-core)
+    rostra-core | rostra-dm)
       printf '%s\n' benches src
       ;;
     rostra-client-db)
@@ -114,7 +115,7 @@ content_roots() {
 
 unpublished_dependencies() {
   case "$1" in
-    rostra-djot)
+    rostra-djot | rostra-dm)
       printf '%s\n' rostra-core
       ;;
     rostra-p2p)
@@ -123,10 +124,10 @@ unpublished_dependencies() {
     rostra-client-db)
       printf '%s\n' \
         rostra-util rostra-util-error rostra-util-fmt \
-        rostra-util-dedup-chan rostra-core rostra-p2p-api rostra-djot rostra-p2p
+        rostra-util-dedup-chan rostra-core rostra-p2p-api rostra-djot rostra-p2p rostra-dm
       ;;
     rostra-client)
-      printf '%s\n' "${packages[@]:0:9}"
+      printf '%s\n' "${packages[@]:0:10}"
       ;;
   esac
 }
@@ -301,7 +302,7 @@ for package in "${registry_dry_run_packages[@]}"; do
 done
 
 cat <<'EOF'
-Validated all ten local package artifacts, standalone rostra-p2p, and the
+Validated all eleven local package artifacts, standalone rostra-p2p, and the
 isolated rostra-client consumer.
 Registry dry-runs for the four remaining packages require publishing their
 internal Rostra dependencies first; see docs/releasing-rostra-client.md.

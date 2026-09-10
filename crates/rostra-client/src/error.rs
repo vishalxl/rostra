@@ -110,6 +110,10 @@ pub type IdSecretReadResult<T> = std::result::Result<T, IdSecretReadError>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum PostError {
+    #[snafu(display("Direct messages require an unlocked full-account client"))]
+    DirectMessageUnavailable,
+    #[snafu(display("Direct-message encoding failed: {source}"))]
+    DirectMessageEncoding { source: rostra_dm::Error },
     #[snafu(transparent)]
     Resolve { source: IdResolveError },
     #[snafu(display("Encoding error: {source}"))]

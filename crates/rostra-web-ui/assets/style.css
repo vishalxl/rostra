@@ -3487,6 +3487,77 @@ body.-keyboard-nav * {
 }
 
 /* Send button icon */
+.m-directMessages {
+  min-width: 0;
+}
+
+.m-directMessages h1 {
+  font-size: 1.2rem;
+}
+
+.m-directMessages form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-block: 1rem;
+}
+
+.m-directMessages input,
+.m-directMessages textarea {
+  box-sizing: border-box;
+  width: 100%;
+  font: inherit;
+}
+
+.m-directMessages textarea {
+  resize: vertical;
+}
+
+.m-directMessages__history,
+.m-directMessages__conversations,
+.m-directMessages__devices {
+  list-style: none;
+  padding: 0;
+}
+
+.m-directMessages__message,
+.m-directMessages__conversations > li,
+.m-directMessages__devices > li {
+  padding: 1rem;
+  margin-block: 1rem;
+  border: 1px solid var(--color-button-border);
+  border-radius: var(--border-radius-std);
+}
+
+.m-directMessages__message.-outgoing {
+  background-color: var(--color-pre-bg);
+}
+
+.m-directMessages__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.m-directMessages__identity {
+  overflow-wrap: anywhere;
+}
+
+.m-directMessages__openButtonIcon {
+  background: url('/assets/icons/comment.svg') center/contain no-repeat;
+}
+
+.m-directMessages__sendButtonIcon {
+  background: url('/assets/icons/arrow-right.svg') center/contain no-repeat;
+}
+
+.m-directMessages__enrollButtonIcon {
+  background: url('/assets/icons/id-card.svg') center/contain no-repeat;
+}
+
+.m-directMessages__retireButtonIcon {
+  background: url('/assets/icons/circle-xmark.svg') center/contain no-repeat;
+}
+
 .o-shoutbox__submitButtonIcon {
   background: url('/assets/icons/arrow-right.svg') center/contain no-repeat;
 }

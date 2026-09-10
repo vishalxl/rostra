@@ -425,6 +425,12 @@ impl UiState {
                         {
                             "Identity"
                         }
+                        a ."o-settingsNav__item"
+                            ."-active"[active_category == "messages"]
+                            href="/settings/messages"
+                        {
+                            "Message devices"
+                        }
                     }
                     div ."o-settingsNav__group" {
                         h3 ."o-settingsNav__groupHeader" { "Social" }

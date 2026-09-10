@@ -152,6 +152,35 @@ macro_rules! def_table {
 pub(crate) use def_table;
 
 def_table! {
+    /// Non-replayable local messaging installation identity.
+    ids_dm_installation: () => crate::dm::Installation
+}
+def_table! {
+    /// Live independent secrets, keyed by installation and public key.
+    ids_dm_epochs: ([u8; 16], [u8; 32]) => rostra_dm::LocalEpoch
+}
+def_table! {
+    /// Authoritative latest announcements and permanent retirement tombstones.
+    ids_dm_devices: (RostraId, [u8; 16]) => rostra_dm::DeviceState
+}
+def_table! {
+    /// Derived dyadic eligibility buckets, ordered by latest announcement rank.
+    ids_dm_devices_by_interval: (RostraId, crate::dm_index::Prefix, (u64, ShortEventId, [u8; 16])) => ()
+}
+def_table! {
+    /// Non-replayable retained plaintext and first-winner deduplication state.
+    events_dm_history: (RostraId, [u8; 16]) => crate::dm::HistoryEntry
+}
+def_table! {
+    /// Derived ordered conversation lookup; rebuilt from retained history.
+    events_dm_history_by_conversation: (RostraId, RostraId, u64, ShortEventId) => (RostraId, [u8; 16])
+}
+def_table! {
+    /// Disposable background work, with the last attempted epoch key.
+    events_dm_pending: ShortEventId => Option<([u8; 16], [u8; 32])>
+}
+
+def_table! {
     /// Immutable local retention age and first-materialization origins.
     events_retention_origins: ShortEventId => crate::retention::RetentionOrigins
 }

@@ -33,6 +33,9 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
+mod dm;
+#[cfg(test)]
+mod dm_tests;
 mod init;
 pub(crate) mod task_owner;
 pub(crate) mod tasks;
@@ -330,6 +333,8 @@ pub struct Client {
     pub(crate) db: Arc<Database>,
 
     active: AtomicBool,
+    /// DM secret/history ownership is available only to full clients.
+    is_mode_full: bool,
 
     /// Serializes the fallible transition into active/signing mode.
     activation_lock: tokio::sync::Mutex<()>,
@@ -483,6 +488,7 @@ impl Client {
             db,
             id,
             active: AtomicBool::new(false),
+            is_mode_full,
             activation_lock: tokio::sync::Mutex::new(()),
             task_handles: task_owner,
         });
@@ -578,6 +584,9 @@ impl Client {
         self.active.store(true, SeqCst);
         self.start_pkarr_id_publisher(id_secret);
         self.start_head_merger(id_secret);
+        if self.is_mode_full {
+            self.start_direct_message_worker(id_secret);
+        }
         Ok(())
     }
 
@@ -1290,6 +1299,9 @@ mod tests {
             .await
             .expect("test endpoint");
         let client = Client::builder(secret.id())
+            .db(Database::new_in_memory(secret.id())
+                .await
+                .expect("in-memory database"))
             .iroh_endpoint(endpoint)
             .start_request_handler(false)
             .start_background_tasks(false)
@@ -1314,7 +1326,7 @@ mod tests {
         assert!(client.active.load(SeqCst));
         assert_eq!(
             client.task_handles.len(),
-            2,
+            3,
             "the retry starts each signing task exactly once"
         );
     }

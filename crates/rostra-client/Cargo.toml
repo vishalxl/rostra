@@ -26,6 +26,7 @@ include = [
 workspace = true
 
 [dependencies]
+rostra-dm = { workspace = true }
 anyhow = { workspace = true }
 backon = { workspace = true }
 bincode = { workspace = true }

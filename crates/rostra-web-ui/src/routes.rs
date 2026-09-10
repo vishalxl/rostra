@@ -8,6 +8,7 @@ mod feeds;
 pub mod fragment;
 mod media;
 mod media_type;
+mod messages;
 mod new_post;
 mod post;
 mod profile;
@@ -100,6 +101,14 @@ pub async fn cache_control(request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
 
     let mut response = next.run(request).await;
+
+    if path == "/messages"
+        || path.starts_with("/messages/")
+        || path == "/settings/messages"
+        || path.starts_with("/settings/messages/")
+    {
+        return messages::sensitive_response(response);
+    }
 
     // Avatars: long cache, busted by ?v= query param on URL changes
     if path.starts_with("/profile/") && path.ends_with("/avatar") {
@@ -202,6 +211,24 @@ async fn sitemap_xml(state: State<SharedState>) -> impl IntoResponse {
 
 pub fn route_handler(state: SharedState) -> Router<Arc<UiState>> {
     Router::new()
+        .route("/messages", get(messages::get_messages))
+        .route("/messages/open", get(messages::open_conversation))
+        .route(
+            "/settings/messages/retire/{device}",
+            get(messages::get_retirement),
+        )
+        .route(
+            "/messages/{id}",
+            get(messages::get_thread)
+                .post(messages::post_message)
+                .layer(DefaultBodyLimit::max(64 * 1024)),
+        )
+        .route(
+            "/settings/messages",
+            get(messages::get_settings)
+                .post(messages::post_settings)
+                .layer(DefaultBodyLimit::max(4096)),
+        )
         .nest("/api", api::api_router())
         .route("/robots.txt", get(robots_txt))
         .route("/sitemap.xml", get(sitemap_xml))

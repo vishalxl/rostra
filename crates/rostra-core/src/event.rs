@@ -433,6 +433,10 @@ impl EventKind {
     pub const SOCIAL_MEDIA: Self = EventKind::from_u16(0x25);
     /// Shoutbox post - simple broadcast message
     pub const SHOUTBOX: Self = EventKind::from_u16(0x30);
+    /// Non-singleton bounded encrypted direct message; aux key must be zero.
+    pub const DIRECT_MESSAGE: Self = EventKind::from_u16(0x40);
+    /// Non-singleton device epoch announcement or permanent retirement.
+    pub const DM_DEVICE: Self = EventKind::from_u16(0x41);
 
     pub const fn from_u16(value: u16) -> Self {
         Self(value.to_be_bytes())
@@ -456,6 +460,8 @@ impl fmt::Display for EventKind {
             Self::SOCIAL_PROFILE_UPDATE => "social-profile-update",
             Self::SOCIAL_MEDIA => "social-media",
             Self::SHOUTBOX => "shoutbox",
+            Self::DIRECT_MESSAGE => "direct-message",
+            Self::DM_DEVICE => "dm-device",
             v => {
                 f.write_fmt(format_args!("{}", v.as_u16()))?;
                 return Ok(());

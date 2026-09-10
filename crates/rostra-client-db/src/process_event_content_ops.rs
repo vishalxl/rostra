@@ -247,6 +247,46 @@ impl Database {
         });
         #[allow(clippy::single_match)]
         match event_content.event.event.kind {
+            EventKind::DM_DEVICE | EventKind::DIRECT_MESSAGE => {
+                if event_content.event.is_singleton()
+                    || event_content.aux_key() != rostra_core::event::EventAuxKey::ZERO
+                {
+                    return Err(rostra_dm::Error::Invalid).boxed().context(InvalidSnafu);
+                }
+                let bytes = event_content
+                    .content
+                    .as_ref()
+                    .ok_or(rostra_dm::Error::Invalid)
+                    .boxed()
+                    .context(InvalidSnafu)?;
+                if event_content.kind() == EventKind::DM_DEVICE {
+                    let announcement = rostra_dm::Announcement::decode(
+                        bytes.as_slice(),
+                        event_content.timestamp().as_u64(),
+                    )
+                    .boxed()
+                    .context(InvalidSnafu)?;
+                    self.dm_apply_announcement_tx(
+                        author,
+                        &announcement,
+                        event_order.timestamp().as_u64(),
+                        event_order.event_id(),
+                        tx,
+                    )?;
+                } else {
+                    rostra_dm::validate_frame(bytes.as_slice())
+                        .boxed()
+                        .context(InvalidSnafu)?;
+                    tx.open_table(&crate::events_dm_pending::TABLE)
+                        .map_err(DbError::from)?
+                        .insert(&event_order.event_id(), &None)
+                        .map_err(DbError::from)?;
+                    if tx.commit_hooks_enabled() {
+                        let notify = self.dm_pending_notify.clone();
+                        tx.on_commit(move || notify.notify_one());
+                    }
+                }
+            }
             EventKind::FOLLOW | EventKind::UNFOLLOW => {
                 let mut ids_followees_t = tx
                     .open_table(&crate::ids_followees::TABLE)

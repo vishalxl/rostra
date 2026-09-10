@@ -11,6 +11,16 @@ pub(crate) struct AcquiredPayload {
 }
 
 impl AcquiredPayload {
+    pub(crate) async fn ingest_dm(
+        self,
+        db: &Database,
+        body: &rostra_dm::MessageBody,
+        permit: &rostra_client_db::dm::SendPermit,
+    ) -> DbResult<()> {
+        db.dm_commit_outgoing(&self.content, body, permit, self.buffer.as_ref())
+            .await
+    }
+
     /// Apply ordinary validation while preserving temporary capacity refusals.
     pub(crate) async fn ingest(self, db: &Database) -> DbResult<()> {
         match db

@@ -51,6 +51,7 @@ rostra-core = { workspace = true, features = [
   "rand",
 ] }
 rostra-djot = { workspace = true }
+rostra-dm = { workspace = true }
 rostra-util-error = { workspace = true }
 rostra-util-fmt = { workspace = true }
 dedup-chan = { workspace = true }

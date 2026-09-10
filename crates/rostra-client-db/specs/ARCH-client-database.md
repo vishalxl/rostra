@@ -134,6 +134,52 @@ prevented the ordinary post projection from being materialized.
 
 ## Total rebuild
 
+Schema32 adds authoritative direct-message installation identity, independently
+generated private epochs with immutable deadlines, per-account/device latest
+state and permanent retirement, and locally retained plaintext history. These
+are not ciphertext-derived projections. A source-version32-or-newer migration
+requires all four typed stashes, restores them before replay, and removes them
+only with successful replay commit. Earlier schemas legitimately have no DM
+source state. Missing or malformed required source fails without replacing it.
+The disposable receive queue rebuilds from eligible retained ciphertext; replay
+never decrypts, creates keys, or emits announcements. History, deduplication
+winners and retirement survive absent/pruned ciphertext and deleted secrets.
+
+Two derived indexes rebuild from those authoritative records before replay:
+`events_dm_history_by_conversation` orders participant-pair history by original
+timestamp/event ID and points to its deduplication winner. A newest-first thread
+page reads at most 64 index rows and 64 history records with an exclusive
+timestamp/event cursor. Conversation summaries use participant-pair order and
+an exclusive pair cursor: two index seeks per conversation skip its history and
+read its newest winner, at most 128 index rows and 64 history records per page.
+Neither API scans all retained plaintext; UI pages use a bounded lookahead before
+offering another page.
+`ids_dm_devices_by_interval` indexes only each device's newest active state.
+Its canonical disjoint dyadic cover represents exactly
+`[max(send_from, published_at.saturating_sub(300)), send_until)`, with no older-key
+fallback. Empty intervals and permanent retirements contribute no rows. Updating
+the reducer atomically removes the old rank/cover and inserts the new one.
+Each cover has at most 128 rows; each point query seeks 65 prefixes and reads at
+most nine ranked rows per prefix (585 per account), then keeps the newest eight
+after excluding at most the current sending installation. Distinct devices with
+identical public keys remain distinct. Expired/future rows require no clock-change
+sweep, and tombstones are never discarded. These are bounded row-work limits;
+B-tree seek costs still depend logarithmically on database size.
+
+Local outgoing DM ciphertext and its plaintext history commit in one admission-
+checked event transaction before head publication. Temporary admission refusal
+rolls back both. Background receiving first durably deletes expired live keys,
+then authenticates stored event/content and tries at most eight retained keys
+per transaction. A durable exclusive cursor resumes additional live keys;
+failure of one batch does not exhaust later keys. No epoch clones survive the
+bounded synchronous trial closure. Local history access is a trusted database
+API; the HTTP layer must separately require an unlocked full-account session.
+Outgoing commit revalidates selected authoritative device states and the current
+installation as well as deadlines after writer acquisition; learned retirement
+or supersession aborts the whole send. Pending insertion publishes a notification
+only after commit. The owned worker registers before inspecting the durable queue
+and waits for that notification or its maintenance deadline, not idle polling.
+
 Schema version 25 performs one total rebuild of every earlier production
 database before derived version-24 rows are decoded. The preparation transaction
 stashes retained signed event headers, available hash-keyed content, the database

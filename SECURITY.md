@@ -19,6 +19,26 @@ record. GET and HEAD requests that use a legacy form return a 308 canonical URL
 without discarding the query string. Mutation POST routes resolve either form
 in place; they must not rely on a redirect to preserve the request body.
 
+## Private-message HTTP access
+
+Every `/messages` and `/settings/messages` request requires the exact requesting
+session's in-memory identity secret and a matching full active client. A second
+session's activation, a public-only login, or an open database is not authority
+to read plaintext or manage devices. POST forms require an independent random
+session-bound synchronizer token before any mutation; it is not the session
+credential. Full and short identity paths resolve through the ordinary retained
+identity rules before use.
+
+These workflows return ordinary complete HTML pages and 303 redirects, without
+JavaScript. Message text and previews are escaped plain text, never Djot, HTML,
+external embeds, or automatic links. All response classes, including extractor
+errors, missing routes, and redirects, use private/no-store caching,
+identity/no-compression, no-referrer, nosniff, framing denial, and a restrictive
+CSP that permits only same-origin CSS/images/forms. No message text enters a URL,
+log, delivery receipt, or decryption-result callback. Local plaintext persists
+independently of ciphertext and epoch-key deletion; this is not endpoint or
+forensic-storage confidentiality.
+
 ## User-controlled media responses
 
 Social-media event bytes and profile avatar bytes are untrusted even when their

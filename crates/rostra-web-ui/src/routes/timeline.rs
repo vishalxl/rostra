@@ -923,6 +923,9 @@ impl UiState {
                             "Shoutbox"
                             span ."o-mainBarTimeline__newCount" x-text="formatCount(shoutbox)" {}
                         }
+                        a ."o-mainBarTimeline__messages" href="/messages" {
+                            "Messages"
+                        }
                     }
                 }
                 // DEBUG: notification counting info (enable with ROSTRA_DEBUG_NOTIFICATIONS=1)

@@ -1,4 +1,13 @@
 mod current_state;
+pub mod dm;
+mod dm_index;
+#[cfg(test)]
+mod dm_index_tests;
+mod dm_migration;
+mod dm_receive;
+#[cfg(test)]
+mod dm_tests;
+pub mod dm_view;
 mod event_order;
 mod events_content_missing_ops;
 mod extension;
@@ -296,6 +305,12 @@ pub type TableDumpResult<T> = std::result::Result<T, TableDumpError>;
 
 #[derive(Debug, Snafu)]
 pub enum DbError {
+    #[snafu(display("Direct-message processing is unavailable during migration"))]
+    DmMigrationPending,
+    #[snafu(display("No eligible direct-message device is known for the recipient"))]
+    DmRecipientUnavailable,
+    #[snafu(display("Invalid direct-message state"))]
+    DirectMessage { source: rostra_dm::Error },
     #[snafu(display(
         "Payload storage capacity unavailable: {reason:?} (temporary admission pause)"
     ))]
@@ -553,6 +568,8 @@ pub struct Database {
     /// The `MissingEventContentFetcher` task waits on this to wake up
     /// immediately when new missing content arrives, instead of polling.
     content_missing_notify: Arc<Notify>,
+    /// Wake the owned DM worker after durable queue insertion.
+    dm_pending_notify: Arc<Notify>,
 }
 
 impl Database {
@@ -684,6 +701,7 @@ impl Database {
             ids_with_missing_events_tx: dedup_chan::Sender::new(),
             news_score_updates_tx: dedup_chan::Sender::new(),
             content_missing_notify: Arc::new(Notify::new()),
+            dm_pending_notify: Arc::new(Notify::new()),
         };
 
         // If total migration stashed events, reprocess them now using the real
@@ -849,6 +867,11 @@ impl Database {
     /// when new missing content is inserted into the database.
     pub fn content_missing_notify(&self) -> Arc<Notify> {
         self.content_missing_notify.clone()
+    }
+
+    /// Register before checking the durable DM queue to avoid lost wakeups.
+    pub fn dm_pending_notify(&self) -> Arc<Notify> {
+        self.dm_pending_notify.clone()
     }
 
     pub async fn has_event(&self, event_id: impl Into<ShortEventId>) -> bool {

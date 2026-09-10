@@ -1,0 +1,42 @@
+[package]
+name = "rostra-dm"
+description = "Bounded native age profile for Rostra direct messages"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = "https://github.com/dpc/rostra"
+homepage = "https://rostra.me"
+documentation = "https://docs.rs/rostra-dm"
+readme = "README.md"
+keywords = ["rostra", "p2p", "encryption"]
+categories = ["cryptography", "network-programming"]
+include = [
+  "Cargo.toml",
+  "README.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+  "LICENSE-MPL",
+  "src/**",
+  "benches/**",
+]
+
+[[bench]]
+name = "unreadable"
+harness = false
+
+[dependencies]
+age = { workspace = true }
+base64 = { workspace = true }
+bincode = { workspace = true }
+bech32 = { workspace = true }
+rand = { workspace = true }
+rostra-core = { workspace = true, features = ["bincode"] }
+x25519-dalek = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+divan = { workspace = true }
+
+[lints]
+workspace = true

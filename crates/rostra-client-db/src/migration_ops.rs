@@ -83,7 +83,8 @@ pub(crate) struct LegacyEventReceivedRecord {
 /// Version 29 adds disposable quota-hash provenance and its recovery cursor.
 /// Version 30 adds disposable retention policy indexes with bounded rebuilding.
 /// Version 31 adds disposable bounded-runtime pressure state.
-const DB_VER: u64 = 31;
+/// Version 32 adds authoritative, non-replayable direct-message source tables.
+const DB_VER: u64 = 32;
 
 /// Versions older than this require a total migration.
 ///
@@ -161,6 +162,7 @@ impl Database {
 
     /// Initialize all current schema tables.
     pub(crate) fn init_tables_tx(tx: &WriteTransactionCtx) -> DbResult<()> {
+        Self::init_dm_tables_tx(tx)?;
         tx.open_table(&crate::content_pressure_state::TABLE)?;
         tx.open_table(&crate::content_pressure_authors::TABLE)?;
         tx.open_table(&crate::content_retention_state::TABLE)?;
@@ -363,6 +365,7 @@ impl Database {
         > = redb_bincode::TableDefinition::new("_total_migration_events_content_legacy");
 
         // Step 1: Copy preserved tables to temp
+        Self::stash_dm_tables_tx(dbtx, source_ver)?;
         info!(target: LOG_TARGET, "Copying preserved tables to temp...");
         Self::copy_table_raw(dbtx, &events::TABLE, &events_temp)?;
         Self::copy_table_raw(dbtx, &content_store::TABLE, &content_store_temp)?;
@@ -593,6 +596,7 @@ impl Database {
         Self::init_tables_tx(dbtx)?;
 
         // Step 4: Restore stable database metadata.
+        Self::restore_dm_tables_tx(dbtx, source_ver)?;
         {
             let temp_table = dbtx.open_table(&ids_self_temp)?;
             let mut ids_self_table = dbtx.open_table(&ids_self::TABLE)?;
@@ -672,6 +676,7 @@ impl Database {
             // If no source version stored, assume legacy (pre-tuple-struct)
             .unwrap_or(0);
         let use_legacy_content_store = source_ver <= DB_VER_LEGACY_CONTENT_STORE_FORMAT;
+        Self::restore_dm_tables_tx(dbtx, source_ver)?;
 
         // Retention decisions and origins are authoritative source, not replay
         // output. Require the complete stash and decode every row before replay,
@@ -1016,6 +1021,7 @@ impl Database {
         // Clean up temp tables
         info!(target: LOG_TARGET, "Cleaning up temp tables...");
         dbtx.as_raw().delete_table(events_temp.as_raw())?;
+        Self::cleanup_dm_stash_tx(dbtx)?;
         // Both legacy and new temp defs have the same table name
         dbtx.as_raw()
             .delete_table(new_content_store_temp.as_raw())?;

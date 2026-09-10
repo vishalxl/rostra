@@ -4,8 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Read ./CONVENTIONS.md file.
 
-Before driving Rostra through a browser, read [`SECURITY.md`](SECURITY.md) and
-use the `preview-rostra` skill.
+Read [`SECURITY.md`](SECURITY.md) before changing security-sensitive HTTP routes,
+session authorization, private messages, credential-bearing responses, or
+user-controlled media. Before driving Rostra through a browser, also use the
+`preview-rostra` skill.
 
 This project uses the Linked Specs convention; consult the `linked-specs`
 skill before working with specs or governed code.

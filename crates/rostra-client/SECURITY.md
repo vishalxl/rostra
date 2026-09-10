@@ -1,5 +1,26 @@
 # Client security and reliability
 
+Direct-message publication requires a full active client and the matching
+account secret. That is not sufficient HTTP authority: each UI request must
+independently require its own unlocked full-account session. Do not use another
+session's activation to authorize plaintext history. Native age encryption
+selects current eligible recipient/sender-other devices, fails visibly with no
+recipient, excludes the sending installation and commits plaintext history
+atomically with the admitted signed ciphertext before head publication.
+
+Successful serialized full-client activation starts exactly one DM maintenance
+worker, including a durable-queue check before its first idle wait. Merely opening
+a client, a failed activation, and a non-full client do not start it.
+Its task is owned and joined with the existing ClientTasks owner,
+holds no strong client reference over idle waits, purges expired keys before
+background-only trials, and resumes bounded batches for all retained live keys.
+Idle waits use the durable queue's commit notification or the maintenance
+deadline, registering before the queue check to avoid lost wakeups. Only confirmed
+work uses the explicit 10ms pacing delay.
+Do not add plaintext-triggered fetches, result callbacks, or receipts. Publication
+pre-reserves output/conversion capacity and retains guards through atomic commit;
+this does not bound whole-process codec memory.
+
 `rostra-client` is the asynchronous runtime boundary for one Rostra identity.
 Full clients run background synchronization tasks and persist accepted graph
 state; light clients use an in-memory database. Peers can influence every RPC

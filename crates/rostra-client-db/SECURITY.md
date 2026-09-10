@@ -1,5 +1,43 @@
 # Client database security and reliability
 
+Direct-message source tables additionally contain plaintext history and live
+native age identities. Never debug-format these records or export epoch secrets.
+Schema32 migration must preserve all four authoritative tables through typed,
+source-version-gated stashes; keys/history/tombstones cannot be reconstructed from
+ciphertext. Do not perform lifecycle work while any pending authoritative stash
+exists. Expiration commits before queued trials, including after restart and
+retirement. Assigned deadlines never change, and deleted secrets are never
+regenerated. This is live-state removal, not forensic erasure of pages, swap,
+dumps or backups. Plaintext history remains retained independently.
+
+Production lifecycle clocks are sampled after acquiring the database writer.
+The trial transaction samples again after the separate purge commit: newly
+expired keys force another purge, not decryption. Selected send permits retain
+the intersection of all chosen keys' sending intervals and publication-skew
+bounds; the atomic outgoing writer rechecks this interval after any lock wait.
+It also rechecks every selected authoritative device state and the sending
+installation: retirement, supersession or reenrollment during encryption cannot
+commit a stale selection.
+The local installation must also remain unretired: retirement rejects both
+previously selected permits and new selections until explicit reenrollment.
+
+History pages use the derived conversation/time index, never a full plaintext
+table scan. Device selection uses a derived disjoint dyadic eligibility index:
+at most 65 prefix seeks and nine rows per prefix per account, with authoritative
+rank/eligibility checks. Old covers are removed atomically with reducer updates;
+both indexes rebuild from preserved authoritative state, not available ciphertext.
+Never prune expired latest state or retirement tombstones to optimize selection.
+
+Only bounded background work may try decryption. Recheck signed author, kind,
+zero aux/non-singleton, hash, length, complete profile and encrypted participants.
+Resume all live identities in later eight-key batches; no timestamp-based key
+filter or first-batch unreadable decision is allowed. Deduplicate by full sender
+and random message ID, preserve the original winner and flag authenticated body
+conflicts. No decryption result emits networking or receipts. Outgoing history
+must share the admitted event's transaction and commit-before-head boundary.
+The DB API trusts in-process callers; session-specific access remains mandatory
+even when another session has activated the same account's client.
+
 `rostra-client-db` is the persistent authoritative graph and projection store
 for one local Rostra identity. The asynchronous client opens it at startup; one
 in-process mutex serializes writes and post-commit publication. The database

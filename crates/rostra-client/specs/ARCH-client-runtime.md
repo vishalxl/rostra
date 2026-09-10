@@ -137,6 +137,14 @@ set-difference RPC. The signing-only head merger scans durable heads immediately
 when it starts or the identity is unlocked, then reacts to later changes and
 stitches pairs until fewer than two remain.
 
+Full-client activation also starts one owned direct-message worker. It maintains
+independent local epoch keys, publishes signed device metadata, and drains the
+durable ciphertext queue in bounded, resumable key batches. Startup checks
+already-retained work; idle waits register for post-commit notification before
+checking the queue and also wake for maintenance. It holds no strong client
+reference across idle waits. Client activation is not UI authorization: each
+private-message request separately requires its own unlocked session secret.
+
 Head synchronization discovers the graph backward: it must fetch a newer
 event's envelope before it can learn that event's parents. It then defers that
 event's payload, traverses backward toward older ancestors, and prioritizes
