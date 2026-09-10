@@ -81,7 +81,8 @@ pub(crate) struct LegacyEventReceivedRecord {
 /// Version 28 adds disposable payload accounting with explicit bounded
 /// readiness.
 /// Version 29 adds disposable quota-hash provenance and its recovery cursor.
-const DB_VER: u64 = 29;
+/// Version 30 adds disposable retention policy indexes with bounded rebuilding.
+const DB_VER: u64 = 30;
 
 /// Versions older than this require a total migration.
 ///
@@ -159,6 +160,11 @@ impl Database {
 
     /// Initialize all current schema tables.
     pub(crate) fn init_tables_tx(tx: &WriteTransactionCtx) -> DbResult<()> {
+        tx.open_table(&crate::content_retention_state::TABLE)?;
+        tx.open_table(&crate::content_retention_reverse::TABLE)?;
+        tx.open_table(&crate::content_retention_global::TABLE)?;
+        tx.open_table(&crate::content_retention_author::TABLE)?;
+        tx.open_table(&crate::content_retention_grace::TABLE)?;
         tx.open_table(&crate::content_accounting_state::TABLE)?;
         tx.open_table(&crate::content_accounting_authors::TABLE)?;
         tx.open_table(&crate::content_accounting_hashes::TABLE)?;

@@ -419,6 +419,7 @@ impl Database {
         let mut accounting = Self::accounting_tx(tx)?;
         let mut authors = Vec::new();
         for (id, old) in before.events {
+            self.refresh_retention_index_tx(tx, id)?;
             if Self::event_counted(accounting.stage, id) {
                 if let Some(old) = old {
                     Self::adjust_contribution_tx(tx, &mut accounting, &old, false)?;
@@ -468,7 +469,7 @@ impl Database {
 
     /// Return exact logical and unique-byte totals, or None while rebuilding.
     ///
-    /// Readiness here does not imply readiness of future policy candidate
+    /// Readiness here does not imply readiness of policy candidate
     /// indexes.
     pub async fn get_payload_usage(&self) -> DbResult<Option<PayloadUsage>> {
         self.read_with(|tx| {

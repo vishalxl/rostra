@@ -9,7 +9,10 @@ retention origins and preserves quota-decision source metadata across replay;
 see the [database checkpoint](payload-retention-database.md). The database now
 also exposes explicit checked quota transitions, projection dematerialization,
 and quota-only nominations/recovery. No automatic destructive worker is enabled;
-accounting readiness does not establish policy-index readiness.
+accounting readiness does not establish policy-index readiness. Disposable database
+indexes now store full policy/holder generations, bound rebuild and grace work,
+and expose advisory author/global selection. Pressure, runtime clock trust and
+transactional worker integration remain separate requirements.
 
 ## Version 1 arithmetic and encoding
 

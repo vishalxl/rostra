@@ -291,6 +291,27 @@ def_table! {
     content_quota_recovery: () => crate::payload_accounting::QuotaRecovery
 }
 
+def_table! {
+    /// Full policy identity and bounded disposable-index rebuild cursor.
+    content_retention_state: () => crate::retention_index::IndexRecord
+}
+def_table! {
+    /// Reverse ownership for bounded cleanup and lifecycle updates.
+    content_retention_reverse: ShortEventId => crate::retention_index::IndexEntry
+}
+def_table! {
+    /// Static global eviction order, never an authorization to prune.
+    content_retention_global: [u8; 48] => ShortEventId
+}
+def_table! {
+    /// Static author eviction order.
+    content_retention_author: (RostraId, [u8; 48]) => ShortEventId
+}
+def_table! {
+    /// First possible eligibility time, without periodically rescoring payloads.
+    content_retention_grace: (u64, ShortEventId) => ()
+}
+
 /// Aggregate data usage record for an identity.
 ///
 /// Tracks event metadata and content/payload sizes and counts,

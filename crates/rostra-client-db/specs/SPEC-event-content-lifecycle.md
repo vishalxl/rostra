@@ -219,9 +219,27 @@ and reaction contributions, receipt, mention and news indexes without inventing
 author deletion. Canonical replacement/deletion lineage and the materialization
 feed remain intact. Lifecycle, original reason/time, reference and usage changes,
 fetch removal and quota GC nomination commit together, with lossy invalidation
-notifications only after commit. Accounting must be ready. Victim selection,
-quota budgets and a concrete clock-trust policy remain caller responsibilities;
+notifications only after commit. Accounting must be ready. Quota pressure,
+budgets and a concrete clock-trust policy remain caller responsibilities;
 no automatic destructive worker or restoration path is enabled.
+
+Disposable candidate indexes contain only nonempty Processed remote SocialPosts
+with known immutable origins after first-materialization grace. The complete
+versioned retention policy and storing account `RostraId` identify one generation.
+Changing either invalidates selection until bounded cleanup and backfill finish;
+old and new policy keys cannot mix. Grace scheduling promotes bounded batches
+without time-driven rescoring. Lifecycle changes update reverse ownership and
+author/global indexes in the same transaction as accounting and projections.
+Replay discards the generation rather than manufacturing historical origins.
+
+Index readiness is independent of accounting and quota-nomination recovery.
+Ordered selection is bounded by visited index rows, not only returned candidates,
+and rechecks current lifecycle and immutable eligibility times. An untrusted clock
+returns no candidates; a backwards clock cannot use a previously promoted row to
+bypass grace or origin protection. Detecting clock jumps and establishing trust
+remain external responsibilities. Advisory selection does not authorize eviction:
+active-generation, eligibility and pressure rechecks must compose with the checked
+quota transition in one write transaction.
 
 ## Deduplication and retrieval
 

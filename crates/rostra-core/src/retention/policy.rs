@@ -123,6 +123,12 @@ impl RetentionPolicy {
         })
     }
 
+    /// Return the explicit first-materialization protection interval in
+    /// seconds.
+    pub fn grace_seconds(self) -> u32 {
+        self.grace_seconds
+    }
+
     /// Compute a static key from verified header metadata and persisted age
     /// time.
     pub fn key(

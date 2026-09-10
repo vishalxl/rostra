@@ -18,6 +18,9 @@ mod quota_pruning;
 mod quota_pruning_tests;
 mod reception_order_ops;
 mod retention;
+mod retention_index;
+#[cfg(test)]
+mod retention_index_tests;
 #[cfg(test)]
 mod retention_tests;
 mod self_followee;
@@ -61,6 +64,9 @@ pub use self::quota_pruning::{
     QuotaPruneOutcome, QuotaPruneRequest, QuotaPruneTarget, RetentionClock,
 };
 pub use self::retention::QuotaPruneReason;
+pub use self::retention_index::{
+    RetentionCandidate, RetentionCandidates, RetentionGeneration, RetentionIndexProgress,
+};
 pub use self::self_followee::SelfFollowee;
 pub use self::social_post_materialization::{
     SOCIAL_POST_MATERIALIZATION_SCAN_MAX, SocialPostMaterialization,

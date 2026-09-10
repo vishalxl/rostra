@@ -159,8 +159,19 @@ quota-owned work after an earlier blocked nomination was consumed.
 Accounting upgrades and total replay require an
 explicit bounded accounting rebuild before totals or physical reclamation are
 usable; ordinary ingestion maintains cursor-covered changes transactionally.
-This readiness is separate from future retention policy-index generations.
+This readiness is separate from retention policy-index generations.
 The collector is not a general legacy garbage collector and starts no worker.
+
+Schema 30 adds disposable author/global static-key candidate indexes and a
+grace schedule. The full versioned policy and storing account `RostraId` identify
+one generation; no transport identity participates. A policy change immediately
+invalidates selection, then bounded reverse-owned cleanup and event backfill
+rebuild the indexes without mixing policies. Lifecycle reducers maintain index
+membership transactionally, including while backfill is incomplete. Total replay
+discards this state and requires explicit policy configuration and rebuilding.
+Ready indexes provide bounded advisory selection, not pressure or pruning
+authorization. Caller-asserted clock trust and current origin/grace eligibility
+are rechecked even for previously promoted candidates.
 
 Replay trusts that retained rows crossed the authentication boundary during
 normal ingestion; it is not a cryptographic integrity scrub. Typed decoding and

@@ -2,12 +2,12 @@
 
 This checkpoint implements durable source metadata, checked lifecycle counters,
 global/unique-byte accounting, checked quota transitions and a bounded quota-only
-collector. Explicit callers can dematerialize an eligible Processed remote
-SocialPost or permanently decline a Missing payload and nominate its hash
+collector, plus policy-generation candidate indexes. Explicit callers can
+dematerialize an eligible Processed remote SocialPost or permanently decline a Missing payload and nominate its hash
 atomically. It does not enable automatic eviction/admission, a client worker,
 or production quotas.
 The storing account's `RostraId`, not its rotating transport key, remains the
-approved identity for subsequent candidate indexing.
+identity for candidate indexing.
 
 ## Source contract
 
@@ -151,13 +151,56 @@ projections, lifecycle, quota metadata, nominations and notifications together.
 `quota_pruned_subscribe` is a lossy after-commit invalidation signal carrying the
 event identity, not a fabricated content arrival or author deletion.
 
-## Next checkpoints
+## Bounded policy-generation indexes
 
-**2c — indexing:** add author/global static-key candidate indexes, grace-expiry
-metadata, full policy bytes plus holder `RostraId` generations, and bounded,
-resumable backfill/rebuild. Fail closed until the active generation is complete.
-Keep candidate updates transactional with the lifecycle. Unknown legacy origins
-need an explicit conservative initialization strategy, not synthetic replay time.
+Schema **30** adds disposable `content_retention_state`, reverse ownership,
+global/author ordered candidates, and grace scheduling tables. The generation
+stores all 28 versioned policy bytes and the database holder account `RostraId`.
+The database rejects reopening under another account; a mismatched requested
+generation yields no candidates. No iroh key enters the API.
+
+`configure_retention_index(policy)` immediately invalidates a different generation
+without scanning rows. `rebuild_retention_index(limit)` first removes old reverse
+rows and their owned forwards in bounded batches, then scans retained event
+headers with a durable exclusive cursor. Repeating configuration for the same
+policy resumes progress. During cleanup lifecycle upserts are skipped; during
+backfill they idempotently refresh every affected event regardless of cursor.
+Thus deletions, materialization, duplicates and quota transitions cannot leave
+stale or mixed-generation membership. Each batch commits rows and progress
+together and resumes across reopen. Total replay resets the generation; explicitly
+configure and rebuild again. No origins are invented for historical events.
+
+Only nonempty Processed remote SocialPosts with complete immutable origins enter
+the grace schedule. Its deadline is the maximum of the header origin and checked
+first-materialization-plus-grace; unrepresentable deadlines remain protected.
+`promote_retention_grace(clock, limit)` moves due rows into both static ordered
+indexes without rescoring. Its `ready` flag describes backfill, not grace-queue
+exhaustion. A worker requiring the minimum among all currently due events must
+finish due promotion at its chosen trusted timestamp before selecting: a trusted,
+ready promotion call with fewer visits than its limit has exhausted that due
+prefix. No trusted clock means no promotion. Keys use the full
+event ID reconstructed from the retained verified header, not its shortened
+database key, and compare in the core policy's canonical 48-byte order.
+
+`retention_index_progress()` reports generation/backfill readiness independently
+of accounting and nomination reconstruction. `select_retention_candidates`
+accepts the expected generation, optional full author, explicit clock, exclusive
+key cursor and row limit. It returns advisory full event IDs/keys and the last
+visited key, counting rejected rows against the bound. All maintenance/selection
+limits are 1..=4096. Selection visits indexes, never scans payloads. Even promoted
+rows recheck lifecycle and original eligibility times, so a backwards clock cannot
+bypass grace; an untrusted clock returns no candidates. Static keys are rescored
+only for bounded selected-row validation, not periodically across retained data.
+Clock trust itself is not inferred or latched by the database.
+
+Pagination is a transaction-local snapshot, not a frozen victim list. Restart
+from the beginning after policy changes and when considering newly promoted grace
+rows. `retention_candidate_is_current` exposes advisory revalidation; its
+transactional counterpart is available for the later pressure operation and
+requires matching promoted reverse ownership and both forward mappings.
+Neither API authorizes pruning or converts selection into a quota request.
+
+## Next checkpoint
 
 Only after those foundations may phase 3 add admission and worker integration.
 Logical quota release may reclaim no physical bytes when another reference
@@ -165,11 +208,15 @@ survives. Headers and index overhead remain outside logical payload accounting.
 
 Phase 3 must call the checked transition, not the low-level
 `prune_event_content_tx` ingestion helper, and integrate budget/reservation
-rechecks and candidate maintenance in the same write transaction. The current
+rechecks, active-generation/current-candidate validation and candidate maintenance
+in the same write transaction. The current
 explicit transition does not select victims, validate quota pressure or establish
 the active policy generation. Run accounting and nomination rebuilds separately;
 their `PayloadMaintenance.ready` results describe their own operation, not
-overall worker readiness.
+overall worker readiness. Run generation backfill and bounded grace promotion
+separately as well. Phase 3 must supply concrete clock-jump detection, trust and
+recovery before asserting `Trusted`; immutable timestamps cannot prove clock
+reliability. No durable high-water latch or reset policy is introduced here.
 
 ## Verification
 
@@ -189,3 +236,8 @@ The deleted-edit lineage test now uses the real collector before reopen/replay.
 duplicate/concurrent decisions, terminal delivery/deletion, projection/feed/edit
 preservation, shared Missing/protected hashes, and bounded recovery interrupted
 by rollback/reopen/replay and concurrent reference release.
+
+`retention_index_tests` covers canonical key ordering, full-ID ties, author/global
+pages, independent readiness, interleaved rebuild/lifecycle updates, policy and
+holder mismatch, stale advice, bounded grace promotion, protected/unknown/future
+origins, rollback/untrusted clocks, abort/reopen and repeated total replay.
