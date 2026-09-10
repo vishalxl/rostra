@@ -114,6 +114,24 @@ pub use self::tables::{
     SocialVoteSumRecord,
 };
 
+/// Durable availability of one retained event's payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventContentAvailability {
+    /// The payload was processed and remains locally available.
+    Available,
+    /// The payload has not been fetched and processed yet.
+    Missing,
+    /// Payload validation or kind-specific processing failed.
+    Invalid,
+    /// A signed author instruction deleted the payload.
+    Deleted,
+    /// Local policy declined or removed the payload.
+    Pruned {
+        /// Quota reason when bounded retention made the decision.
+        quota_reason: Option<QuotaPruneReason>,
+    },
+}
+
 /// Web of Trust data - contains direct followees and extended followees.
 ///
 /// Extended followees are the followees of your direct followees, excluding
@@ -1061,6 +1079,47 @@ impl Database {
         })
         .await
         .expect("Database panic")
+    }
+
+    /// Return durable payload availability and pruning reason for an event.
+    ///
+    /// `None` means that the event envelope is not retained locally. This query
+    /// reads lifecycle and quota-decision state from one database snapshot.
+    pub async fn get_event_content_availability(
+        &self,
+        event_id: impl Into<ShortEventId>,
+    ) -> Option<EventContentAvailability> {
+        let event_id = event_id.into();
+        self.read_with(|tx| Self::get_event_content_availability_tx(event_id, tx))
+            .await
+            .expect("Database panic")
+    }
+
+    pub(crate) fn get_event_content_availability_tx(
+        event_id: ShortEventId,
+        tx: &ReadTransaction,
+    ) -> DbResult<Option<EventContentAvailability>> {
+        if tx.open_table(&events::TABLE)?.get(&event_id)?.is_none() {
+            return Ok(None);
+        }
+        let state = Self::get_event_content_state_tx(
+            event_id,
+            &tx.open_table(&events_content_state::TABLE)?,
+        )?;
+        let availability = match state {
+            None => EventContentAvailability::Available,
+            Some(EventContentState::Missing { .. }) => EventContentAvailability::Missing,
+            Some(EventContentState::Invalid) => EventContentAvailability::Invalid,
+            Some(EventContentState::Deleted { .. }) => EventContentAvailability::Deleted,
+            Some(EventContentState::Pruned) => {
+                let quota_reason = tx
+                    .open_table(&events_quota_pruned::TABLE)?
+                    .get(&event_id)?
+                    .map(|decision| decision.value().reason);
+                EventContentAvailability::Pruned { quota_reason }
+            }
+        };
+        Ok(Some(availability))
     }
 
     /// Return the minimum current self-head as a deterministic representative.

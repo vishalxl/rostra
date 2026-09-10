@@ -156,8 +156,18 @@ possibly incomplete/stale). No cumulative or physical-reclaim counters are impli
 
 ## Deliberately separate follow-up
 
-UI unavailable-content presentation and existing-holder distance ordering remain
-phase4. Broad production-shaped operational experiments, retention diversity,
-fetch churn, availability and policy tuning remain phase5. The tiny disposable
-correctness fixtures are not operational recommendations. No live data, service
-restart, configuration activation, deployment or publication is part of this work.
+Individual post/thread surfaces now distinguish fetchable absent/Missing content
+from durable quota pruning, other local pruning, signed deletion, and invalid
+content. Payload reads deduplicate existing candidates and rank plausible holders
+by full event/full holder distance after preferences supported by existing
+reachability facts. They add no discovery, inventory RPC, restore path, or
+transport-key coordinate. Broad production-shaped operational experiments,
+retention diversity, fetch churn, availability, operator presentation and policy
+tuning remain phase5. The tiny disposable correctness fixtures are not operational
+recommendations. No live data, service restart, configuration activation,
+deployment or publication is part of this work.
+
+The Fetch control remains an ordinary POST form: no-JavaScript requests return
+to the complete post page, while Alpine enhancement receives a server-rendered
+content fragment. GET and HEAD on that resource only canonicalize or redirect;
+they never start payload acquisition.

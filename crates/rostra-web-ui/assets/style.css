@@ -901,7 +901,8 @@ emoji-picker {
   font-style: italic;
 }
 
-.m-postView__content.-missing {
+.m-postView__content.-missing,
+.m-postView__content.-unavailable {
   color: red;
   font-style: italic;
 }

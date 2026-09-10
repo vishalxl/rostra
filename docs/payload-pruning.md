@@ -9,8 +9,10 @@ hysteresis, conservative ranked durable Missing rejection and quota-only collect
 The driver also supports bounded read-only whole-snapshot DryRun projections,
 with a separate forecast config and Disabled acquisition. Immutable per-account
 [startup configuration](payload-retention-startup.md) explicitly opts into DryRun
-or experimental Enforce; Disabled remains the default. No live configuration,
-deployment, holder-distance fetch ordering, or broad operational tuning is implied.
+or experimental Enforce; Disabled remains the default. Existing payload-holder
+candidates now use shared full-ID distance ordering, and individual post surfaces
+distinguish fetchable Missing content from terminal deletion, invalidity, and local
+pruning. No live configuration, deployment, or broad operational tuning is implied.
 
 ## Recommendation
 
@@ -495,14 +497,14 @@ cannot prove global disappearance.
 
 **Yes: use closeness to order plausible holders, not to invent holders.**
 
-Current fetch candidates are the author, known followers, and self.
+Payload fetch candidates remain the author, known followers, and self.
 `ConnectionCache::get_event_content_from_peers` races up to four peers;
 the shared RPC helper and missing-content task build their own candidate lists.
 See [RPC helpers](../crates/rostra-client/src/util/rpc.rs),
 [connection cache](../crates/rostra-client/src/connection_cache.rs), and
 [missing-content fetcher](../crates/rostra-client/src/task/missing_event_content_fetcher.rs).
 
-Proposed common candidate-ranking helper:
+The common candidate-ranking helper:
 
 1. Deduplicate candidates and retain existing authorization, reachability, and
    backoff restrictions.
@@ -510,7 +512,15 @@ Proposed common candidate-ranking helper:
    information already exists.
 3. Among other plausible holder accounts, prefer the `RostraId` coordinate
    closest to the full event ID.
-4. Keep small bounded concurrency and eventually try farther peers.
+4. Keeps small bounded concurrency and eventually tries farther peers.
+
+The implemented helper deduplicates full `RostraId`s, preserves a reachable
+author preference only when an existing live connection proves it, and orders
+the remainder by exact full-ID distance with full holder identity as the stable
+tie-breaker. The code has no successful-content-holder or archive signal today,
+so it does not invent either preference. Event-envelope fetching keeps its
+existing ordering; the shared helper applies wherever known full event identity
+allows payload fetching.
 
 Candidate APIs already use `RostraId`, so their coordinates can be calculated
 locally before endpoint resolution. Resolve and contact selected accounts
@@ -602,8 +612,11 @@ transport-key independence and account-level fetching.
    equal shares at the cost of more allocation machinery?
 3. **Protected data:** protect local-authored and all state-bearing content by
    default? Which social content may disappear locally?
-4. **User retrieval:** is an initial unavailable-content indicator sufficient,
-   or should bounded transient viewing ship with pruning?
+4. **User retrieval:** individual post/thread surfaces now give an honest
+   unavailable-content reason and offer a POST Fetch action only for
+   absent/Missing content. Ordinary form submissions redirect to the complete
+   post page; safe-method Fetch URLs only canonicalize or redirect and never
+   acquire content. Should bounded transient viewing ship later with pruning?
 5. **Budget scope:** one client database first, or is multi-account host-wide
    budgeting required in the first release?
 6. **Grace/admission tradeoff:** how much recently fetched content should receive
@@ -612,6 +625,6 @@ transport-key independence and account-level fetching.
 My suggested first implementation is the static score, per-author and
 per-database logical caps, bounded worker and GC, conservative eligibility,
 durable prune decisions, shared admission checks, and dry-run tooling.
-Distance-aware fetch ordering can use existing RostraId candidate lists as a
-small follow-up. Replica guarantees and state-source pruning remain separate
-projects.
+Distance-aware payload fetching uses existing `RostraId` candidate lists without
+new discovery or inventory claims. Replica guarantees, transient restore/view
+fetching, and state-source pruning remain separate projects.

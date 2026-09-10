@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::stream::{self, StreamExt as _};
 use rostra_core::ShortEventId;
-use rostra_core::event::VerifiedEvent;
+use rostra_core::event::{EventExt as _, VerifiedEvent};
 use rostra_core::id::{RostraId, ToShort as _};
 use rostra_p2p::Connection;
 use tokio::sync::{Mutex, OnceCell};
@@ -100,6 +100,15 @@ impl ConnectionCache {
         result.cloned()
     }
 
+    async fn is_connected(&self, id: RostraId) -> bool {
+        self.connections
+            .lock()
+            .await
+            .get(&id)
+            .and_then(|connection| connection.get())
+            .is_some_and(|connection| !connection.is_closed())
+    }
+
     /// Try to fetch an event from multiple peers with some parallelism.
     ///
     /// Returns `Some(event)` from the first peer that has it, or `None`.
@@ -178,8 +187,17 @@ impl ConnectionCache {
                 return Err(DbError::PayloadAdmissionPaused { reason });
             }
         };
+        let preferred = self
+            .is_connected(event.author())
+            .await
+            .then_some(event.author());
+        let peers = crate::payload_holder_order::rank_payload_holders(
+            event.event_id,
+            peers.iter().copied(),
+            preferred,
+        );
         let result = crate::payload_read_race::race_payload_reads(
-            peers,
+            &peers,
             || {
                 let reservation = reservation.as_ref();
                 let buffer = reservation.map(|r| r.try_acquire_buffer()).transpose()?;

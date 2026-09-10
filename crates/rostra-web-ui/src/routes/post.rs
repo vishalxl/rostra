@@ -1,13 +1,12 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use axum::extract::{OriginalUri, Path, Query, State};
-use axum::http::Method;
 use axum::response::IntoResponse;
 use axum_extra::extract::Form;
 use maud::{Markup, PreEscaped, html};
 use rostra_client::ClientRef;
-use rostra_client_db::IdSocialProfileRecord;
 use rostra_client_db::social::SocialPostRecord;
+use rostra_client_db::{EventContentAvailability, IdSocialProfileRecord, QuotaPruneReason};
 use rostra_core::event::{EventExt as _, PersonaTag, SocialPost};
 use rostra_core::id::{RostraId, ToShort as _};
 use rostra_core::{ExternalEventId, ShortEventId, Timestamp};
@@ -128,6 +127,109 @@ fn requested_author_matches_event(author: RostraId, event_author: Option<RostraI
     event_author.is_none_or(|event_author| event_author == author)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnavailablePostContent {
+    NotYetFetched,
+    QuotaPruned(QuotaPruneReason),
+    LocallyPruned,
+    Deleted,
+    Invalid,
+    NotAPost,
+}
+
+impl UnavailablePostContent {
+    fn from_availability(availability: Option<EventContentAvailability>) -> Self {
+        match availability {
+            None | Some(EventContentAvailability::Missing) => Self::NotYetFetched,
+            Some(EventContentAvailability::Pruned {
+                quota_reason: Some(reason),
+            }) => Self::QuotaPruned(reason),
+            Some(EventContentAvailability::Pruned { quota_reason: None }) => Self::LocallyPruned,
+            Some(EventContentAvailability::Deleted) => Self::Deleted,
+            Some(EventContentAvailability::Invalid) => Self::Invalid,
+            Some(EventContentAvailability::Available) => Self::NotAPost,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::NotYetFetched => "Post content has not been fetched yet.",
+            Self::QuotaPruned(QuotaPruneReason::AuthorQuota) => {
+                "Post content was removed from this device because its author exceeded the configured storage limit."
+            }
+            Self::QuotaPruned(QuotaPruneReason::GlobalQuota) => {
+                "Post content was removed from this device to stay within its configured storage limit."
+            }
+            Self::LocallyPruned => "Post content was not retained by this device.",
+            Self::Deleted => "This post has been deleted by its author.",
+            Self::Invalid => "Post content is invalid and cannot be displayed.",
+            Self::NotAPost => "This event does not contain an available post.",
+        }
+    }
+
+    fn can_fetch(self) -> bool {
+        matches!(self, Self::NotYetFetched)
+    }
+}
+
+fn unavailable_post_content_markup(
+    content_id: Option<&str>,
+    unavailable: UnavailablePostContent,
+) -> Markup {
+    let availability = match unavailable {
+        UnavailablePostContent::NotYetFetched => "missing",
+        UnavailablePostContent::QuotaPruned(_) => "quota-pruned",
+        UnavailablePostContent::LocallyPruned => "pruned",
+        UnavailablePostContent::Deleted => "deleted",
+        UnavailablePostContent::Invalid => "invalid",
+        UnavailablePostContent::NotAPost => "not-a-post",
+    };
+    html! {
+        @if let Some(content_id) = content_id {
+            div
+                id=(content_id)
+                ."m-postView__content -unavailable"
+                data-content-availability=(availability)
+            {
+                p { (unavailable.message()) }
+            }
+        } @else {
+            div
+                ."m-postView__content -unavailable"
+                data-content-availability=(availability)
+            {
+                p { (unavailable.message()) }
+            }
+        }
+    }
+}
+
+fn fetch_post_response(
+    is_ajax: bool,
+    author: RostraId,
+    event_id: ShortEventId,
+    content_id: &str,
+    rendered_content: Option<Markup>,
+    unavailable: UnavailablePostContent,
+) -> axum::response::Response {
+    if !is_ajax {
+        return axum::response::Redirect::to(&post_url(author, event_id)).into_response();
+    }
+    if let Some(rendered_content) = rendered_content {
+        return Maud(html! {
+            div id=(content_id) ."m-postView__content -present" {
+                (rendered_content)
+            }
+        })
+        .into_response();
+    }
+    Maud(unavailable_post_content_markup(
+        Some(content_id),
+        unavailable,
+    ))
+    .into_response()
+}
+
 /// A post-route author identifier in either canonical or legacy form.
 pub(super) type PostAuthorId = RostraPathId;
 
@@ -154,19 +256,18 @@ pub async fn get_single_post(
         .await
         .ok_or_else(post_not_found)?;
 
-    let post_record = client_ref.db().get_social_post(event_id).await;
-    let event = client_ref.db().get_event(event_id).await;
-    if !requested_author_matches_event(author, event.as_ref().map(|event| event.author())) {
+    let post_state = client_ref.db().get_social_post_state(event_id).await;
+    if !requested_author_matches_event(author, post_state.as_ref().map(|state| state.author)) {
         return Err(post_not_found());
     }
-    if post_record
+    let display_event_id = post_state
         .as_ref()
-        .is_some_and(|post| post.author != author)
-    {
-        return Err(post_not_found());
-    }
+        .map(|state| state.event_id)
+        .unwrap_or(event_id);
+    let post_record = post_state.as_ref().and_then(|state| state.post.as_ref());
+    let timestamp = post_state.as_ref().map(|state| state.timestamp);
     if author_is_full || event_is_full {
-        if event.is_none() {
+        if post_state.is_none() {
             return Err(post_not_found());
         }
         if let Some(response) = redirect_to_canonical(&original_uri, post_url(author, event_id)) {
@@ -179,14 +280,14 @@ pub async fn get_single_post(
         return Ok(Maud(
             state
                 .render_post_context(&client_ref, author)
-                .event_id(event_id)
-                .post_thread_id(event_id)
+                .event_id(display_event_id)
+                .post_thread_id(display_event_id)
                 .maybe_content(
                     post_record
                         .as_ref()
                         .and_then(|r| r.content.djot_content.as_deref()),
                 )
-                .maybe_timestamp(post_record.as_ref().map(|r| r.ts))
+                .maybe_timestamp(timestamp)
                 .ro(state.ro_mode(session.session_token()))
                 .call()
                 .await?,
@@ -195,10 +296,7 @@ pub async fn get_single_post(
     }
 
     // Full page: if we have the post record with content, render post + replies
-    if let Some(post_record) = post_record
-        .as_ref()
-        .filter(|r| r.content.djot_content.is_some())
-    {
+    if let Some(post_record) = post_record.filter(|r| r.content.djot_content.is_some()) {
         // Build Open Graph meta tags and JSON-LD for rich link previews
         let (og, json_ld) = if let Some(djot_content) = post_record.content.djot_content.as_deref()
         {
@@ -251,7 +349,7 @@ pub async fn get_single_post(
                 reply_target_name.as_deref(),
             );
 
-            let post_url = state.absolute_url(&post_url(metadata_author, event_id));
+            let post_url = state.absolute_url(&post_url(metadata_author, display_event_id));
             let avatar_url = state.absolute_url(&state.avatar_url(metadata_author, og_event_id));
             let profile_url = state.absolute_url(&profile_url(metadata_author));
 
@@ -386,9 +484,9 @@ pub async fn get_single_post(
         div ."o-mainBarTimeline__item" {
             (state
                 .render_post_context(&client_ref, author)
-                .event_id(event_id)
-                .post_thread_id(event_id)
-                .maybe_timestamp(post_record.as_ref().map(|r| r.ts))
+                .event_id(display_event_id)
+                .post_thread_id(display_event_id)
+                .maybe_timestamp(timestamp)
                 .ro(state.ro_mode(session.session_token()))
                 .call()
                 .await?)
@@ -1235,15 +1333,11 @@ pub async fn post_edit_post(
 pub async fn fetch_missing_post(
     state: State<SharedState>,
     session: UserSession,
-    method: Method,
-    OriginalUri(original_uri): OriginalUri,
+    AjaxRequest(is_ajax): AjaxRequest,
     Path((post_thread_id, author_id, event_id)): Path<(EventPathId, PostAuthorId, EventPathId)>,
 ) -> RequestResult<impl IntoResponse> {
     let client_handle = state.client(session.id()).await?;
     let client = client_handle.client_ref()?;
-    let post_thread_is_full = matches!(post_thread_id, EventPathId::Full(_));
-    let author_is_full = matches!(author_id, PostAuthorId::Full(_));
-    let event_is_full = matches!(event_id, EventPathId::Full(_));
     let post_thread_id = post_thread_id
         .resolve(client.db())
         .await
@@ -1263,20 +1357,6 @@ pub async fn fetch_missing_post(
     {
         return Err(post_not_found());
     }
-    if (method == Method::GET || method == Method::HEAD)
-        && (post_thread_is_full || author_is_full || event_is_full)
-    {
-        if event.is_none() {
-            return Err(post_not_found());
-        }
-        if let Some(response) = redirect_to_canonical(
-            &original_uri,
-            post_fetch_url(post_thread_id, author_id, event_id),
-        ) {
-            return Ok(response);
-        }
-    }
-
     let mut followers_cache = std::collections::BTreeMap::new();
 
     let content_id = post_content_html_id(post_thread_id, event_id);
@@ -1288,6 +1368,7 @@ pub async fn fetch_missing_post(
             author_id,
             event_id,
         })?;
+    let mut rendered_content = None;
     if !fetched {
         debug!(
             author = %author_id.to_short(),
@@ -1307,29 +1388,70 @@ pub async fn fetch_missing_post(
         if let (Some(_event), Some(post_record)) = (event, db.get_social_post(event_id).await) {
             if post_record.author == author_id {
                 if let Some(djot_content) = post_record.content.djot_content.as_ref() {
-                    let post_content_rendered = state
-                        .render_content(&client, post_record.author, djot_content)
-                        .await;
-                    return Ok(Maud(html! {
-                        div #(content_id) ."m-postView__content -present" {
-                            (post_content_rendered)
-                        }
-                    })
-                    .into_response());
+                    rendered_content = Some(
+                        state
+                            .render_content(&client, post_record.author, djot_content)
+                            .await,
+                    );
                 }
             }
         }
     }
 
-    // Fetch failed or post still not available
-    Ok(Maud(html! {
-        div #(content_id) ."m-postView__content -missing" {
-            p {
-                "Post not found"
-            }
-        }
-    })
-    .into_response())
+    let unavailable = UnavailablePostContent::from_availability(
+        client.db().get_event_content_availability(event_id).await,
+    );
+    Ok(fetch_post_response(
+        is_ajax,
+        author_id,
+        event_id,
+        &content_id,
+        rendered_content,
+        unavailable,
+    ))
+}
+
+/// Redirect a safe-method Fetch URL without performing payload acquisition.
+pub async fn get_missing_post_fetch(
+    state: State<SharedState>,
+    session: UserSession,
+    OriginalUri(original_uri): OriginalUri,
+    Path((post_thread_id, author_id, event_id)): Path<(EventPathId, PostAuthorId, EventPathId)>,
+) -> RequestResult<impl IntoResponse> {
+    let client_handle = state.client(session.id()).await?;
+    let client = client_handle.client_ref()?;
+    let uses_full_id = matches!(post_thread_id, EventPathId::Full(_))
+        || matches!(author_id, PostAuthorId::Full(_))
+        || matches!(event_id, EventPathId::Full(_));
+    let post_thread_id = post_thread_id
+        .resolve(client.db())
+        .await
+        .ok_or_else(post_not_found)?;
+    let author_id = author_id
+        .resolve(client.db())
+        .await
+        .ok_or_else(post_not_found)?;
+    let event_id = event_id
+        .resolve(client.db())
+        .await
+        .ok_or_else(post_not_found)?;
+    let event = client
+        .db()
+        .get_event(event_id)
+        .await
+        .ok_or_else(post_not_found)?;
+    if event.author() != author_id {
+        return Err(post_not_found());
+    }
+    if uses_full_id
+        && let Some(response) = redirect_to_canonical(
+            &original_uri,
+            post_fetch_url(post_thread_id, author_id, event_id),
+        )
+    {
+        return Ok(response);
+    }
+    Ok(axum::response::Redirect::to(&post_url(author_id, event_id)).into_response())
 }
 
 #[bon::bon]
@@ -1522,12 +1644,24 @@ impl UiState {
         link_to_post: Option<bool>,
         ro: RoMode,
     ) -> RequestResult<Markup> {
+        let post_state = if content.is_none() {
+            if let Some(event_id) = event_id {
+                client.db().get_social_post_state(event_id).await
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let event_id = post_state.as_ref().map(|state| state.event_id).or(event_id);
         let external_event_id = event_id.map(|e| ExternalEventId::new(author, e));
         // Use post_thread_id if provided, otherwise default to event_id
         let post_thread_id = post_thread_id.or(event_id);
         let user_profile = self.get_social_profile_opt(author, client).await;
 
-        let fetched_post = if url.is_none() || title.is_none() {
+        let fetched_post = if let Some(state) = post_state.as_ref() {
+            state.post.clone()
+        } else if url.is_none() || title.is_none() {
             if let Some(event_id) = event_id {
                 client.db().get_social_post(event_id).await
             } else {
@@ -1558,7 +1692,19 @@ impl UiState {
         } else {
             author.to_short().to_string()
         };
-        let post_content_is_missing = post_content_rendered.is_none();
+        let unavailable = if post_content_rendered.is_none() {
+            if let Some(state) = post_state.as_ref() {
+                Some(UnavailablePostContent::from_availability(Some(
+                    state.availability,
+                )))
+            } else {
+                Some(UnavailablePostContent::NotYetFetched)
+            }
+        } else {
+            None
+        };
+        let post_content_is_fetchable = unavailable.is_some_and(UnavailablePostContent::can_fetch);
+        let post_content_is_present = post_content_rendered.is_some();
 
         let post_target_id = post_target_id.or_else(|| {
             post_thread_id
@@ -1584,7 +1730,7 @@ impl UiState {
                         header ."m-postView__header" {
                             span ."m-postView__userHandle" {
                                 (self.render_user_handle(event_id, author, user_profile.as_ref()))
-                                @if let Some(ts) = timestamp {
+                                @if let Some(ts) = post_state.as_ref().map(|state| state.timestamp).or(timestamp) {
                                     time ."m-postView__timestamp" datetime=(format_timestamp_iso(ts)) {
                                         (format_timestamp(ts))
                                     }
@@ -1623,7 +1769,7 @@ impl UiState {
                                 a ."m-postView__actionMenuItem" href=(post_url(author, event_id)) {
                                     "Share..."
                                 }
-                                @if author == client.rostra_id() {
+                                @if post_content_is_present && author == client.rostra_id() {
                                     @if let Some(ctx) = post_thread_id {
                                         @let post_target = post_target_id.as_deref().unwrap_or("");
                                         @if ro.is_ro() {
@@ -1663,16 +1809,17 @@ impl UiState {
                     }
                 }
 
-                div."m-postView__content"
-                    ."-missing"[post_content_rendered.is_none()]
-                    ."-present"[post_content_rendered.is_some()]
-                    id=[post_thread_id.zip(event_id).map(|(ctx, id)| post_content_html_id(ctx, id))]
-                {
-                    @if let Some(post_content_rendered) = post_content_rendered {
+                @if let Some(post_content_rendered) = post_content_rendered {
+                    div."m-postView__content -present"
+                        id=[post_thread_id.zip(event_id).map(|(ctx, id)| post_content_html_id(ctx, id))]
+                    {
                         (post_content_rendered)
-                    } @else {
-                        p { "Post missing" }
                     }
+                } @else if let Some(unavailable) = unavailable {
+                    @let content_id = post_thread_id
+                        .zip(event_id)
+                        .map(|(ctx, id)| post_content_html_id(ctx, id));
+                    (unavailable_post_content_markup(content_id.as_deref(), unavailable))
                 }
             }
 
@@ -1681,8 +1828,10 @@ impl UiState {
         let button_bar = html! {
             @if let Some(ext_event_id) = external_event_id {
                 div ."m-postView__buttonBar" {
-                    @if let Some(ctx) = post_thread_id {
-                        (self.render_post_reactions(client, ext_event_id, ctx, ro).await)
+                    @if post_content_is_present {
+                        @if let Some(ctx) = post_thread_id {
+                            (self.render_post_reactions(client, ext_event_id, ctx, ro).await)
+                        }
                     }
                     div ."m-postView__buttons" {
                         @if let Some(extra_buttons) = extra_buttons {
@@ -1707,7 +1856,7 @@ impl UiState {
                                 }
                             }
                         }
-                        @if post_content_is_missing {
+                        @if post_content_is_fetchable {
                             @if let (Some(ctx), Some(event_id)) = (post_thread_id, event_id) {
                                 @let content_target = post_content_html_id(ctx, event_id);
                                 (fragment::ajax_button(
@@ -1719,38 +1868,39 @@ impl UiState {
                                 ).call())
                             }
                         }
-                        (fragment::ajax_form(
-                            &post_heart_reaction_url(
-                                ext_event_id.rostra_id(),
-                                ext_event_id.event_id().to_short(),
-                            ),
-                            "get",
-                            "post-preview-dialog",
-                            html! {
-                                button
-                                    ."m-postView__heartReactionButton"
-                                    ."-disabled"[ro.is_ro()]
-                                    type="submit"
-                                    disabled[ro.to_disabled()]
-                                    aria-label="Like this post"
-                                    title="Like this post"
-                                {
-                                    "❤️"
-                                }
-                            },
-                        )
-                        .button_selector("$el.querySelector('.m-postView__heartReactionButton')")
-                        .hidden_inputs(html! {
-                            input type="hidden" name="post_thread_id" value=(post_thread_id.unwrap_or_else(|| ext_event_id.event_id().to_short())) {}
-                        })
-                        .form_class("m-postView__heartReactionForm")
-                        .call())
-                        // Reply button only available when we have a thread context
-                        @if let Some(ctx) = post_thread_id {
-                            // Target the replies container (placeholders are rendered inside when expanded)
-                            @let reply_to_id = ext_event_id.event_id().to_short();
-                            @let replies_target = post_replies_html_id(ctx, reply_to_id);
-                            (fragment::ajax_button(
+                        @if post_content_is_present {
+                            (fragment::ajax_form(
+                                &post_heart_reaction_url(
+                                    ext_event_id.rostra_id(),
+                                    ext_event_id.event_id().to_short(),
+                                ),
+                                "get",
+                                "post-preview-dialog",
+                                html! {
+                                    button
+                                        ."m-postView__heartReactionButton"
+                                        ."-disabled"[ro.is_ro()]
+                                        type="submit"
+                                        disabled[ro.to_disabled()]
+                                        aria-label="Like this post"
+                                        title="Like this post"
+                                    {
+                                        "❤️"
+                                    }
+                                },
+                            )
+                            .button_selector("$el.querySelector('.m-postView__heartReactionButton')")
+                            .hidden_inputs(html! {
+                                input type="hidden" name="post_thread_id" value=(post_thread_id.unwrap_or_else(|| ext_event_id.event_id().to_short())) {}
+                            })
+                            .form_class("m-postView__heartReactionForm")
+                            .call())
+                            // Reply button only available when we have a thread context
+                            @if let Some(ctx) = post_thread_id {
+                                // Target the replies container (placeholders are rendered inside when expanded)
+                                @let reply_to_id = ext_event_id.event_id().to_short();
+                                @let replies_target = post_replies_html_id(ctx, reply_to_id);
+                                (fragment::ajax_button(
                                 "/post/inline_reply",
                                 "get",
                                 &replies_target,
@@ -1763,6 +1913,7 @@ impl UiState {
                                 input type="hidden" name="post_thread_id" value=(ctx) {}
                             })
                             .call())
+                        }
                         }
                     }
                 }

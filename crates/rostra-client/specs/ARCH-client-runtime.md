@@ -85,6 +85,15 @@ capacity error, while pushed payloads can receive the existing refusal response
 before sending bytes. Immutable startup account configuration selects Disabled
 (the default), observation-only DryRun, or experimental Enforce.
 
+Payload reads deduplicate the already-authorized candidate accounts. A reachable
+author is preferred only when the connection cache already has a live connection;
+remaining candidates use exact domain-separated full event/full holder
+`RostraId` distance with a full-identity tie-breaker. The bounded read race still
+advances to farther candidates after misses or failures. This ordering does not
+discover peers, advertise inventory, change trust/backoff eligibility, or use a
+device transport key as the retention coordinate. Event-envelope fetching keeps
+its existing ordering.
+
 Multi-client hosting can install immutable, explicitly listed account acquisition
 ledgers before exposing HTTP or loading a database. The same ledger follows a
 verified request into lazy loading, and only one database may attach it at a time.

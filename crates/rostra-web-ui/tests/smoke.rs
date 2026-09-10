@@ -883,7 +883,11 @@ async fn full_event_resource_urls_validate_and_canonicalize() {
             &[],
         )
         .await;
-    assert_eq!(response.status(), 200);
+    assert_eq!(response.status(), 303);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        &format!("/post/{}/{event_id}", author.to_short())
+    );
 
     let missing_event_id = ShortEventId::from_bytes([25; 16]);
     let response = driver
@@ -895,7 +899,11 @@ async fn full_event_resource_urls_validate_and_canonicalize() {
             &[],
         )
         .await;
-    assert_eq!(response.status(), 200);
+    assert_eq!(response.status(), 303);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        &format!("/post/{}/{missing_event_id}", author.to_short())
+    );
 
     let mut forged_event_id: [u8; 32] = full_event_id.into();
     forged_event_id[31] ^= 1;

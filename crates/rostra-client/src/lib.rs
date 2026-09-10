@@ -34,6 +34,7 @@ pub mod error;
 mod acquired_payload;
 mod connection_cache;
 mod encoded_payload;
+mod payload_holder_order;
 mod payload_read_race;
 mod payload_writer;
 pub(crate) mod task;

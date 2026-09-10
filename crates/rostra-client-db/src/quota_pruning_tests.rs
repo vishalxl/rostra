@@ -7,8 +7,8 @@ use rostra_core::retention::RetentionPolicy;
 use rostra_core::{ExternalEventId, Timestamp};
 
 use crate::{
-    Database, DbError, EventContentState, PayloadUsage, QuotaPruneOutcome, QuotaPruneReason,
-    QuotaPruneRequest, QuotaPruneTarget, RetentionClock,
+    Database, DbError, EventContentAvailability, EventContentState, PayloadUsage,
+    QuotaPruneOutcome, QuotaPruneReason, QuotaPruneRequest, QuotaPruneTarget, RetentionClock,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -250,6 +250,45 @@ async fn quota_checked_eligibility_and_stale_missing_selection() -> anyhow::Resu
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn canonical_post_state_reports_a_pruned_latest_replacement() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let author = RostraIdSecretKey::generate();
+    let original = text(author, 1, "original");
+    let replacement = post(
+        author,
+        2,
+        SocialPost::new_text("replacement".to_owned(), None, Default::default()),
+        Some(original.event_id().to_short()),
+    );
+    ingest(&db, &original, true).await?;
+    ingest(&db, &replacement, true).await?;
+    ready(&db).await?;
+
+    assert_eq!(
+        db.prune_quota_payload(request(&replacement, QuotaPruneTarget::Processed))
+            .await?,
+        QuotaPruneOutcome::Pruned {
+            logical_released_bytes: u64::from(replacement.content_len())
+        }
+    );
+    let state = db
+        .get_social_post_state(original.event_id().to_short())
+        .await
+        .expect("original envelope remains retained");
+    assert_eq!(state.event_id, replacement.event_id().to_short());
+    assert_eq!(state.author, author.id());
+    assert_eq!(state.timestamp, replacement.timestamp());
+    assert!(state.post.is_none());
+    assert_eq!(
+        state.availability,
+        EventContentAvailability::Pruned {
+            quota_reason: Some(QuotaPruneReason::AuthorQuota)
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn quota_shared_missing_release_requeues_consumed_nomination() -> anyhow::Result<()> {
     let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
     let a = RostraIdSecretKey::generate();
@@ -319,6 +358,12 @@ async fn quota_missing_decline_duplicate_races_and_deleted_precedence() -> anyho
     ));
     assert_eq!(notifications.try_recv()?, req.id);
     assert!(notifications.try_recv().is_err());
+    assert_eq!(
+        db.get_event_content_availability(req.id).await,
+        Some(EventContentAvailability::Pruned {
+            quota_reason: Some(QuotaPruneReason::AuthorQuota)
+        })
+    );
     let (delivery, deletion) = tokio::join!(
         db.try_process_event_content(&event),
         delete(&db, author, &event)
@@ -329,6 +374,10 @@ async fn quota_missing_decline_duplicate_races_and_deleted_precedence() -> anyho
         db.get_event_content_state(req.id).await,
         Some(EventContentState::Deleted { .. })
     ));
+    assert_eq!(
+        db.get_event_content_availability(req.id).await,
+        Some(EventContentAvailability::Deleted)
+    );
     assert_eq!(
         db.prune_quota_payload(req).await?,
         QuotaPruneOutcome::Unchanged

@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 use super::Database;
 use crate::event::ContentStoreRecord;
 use crate::{
-    DbResult, LOG_TARGET, content_store, events, events_content_state,
+    DbResult, EventContentAvailability, LOG_TARGET, content_store, events, events_content_state,
     shoutbox_posts_by_received_at, social_posts, social_posts_by_received_at, social_posts_by_time,
     social_posts_reactions, social_posts_replaced_by, social_posts_replaces, social_posts_replies,
     tables,
@@ -97,6 +97,21 @@ pub struct SocialPostRecord<C> {
     pub reply_count: u64,
 }
 
+/// Canonical edit-lineage state for one requested social post.
+#[derive(Clone, Debug)]
+pub struct SocialPostState {
+    /// Latest known event in the requested post's replacement lineage.
+    pub event_id: ShortEventId,
+    /// Verified author shared by the replacement lineage.
+    pub author: RostraId,
+    /// Author timestamp from the latest known event header.
+    pub timestamp: Timestamp,
+    /// Materialized post when the latest payload is available and valid.
+    pub post: Option<SocialPostRecord<content_kind::SocialPost>>,
+    /// Durable payload availability for the same latest event.
+    pub availability: EventContentAvailability,
+}
+
 /// Record for a shoutbox post with associated metadata.
 #[derive(Clone, Debug)]
 pub struct ShoutboxPostRecord {
@@ -107,6 +122,75 @@ pub struct ShoutboxPostRecord {
 }
 
 impl Database {
+    /// Return canonical post content and durable availability from one
+    /// snapshot.
+    pub async fn get_social_post_state(&self, event_id: ShortEventId) -> Option<SocialPostState> {
+        self.read_with(|tx| {
+            let events_table = tx.open_table(&events::TABLE)?;
+            let social_posts_table = tx.open_table(&social_posts::TABLE)?;
+            let events_content_state_table = tx.open_table(&events_content_state::TABLE)?;
+            let content_store_table = tx.open_table(&content_store::TABLE)?;
+            let social_posts_replaces_table = tx.open_table(&social_posts_replaces::TABLE)?;
+            let social_posts_replaced_by_table = tx.open_table(&social_posts_replaced_by::TABLE)?;
+
+            let requested = Database::get_event_tx(event_id, &events_table)?;
+            let requested = match requested {
+                Some(event) => event,
+                None => return Ok(None),
+            };
+            let event_id = Self::latest_social_post_version_tx(
+                requested.author(),
+                event_id,
+                &social_posts_replaced_by_table,
+            )?;
+            let event = Database::get_event_tx(event_id, &events_table)?
+                .expect("replacement lineage references a retained event");
+            let availability = Self::get_event_content_availability_tx(event_id, tx)?
+                .expect("the event was read from the same snapshot");
+
+            let post = match Self::get_social_post_record_tx(
+                &events_table,
+                &social_posts_table,
+                &events_content_state_table,
+                &content_store_table,
+                event_id,
+            )? {
+                Some((social_post, event, _))
+                    if !(event.is_delete_parent_aux_content_set()
+                        && social_post
+                            .djot_content
+                            .as_deref()
+                            .is_none_or(|text| text.trim().is_empty())) =>
+                {
+                    Some(SocialPostRecord {
+                        ts: event.timestamp(),
+                        author: event.author(),
+                        event_id,
+                        reply_count: Self::social_post_reply_count_tx(
+                            event.author(),
+                            event_id,
+                            &social_posts_table,
+                            &social_posts_replaces_table,
+                        )?,
+                        reply_to: social_post.reply_to,
+                        content: social_post,
+                    })
+                }
+                _ => None,
+            };
+
+            Ok(Some(SocialPostState {
+                event_id,
+                author: event.author(),
+                timestamp: event.timestamp(),
+                post,
+                availability,
+            }))
+        })
+        .await
+        .expect("Storage error")
+    }
+
     pub(crate) fn is_social_post_replaced_tx(
         author: RostraId,
         event_id: ShortEventId,

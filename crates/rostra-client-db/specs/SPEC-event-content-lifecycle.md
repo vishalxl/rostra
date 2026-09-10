@@ -224,6 +224,11 @@ notifications only after commit. Accounting must be ready. The configured Enforc
 runtime supplies pressure, explicit budgets and system-clock trust within the same
 writer authority boundary. No restoration path is enabled.
 
+Clients may read event existence, lifecycle, and the durable quota reason from
+one database snapshot to distinguish fetchable Missing content from terminal
+Pruned, Deleted, and Invalid content. This read does not restore bytes or
+projections, schedule work, or expose a general payload resurrection path.
+
 Disposable candidate indexes contain only nonempty Processed remote SocialPosts
 with known immutable origins after first-materialization grace. The complete
 versioned retention policy and storing account `RostraId` identify one generation.
