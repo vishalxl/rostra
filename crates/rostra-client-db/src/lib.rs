@@ -13,6 +13,9 @@ mod payload_accounting;
 mod payload_accounting_tests;
 mod process_event_content_ops;
 mod process_event_ops;
+mod quota_pruning;
+#[cfg(test)]
+mod quota_pruning_tests;
 mod reception_order_ops;
 mod retention;
 #[cfg(test)]
@@ -54,6 +57,10 @@ pub use self::extension::{
     ExtensionWriteTransaction,
 };
 pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, PayloadUsage};
+pub use self::quota_pruning::{
+    QuotaPruneOutcome, QuotaPruneRequest, QuotaPruneTarget, RetentionClock,
+};
+pub use self::retention::QuotaPruneReason;
 pub use self::self_followee::SelfFollowee;
 pub use self::social_post_materialization::{
     SOCIAL_POST_MATERIALIZATION_SCAN_MAX, SocialPostMaterialization,
@@ -458,6 +465,8 @@ pub struct Database {
     self_wot_updated: watch::Sender<Arc<WotData>>,
     self_head_updated: watch::Sender<Option<ShortEventId>>,
     new_content_tx: broadcast::Sender<VerifiedEventContent>,
+    /// Lossy invalidation signal for committed local quota dematerializations.
+    quota_pruned_tx: broadcast::Sender<ShortEventId>,
     new_posts_tx: broadcast::Sender<(VerifiedEventContent, content_kind::SocialPost)>,
     new_shoutbox_tx: broadcast::Sender<(VerifiedEventContent, content_kind::Shoutbox)>,
     new_heads_tx: broadcast::Sender<(RostraId, ShortEventId)>,
@@ -574,6 +583,7 @@ impl Database {
         let (self_wot_updated, _) = watch::channel(Arc::new(self_wot));
         let (self_head_updated, _) = watch::channel(self_head);
         let (new_content_tx, _) = broadcast::channel(100);
+        let (quota_pruned_tx, _) = broadcast::channel(100);
         let (new_posts_tx, _) = broadcast::channel(100);
         let (new_shoutbox_tx, _) = broadcast::channel(100);
         let (new_heads_tx, _) = broadcast::channel(100);
@@ -589,6 +599,7 @@ impl Database {
             self_wot_updated,
             self_head_updated,
             new_content_tx,
+            quota_pruned_tx,
             new_posts_tx,
             new_shoutbox_tx,
             new_heads_tx,
@@ -713,6 +724,12 @@ impl Database {
 
     pub fn new_content_subscribe(&self) -> broadcast::Receiver<VerifiedEventContent> {
         self.new_content_tx.subscribe()
+    }
+
+    /// Subscribe to committed quota dematerializations; durable state is
+    /// authoritative.
+    pub fn quota_pruned_subscribe(&self) -> broadcast::Receiver<ShortEventId> {
+        self.quota_pruned_tx.subscribe()
     }
     pub fn new_posts_subscribe(
         &self,

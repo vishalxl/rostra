@@ -4,9 +4,12 @@ Schema 27 records immutable local retention origins and preserves quota-decision
 source rows across total replay. These are independent of disposable receipt
 indexes. Older events retain unknown origins; replay and duplicate delivery do
 not invent or refresh them. Quota decisions constrain envelope replay before
-shared content can materialize, with signed deletion remaining stronger. No
-production quota transition or GC worker is enabled yet. Schema 28 adds checked
-accounting and a bounded quota-only collector with no production nominations.
+shared content can materialize, with signed deletion remaining stronger.
+Explicit checked quota transitions now dematerialize eligible remote
+SocialPosts or decline Missing admission and nominate their hashes atomically.
+No automatic victim selection, quota budgets or destructive worker is enabled.
+Schema 28 adds checked accounting and a bounded quota-only collector; schema 29
+adds disposable quota-hash provenance and bounded nomination reconstruction.
 All databases require explicit accounting rebuild/readiness before totals or
 collection are usable. See the
 [database retention checkpoint](../../../docs/payload-retention-database.md)
@@ -53,7 +56,9 @@ New ingestion and total replay enforce the exclusive maximum described below.
 | `content_accounting_state` | `()` | Partial/ready global logical and unique-byte totals with bounded rebuild cursor |
 | `content_accounting_authors` | `RostraId` | Event-derived current logical usage checked against per-author usage |
 | `content_accounting_hashes` | `ContentHash` | Expected RC and historical local/non-SocialPost collision guard |
-| `content_quota_gc` | `ContentHash` | Quota-only nominations; no production writer yet |
+| `content_quota_gc` | `ContentHash` | Pending checked-quota nominations |
+| `content_quota_hashes` | `ContentHash` | Historical quota-release provenance surviving queue consumption |
+| `content_quota_recovery` | `()` | Bounded authoritative quota-row reconstruction cursor |
 | `events_content_state` | `ShortEventId` | Per-event processing state |
 | `events_content_missing` | `(Timestamp, ShortEventId)` | Events waiting for content, sorted by next fetch time |
 | `social_posts_by_received_at` | `(Timestamp, u64)` | Social posts ordered by effective local receipt time |
@@ -93,6 +98,11 @@ contributions transactionally during backfill. Existing replay may omit
 unreferenced Deleted bytes; physical accounting describes the actual rebuilt
 store. Canonical edit lineage survives independently of payload bytes.
 Accounting readiness does not establish future policy-index readiness.
+Quota-hash provenance and its recovery cursor are also disposable. A separate
+bounded `rebuild_quota_payload_nominations` scan reconstructs provenance and
+pending work from authoritative quota rows after replay or upgrade. It resumes
+after reopen and safely interleaves with reference releases and new quota
+decisions; its readiness is independent of accounting readiness.
 
 Replay does not retain the event graph or per-event commit hooks. Application
 and codec code transiently hold the current record, a decoded below-limit
@@ -178,14 +188,16 @@ Zero RC is necessary, but not sufficient, for quota garbage collection.
 - RC is managed at **event insertion time**, not when content arrives
 - Content is stored in `content_store` when first processed (or immediately
   for `content_len == 0` events that do not start in Deleted)
-- Zero RC does not nominate content or authorize removal. Only quota-nominated
+- Zero RC alone does not nominate content or authorize removal. Only quota-nominated
   hashes with complete accounting readiness and no historical protected
   collision may be collected after transactional RC/guard rechecks.
 - Retained local-authored and non-SocialPost headers guard a colliding nominated
   hash even after releasing RC. These guards are not current logical usage.
 - Physical removal, exact unique-byte decrement and queue consumption commit
-  atomically. Blocked nominations are consumed without removal; a later eligible
-  release must nominate again. No production path nominates hashes yet.
+  atomically. Blocked nominations are consumed without removal; historical
+  quota-hash provenance allows a later final reference release to requeue only
+  quota-owned work. `prune_quota_payload` is the explicit checked nominator,
+  not an automatic quota worker.
 
 ## Detailed Flows
 
@@ -561,9 +573,10 @@ fetch work.
 ### 1. No Automatic Garbage Collection
 
 When RC reaches 0, content remains in `content_store`. The bounded quota
-collector only handles internally nominated hashes and has no production
-nominator or worker yet. It does not collect general signed-deleted, invalid or
-legacy-pruned garbage. Row limits do not bound total bytes or database-file
+collector only handles hashes nominated by explicit checked quota transitions,
+later final releases carrying quota provenance, or bounded reconstruction from
+quota source rows. It starts no automatic worker and does not collect general
+signed-deleted, invalid or legacy-pruned garbage. Row limits do not bound total bytes or database-file
 allocation. See the [retention checkpoint](../../../docs/payload-retention-database.md)
 for its accounting/readiness and replay boundary.
 
@@ -736,6 +749,9 @@ global/unique accounting, readiness/cursors, historical guards or the real quota
 collector. `payload_accounting_tests` covers that separate local transactional
 contract; `deleted_replacement_tests` exercises actual collection before
 reopen/replay without losing canonical edit lineage.
+`quota_pruning_tests` covers checked Processed/Missing transitions, quota
+dematerialization, immutable feed/edit metadata, shared-reference ownership,
+terminal races, rollback and bounded nomination recovery across replay/reopen.
 
 - [`property-testing.md`](property-testing.md) documents the shared two-replica
   schedule runner, semantic models, exclusions, runtime budget, and soak command
@@ -772,8 +788,9 @@ The content lifecycle model handles:
 - Empty content (processed immediately at insertion unless already Deleted)
 - Invalid content (failed validation, RC decremented, bytes discarded)
 - Content deletion and pruning (with double-decrement prevention)
-- Checked counters, global logical/unique-byte accounting, and explicit bounded
-  accounting readiness; a quota-only collector without a production nominator
+- Checked counters, global logical/unique-byte accounting, explicit checked quota
+  transitions and a quota-only collector, with separate bounded accounting and
+  nomination-recovery readiness and no automatic worker
 - Fetch scheduling (exponential backoff for missing content, event-driven wake-up)
 
 The `Missing` state is the key to idempotency - it ensures content side

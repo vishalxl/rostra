@@ -2,8 +2,8 @@
 //!
 //! Event RC includes Missing references. A separate header-derived guard covers
 //! historical local and non-social references even after they release their RC.
-//! Only a quota lifecycle transition may nominate a hash for GC; this
-//! checkpoint deliberately has no production nominator.
+//! Only quota lifecycle provenance may authorize GC, including later releases
+//! and bounded reconstruction of that provenance from immutable quota rows.
 
 use std::num::NonZeroUsize;
 use std::ops::Bound::{Excluded, Unbounded};
@@ -39,7 +39,8 @@ pub struct PayloadUsage {
 pub struct PayloadMaintenance {
     /// Number of source or queue rows visited, not bytes examined.
     pub visited: usize,
-    /// Whether accounting and replay guards are completely initialized.
+    /// Whether this operation's rebuild is complete (accounting or
+    /// nominations).
     pub ready: bool,
     /// Actual unique content bytes removed by this call, never logical
     /// releases.
@@ -87,6 +88,15 @@ pub(crate) struct HashAccounting {
     pub(crate) protected_history: bool,
 }
 
+/// Independent resumable scan of immutable quota decisions.
+#[derive(Debug, Clone, Copy, Encode, Decode)]
+pub(crate) enum QuotaRecovery {
+    /// Last visited authoritative quota row.
+    Scanning(Option<ShortEventId>),
+    /// All historical nominations have been reconstructed.
+    Ready,
+}
+
 /// Small lifecycle snapshot captured before a reducer changes an event.
 pub(crate) struct PayloadBefore {
     /// Events and their previous contribution, including an auxiliary parent.
@@ -110,6 +120,96 @@ struct EventContribution {
 }
 
 impl Database {
+    pub(crate) fn require_payload_accounting_ready_tx(tx: &WriteTransactionCtx) -> DbResult<()> {
+        if !matches!(Self::accounting_tx(tx)?.stage, AccountingStage::Ready) {
+            return crate::PayloadAccountingNotReadySnafu.fail();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn nominate_quota_hash_tx(
+        tx: &WriteTransactionCtx,
+        hash: ContentHash,
+    ) -> DbResult<()> {
+        tx.open_table(&crate::content_quota_hashes::TABLE)?
+            .insert(&hash, &())?;
+        tx.open_table(&payload_gc::TABLE)?.insert(&hash, &())?;
+        Ok(())
+    }
+
+    /// Reconstruct quota-only GC provenance and work in bounded, resumable
+    /// batches.
+    ///
+    /// Call after replay or upgrade, even if accounting is already ready.
+    /// Concurrent quota transitions nominate atomically; later reference
+    /// releases requeue hashes whose provenance has already been scanned.
+    /// Unscanned quota rows will nominate their hashes when visited. No
+    /// worker is started here.
+    pub async fn rebuild_quota_payload_nominations(
+        &self,
+        limit: NonZeroUsize,
+    ) -> DbResult<PayloadMaintenance> {
+        Self::check_payload_limit(limit)?;
+        self.write_with(|tx| self.rebuild_quota_payload_nominations_tx(tx, limit))
+            .await
+    }
+
+    pub(crate) fn rebuild_quota_payload_nominations_tx(
+        &self,
+        tx: &WriteTransactionCtx,
+        limit: NonZeroUsize,
+    ) -> DbResult<PayloadMaintenance> {
+        let mut stage = tx
+            .open_table(&crate::content_quota_recovery::TABLE)?
+            .get(&())?
+            .map(|row| row.value_try())
+            .transpose()?
+            .unwrap_or(QuotaRecovery::Scanning(None));
+        let mut result = PayloadMaintenance::default();
+        while result.visited < limit.get() {
+            let QuotaRecovery::Scanning(cursor) = stage else {
+                break;
+            };
+            let next = tx
+                .open_table(&crate::events_quota_pruned::TABLE)?
+                .range((cursor.map_or(Unbounded, Excluded), Unbounded))?
+                .next()
+                .transpose()?
+                .map(|(key, value)| Ok::<_, crate::DbError>((key.value_try()?, value.value_try()?)))
+                .transpose()?;
+            let Some((id, _decision)) = next else {
+                stage = QuotaRecovery::Ready;
+                break;
+            };
+            let event = tx
+                .open_table(&events::TABLE)?
+                .get(&id)?
+                .context(crate::PayloadAccountingInvariantSnafu)?
+                .value_try()?;
+            let state = tx
+                .open_table(&events_content_state::TABLE)?
+                .get(&id)?
+                .context(crate::PayloadAccountingInvariantSnafu)?
+                .value_try()?;
+            if event.author() == self.self_id
+                || event.kind() != EventKind::SOCIAL_POST
+                || !matches!(
+                    state,
+                    EventContentState::Pruned | EventContentState::Deleted { .. }
+                )
+            {
+                return crate::PayloadAccountingInvariantSnafu.fail();
+            }
+            Self::nominate_quota_hash_tx(tx, event.content_hash())?;
+            stage = QuotaRecovery::Scanning(Some(id));
+            result.visited += 1;
+        }
+        result.ready = matches!(stage, QuotaRecovery::Ready);
+        tx.open_table(&crate::content_quota_recovery::TABLE)?
+            .insert(&(), &stage)?;
+        Ok(result)
+    }
+
     fn accounting_tx(tx: &WriteTransactionCtx) -> DbResult<AccountingRecord> {
         Ok(tx
             .open_table(&payload_accounting::TABLE)?
@@ -349,6 +449,17 @@ impl Database {
             if matches!(accounting.stage, AccountingStage::Ready) {
                 Self::validate_hash_tx(tx, hash)?;
             }
+            // Provenance, unlike queue membership, survives a blocked collection.
+            // A final signed-delete/invalid release may complete quota-owned work,
+            // but unrelated legacy garbage must never gain nomination authority.
+            if tx
+                .open_table(&crate::content_quota_hashes::TABLE)?
+                .get(&hash)?
+                .is_some()
+                && tx.open_table(&content_rc::TABLE)?.get(&hash)?.is_none()
+            {
+                tx.open_table(&payload_gc::TABLE)?.insert(&hash, &())?;
+            }
         }
         tx.open_table(&payload_accounting::TABLE)?
             .insert(&(), &accounting)?;
@@ -529,13 +640,13 @@ impl Database {
 
     /// Collect at most `limit` quota-nominated hashes in one transaction.
     ///
-    /// No production path nominates hashes in this checkpoint. This is not a
-    /// general collector of signed-deleted, invalid or legacy-pruned bytes.
+    /// This is not a general collector of signed-deleted, invalid or
+    /// legacy-pruned bytes: a quota release must have nominated the hash.
     /// Rebuild readiness, actual RC and historical replay guards are rechecked
     /// before every removal. Shared Missing references protect bytes too.
     ///
-    /// A blocked nomination is consumed; the later quota lifecycle must
-    /// nominate again when its last eligible reference is released. Logical
+    /// A blocked nomination is consumed; retained quota-hash provenance lets
+    /// subsequent final reference releases nominate it again. Logical
     /// usage never changes here. Bounded work does not bound total stored
     /// bytes.
     pub async fn collect_quota_payload_garbage(

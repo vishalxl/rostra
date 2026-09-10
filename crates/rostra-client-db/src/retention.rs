@@ -19,7 +19,7 @@ pub(crate) struct RetentionOrigins {
 
 /// Durable reason for a local quota decision, distinct from signed deletion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-pub(crate) enum QuotaPruneReason {
+pub enum QuotaPruneReason {
     /// The event author's logical retained bytes exceeded its quota.
     AuthorQuota,
     /// The database's logical retained bytes exceeded its global quota.
@@ -28,9 +28,9 @@ pub(crate) enum QuotaPruneReason {
 
 /// Authoritative local decision that must survive projection reconstruction.
 ///
-/// This checkpoint intentionally has no public writer. A later transactional
-/// lifecycle API must dematerialize projections and update bookkeeping before
-/// committing this row. Signed deletion remains stronger than this decision.
+/// The checked quota transition dematerializes projections and updates
+/// bookkeeping before committing this row. Signed deletion remains stronger
+/// than this decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub(crate) struct QuotaPruneDecision {
     /// Pressure source that caused the original decision.

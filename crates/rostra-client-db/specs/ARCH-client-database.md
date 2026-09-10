@@ -150,8 +150,13 @@ the bytes survive for another event. Replay never treats its synthetic receipt
 times as retention observations.
 
 Schema 28 adds disposable global logical/unique-byte accounting, event-derived
-RC checks and shared historical replay guards, plus a quota-only GC queue with
-no production nominator yet. Incremental upgrades and total replay require an
+RC checks and shared historical replay guards, plus a quota-only GC queue.
+Explicit checked quota transitions dematerialize remote SocialPosts and
+nominate their hashes without changing canonical lineage or author deletion.
+Schema 29 adds disposable hash-level quota provenance and bounded reconstruction
+from authoritative quota rows; final shared-reference releases can requeue
+quota-owned work after an earlier blocked nomination was consumed.
+Accounting upgrades and total replay require an
 explicit bounded accounting rebuild before totals or physical reclamation are
 usable; ordinary ingestion maintains cursor-covered changes transactionally.
 This readiness is separate from future retention policy-index generations.

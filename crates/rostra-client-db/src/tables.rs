@@ -277,8 +277,18 @@ def_table! {
 }
 
 def_table! {
-    /// Quota-lifecycle nominations only; no production writer until quota pruning.
+    /// Pending quota-lifecycle nominations, consumed even when shared references block GC.
     content_quota_gc: ContentHash => ()
+}
+
+def_table! {
+    /// Historical quota-release provenance, reconstructed from authoritative decisions.
+    content_quota_hashes: ContentHash => ()
+}
+
+def_table! {
+    /// Bounded reconstruction cursor for quota provenance and pending nominations.
+    content_quota_recovery: () => crate::payload_accounting::QuotaRecovery
 }
 
 /// Aggregate data usage record for an identity.

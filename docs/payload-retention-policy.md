@@ -6,10 +6,10 @@ It does not enable pruning, change database state, or change fetching. The
 proposal's lifecycle, projection, admission and garbage-collection work remains
 necessary before any destructive integration. The database now records immutable
 retention origins and preserves quota-decision source metadata across replay;
-see the [database checkpoint](payload-retention-database.md). No production quota
-mutation API or worker is enabled. The database checkpoint now also provides
-checked accounting and a bounded quota-only collector with no production
-nominations; its accounting readiness does not establish policy-index readiness.
+see the [database checkpoint](payload-retention-database.md). The database now
+also exposes explicit checked quota transitions, projection dematerialization,
+and quota-only nominations/recovery. No automatic destructive worker is enabled;
+accounting readiness does not establish policy-index readiness.
 
 ## Version 1 arithmetic and encoding
 

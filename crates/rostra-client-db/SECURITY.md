@@ -43,10 +43,13 @@ Schema 27 also preserves local retention origins and quota decisions as
 authoritative source. Their stash tables are mandatory for a schema-27 replay;
 missing tables or malformed values fail closed and retain the retryable stash.
 Older events have unknown origins rather than fabricated migration-time grace.
-No production quota mutation or destructive worker is enabled by this source
-metadata foundation. A future worker must fail closed for unknown origins and
-unreliable clocks rather than treating stored wall-clock readings as proof of
-elapsed time.
+The explicit quota transition rejects local-authored payloads, state-bearing
+content kinds (such as follow/profile/vote), unknown kinds, unknown origins,
+nonexpired materialization grace and untrusted clocks.
+Missing admission rejection requires a known, nonfuture header origin but has
+not yet started materialization grace. Clock trust is an explicit caller
+assertion; a runtime worker must supply a concrete policy for unreliable clocks,
+including forward jumps. No automatic destructive worker is enabled.
 
 Schema 28 adds disposable global logical/unique-byte accounting and a quota-only
 physical collector. All databases start unready; totals remain unavailable and
@@ -66,14 +69,23 @@ indefinitely. Before removing any nominated bytes, the collector rechecks
 readiness, expected/actual RC, zero references and the historical guard inside
 the write transaction. Store removal, unique-byte decrement and nomination
 consumption are atomic. Blocked nominations are consumed without removal and
-must be nominated again by a later eligible release.
+are requeued on a later final reference release only when historical quota-hash
+provenance authorizes that work.
 
-There is no production nominator or worker in this checkpoint. General garbage
-from signed deletion, invalidation and legacy size pruning is outside this
-collector's scope. Total replay drops disposable accounting and the nomination
-queue, then requires another explicit rebuild. Existing replay may omit
-unreferenced Deleted bytes; rebuilt totals describe the actual store. Canonical
-SocialPost replacement lineage survives independently of those bytes. Rebuilt
+The checked quota transition nominates atomically with dematerialization,
+lifecycle, usage and reference changes, and emits invalidation only after commit.
+It preserves canonical edit/deletion lineage and immutable feed rows, never
+representing local pruning as author deletion. Errors abort every side effect.
+General garbage from signed deletion, invalidation and legacy size pruning is
+outside this collector's scope. Total replay drops disposable accounting and the nomination
+queue/provenance/recovery cursor, then requires explicit rebuilds. Schema 29's
+separate bounded quota-row scan reconstructs provenance and pending work;
+concurrent quota transitions nominate directly, while final reference releases
+requeue scanned hashes and unscanned rows nominate when visited. The recovery
+cursor and reconstructed rows commit together and resume after reopen.
+Accounting readiness alone does not mean nomination recovery is complete.
+Existing replay may omit unreferenced Deleted bytes; rebuilt totals describe the
+actual store. Canonical SocialPost replacement lineage survives independently of those bytes. Rebuilt
 historical guards protect surviving or reintroduced shared collisions, not a
 promise that deleted bytes survive replay.
 

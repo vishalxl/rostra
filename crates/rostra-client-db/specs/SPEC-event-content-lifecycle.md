@@ -203,8 +203,25 @@ total migration. Replay applies them during the envelope pass before available
 payloads can be materialized, including bytes surviving under another event's
 reference. They remain Pruned, never Missing or Processed, unless a signed
 deletion establishes the stronger Deleted state. The original quota decision
-remains source metadata even then. The database currently provides the source
-storage and replay contract, not a production quota-mutation API.
+remains source metadata even then.
+
+Explicit quota transitions support Processed eviction and Missing admission
+rejection only for nonempty remote SocialPosts. They recheck the selected
+lifecycle, local-author/kind protection, immutable origins and caller-asserted
+clock trust inside the write transaction. Processed eviction requires expired
+first-materialization grace. A Missing event has not started that grace, but
+still needs a known, nonfuture header origin. Unknown historical origins and
+unreliable clocks fail closed; stored observations cannot detect forward jumps.
+A stale Missing selection cannot evict a concurrently materialized payload.
+
+Quota pruning locally dematerializes applicable social-post visibility, reply
+and reaction contributions, receipt, mention and news indexes without inventing
+author deletion. Canonical replacement/deletion lineage and the materialization
+feed remain intact. Lifecycle, original reason/time, reference and usage changes,
+fetch removal and quota GC nomination commit together, with lossy invalidation
+notifications only after commit. Accounting must be ready. Victim selection,
+quota budgets and a concrete clock-trust policy remain caller responsibilities;
+no automatic destructive worker or restoration path is enabled.
 
 ## Deduplication and retrieval
 
@@ -219,11 +236,13 @@ even after their event RC is released. These guards do not count as current
 logical payload usage and cannot be released while the headers remain protected.
 Canonical edit lineage is already durable independently of payload bytes.
 
-No production lifecycle currently nominates GC candidates; general garbage from
-signed deletion, invalidation and legacy size pruning is not collected. Physical
+Quota transitions nominate hashes atomically; general garbage from signed
+deletion, invalidation and legacy size pruning is not collected. Physical
 removal, unique-byte accounting and nomination consumption commit atomically.
-Blocked nominations are consumed without removal; a later eligible lifecycle
-release must nominate again. Reported reclaimed bytes measure unique values
+Blocked nominations are consumed without removal, but separate quota-hash
+provenance survives consumption. A later final reference release requeues only
+hashes carrying that provenance, including when a signed deletion releases the
+last shared reference. Reported reclaimed bytes measure unique values
 actually removed, not logical releases.
 
 Accounting upgrades and total replay start unready. Bounded resumable backfill
@@ -231,6 +250,12 @@ derives totals, expected RC and historical guards from retained sources, checks
 RC and per-author current usage, and applies interleaved ingestion changes on
 the already-scanned side of its cursors. Partial totals cannot authorize GC.
 Accounting readiness does not establish policy candidate-index readiness.
+Replay discards quota queue/provenance/cursor state. A separate bounded,
+resumable scan of authoritative quota rows reconstructs it without admitting
+general legacy garbage. Interleaved quota transitions nominate directly;
+releases of scanned hashes requeue them and unscanned quota rows nominate when
+visited. This recovery is independent of accounting readiness and starts no
+worker.
 
 Missing payloads are ordered by their next fetch time. New work is eligible
 immediately and wakes the client fetcher after commit. Failed attempts update

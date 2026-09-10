@@ -1,9 +1,11 @@
 # Payload retention database foundation
 
 This checkpoint implements durable source metadata, checked lifecycle counters,
-global/unique-byte accounting and a bounded quota-only collector. It does not
-enable quota eviction, admission, production GC nominations, a client worker,
-or production quotas. The collector has no production candidates yet.
+global/unique-byte accounting, checked quota transitions and a bounded quota-only
+collector. Explicit callers can dematerialize an eligible Processed remote
+SocialPost or permanently decline a Missing payload and nominate its hash
+atomically. It does not enable automatic eviction/admission, a client worker,
+or production quotas.
 The storing account's `RostraId`, not its rotating transport key, remains the
 approved identity for subsequent candidate indexing.
 
@@ -15,7 +17,7 @@ Schema 27 adds two built-in tables, inaccessible through extension transactions:
   `min(author_timestamp, local_receipt)` and optional first successful
   materialization time, keyed by short event ID.
 - `events_quota_pruned`: original author/global quota reason and local decision
-  time, keyed by short event ID. There is deliberately no production writer yet.
+  time, keyed by short event ID, written only by the checked quota transition.
 
 New header insertion and successful materialization update their origins in the
 same transaction as lifecycle and projections. Duplicates do not refresh them.
@@ -46,7 +48,12 @@ Stored times are observations, not evidence of a reliable clock. A backwards
 clock does not rewrite an existing origin. Future eligibility must reject an
 unknown origin, a clock before the origin, or an unreliable clock. Forward jumps
 cannot be detected from these timestamps alone. Grace expiration arithmetic and
-static scoring remain in the pure core policy; this checkpoint performs neither.
+static scoring remain in the pure core policy. The checked transition applies
+that policy's grace check to Processed content. A Missing event has no
+materialization grace yet, but still requires a known, nonfuture header origin.
+`RetentionClock::Trusted` is an explicit caller assertion, not database proof.
+Phase 3 must provide a concrete trust policy, including handling forward jumps,
+before making that assertion in a runtime worker.
 
 ## Accounting and quota-only physical reclamation
 
@@ -76,11 +83,13 @@ Accounting readiness does **not** make a future policy generation usable.
 
 The bounded collector accepts only the internal quota-nomination queue and
 rechecks readiness, expected/actual RC and the historical replay guard before
-removing bytes. This checkpoint has no production queue writer; test-only
-fixtures exercise the collector. Signed deletion, invalidation and legacy
-oversized pruning do not nominate general garbage. A future quota release must
-nominate transactionally. Blocked nominations are consumed; a later eligible
-release must nominate again.
+removing bytes. Checked quota releases nominate transactionally. Signed deletion,
+invalidation and legacy oversized pruning do not nominate general garbage.
+Blocked nominations are consumed, but schema 29's disposable
+`content_quota_hashes` provenance survives consumption. A later final reference
+release requeues only a previously quota-released hash. Thus a shared Missing
+reference's eventual signed deletion can complete quota-owned reclamation
+without authorizing collection of unrelated legacy bytes.
 
 For a nominated hash, any retained local-authored or non-SocialPost header
 blocks collection, even if that historical reference is terminal and has
@@ -110,18 +119,39 @@ Deleted bytes; totals describe the actual rebuilt store rather than promising
 byte-for-byte garbage preservation. Header-derived collision guards are rebuilt
 even when their protected historical bytes are no longer stored.
 
-## Next checkpoints
+Schema 29 also adds a disposable `content_quota_recovery` cursor.
+`rebuild_quota_payload_nominations` scans at most the requested number of
+authoritative quota rows (maximum 4096), validates terminal state and remote
+SocialPost provenance, and reconstructs hash provenance and pending nominations
+atomically with cursor advancement. Reopen resumes; replay starts it again.
+New quota transitions nominate regardless of the cursor. Later reference
+releases requeue already-scanned hashes; unscanned rows nominate when visited.
+Call this recovery explicitly after upgrade/replay even when accounting is
+already ready. It can interleave with accounting rebuild; collection still
+requires accounting readiness. No automatic maintenance is enabled.
 
-**2b2 — quota lifecycle:** provide checked transactional
-Processed→quota-Pruned and Missing→quota-Pruned APIs, with safe-kind and
-local-author protection. Dematerialize social post/reply/reaction/edit
-projections, maintain exact reference/usage/queue state and notifications, and
-write the immutable quota decision atomically. The existing
-`prune_event_content_tx` still is not a safe processed-eviction API. Wrap all
-new transitions in the accounting before/after boundary and nominate eligible
-remote SocialPost hashes atomically; preserve the collector's historical
-collision guard. Decide safe bounded reconstruction of pending nominations
-from quota source rows after replay before production enqueue integration.
+## Checked transition API
+
+`prune_quota_payload(QuotaPruneRequest)` rechecks the expected Processed/Missing
+target, nonempty remote SocialPost kind, immutable origins, active-policy grace
+and explicit clock trust under the writer lock. It fails on unready accounting.
+The expected target prevents a stale admission decision from evicting a payload
+that materialized concurrently. Duplicate/terminal transitions change nothing;
+the original quota reason/time is never refreshed. Unknown historical origins
+remain ineligible; no migration policy is invented.
+
+Processed pruning uses the ordinary strict social-post projection reversion,
+not the author-deletion state transition. Reply/reaction contributions, timeline
+and receipt indexes, news ranks and mentions are removed as applicable.
+Canonical edit/deletion lineage and append-only materialization occurrences
+remain; feed scans resolve pruned occurrences as Removed. Missing rejection
+releases its reference and retry entry but frees zero logical current bytes.
+The before/after accounting owner wraps both paths, and any error rolls back
+projections, lifecycle, quota metadata, nominations and notifications together.
+`quota_pruned_subscribe` is a lossy after-commit invalidation signal carrying the
+event identity, not a fabricated content arrival or author deletion.
+
+## Next checkpoints
 
 **2c — indexing:** add author/global static-key candidate indexes, grace-expiry
 metadata, full policy bytes plus holder `RostraId` generations, and bounded,
@@ -132,6 +162,14 @@ need an explicit conservative initialization strategy, not synthetic replay time
 Only after those foundations may phase 3 add admission and worker integration.
 Logical quota release may reclaim no physical bytes when another reference
 survives. Headers and index overhead remain outside logical payload accounting.
+
+Phase 3 must call the checked transition, not the low-level
+`prune_event_content_tx` ingestion helper, and integrate budget/reservation
+rechecks and candidate maintenance in the same write transaction. The current
+explicit transition does not select victims, validate quota pressure or establish
+the active policy generation. Run accounting and nomination rebuilds separately;
+their `PayloadMaintenance.ready` results describe their own operation, not
+overall worker readiness.
 
 ## Verification
 
@@ -147,3 +185,7 @@ local/non-social collision guards, ingestion/backfill/reopen/replay interleaving
 transaction rollback, actual unique reclamation, absent production nominations,
 readiness/corruption rejection, bounded limits and checked counter failures.
 The deleted-edit lineage test now uses the real collector before reopen/replay.
+`quota_pruning_tests` exercises the production transition, atomic rollback,
+duplicate/concurrent decisions, terminal delivery/deletion, projection/feed/edit
+preservation, shared Missing/protected hashes, and bounded recovery interrupted
+by rollback/reopen/replay and concurrent reference release.

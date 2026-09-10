@@ -80,7 +80,8 @@ pub(crate) struct LegacyEventReceivedRecord {
 /// source tables without inventing historical receipt or materialization times.
 /// Version 28 adds disposable payload accounting with explicit bounded
 /// readiness.
-const DB_VER: u64 = 28;
+/// Version 29 adds disposable quota-hash provenance and its recovery cursor.
+const DB_VER: u64 = 29;
 
 /// Versions older than this require a total migration.
 ///
@@ -162,6 +163,8 @@ impl Database {
         tx.open_table(&crate::content_accounting_authors::TABLE)?;
         tx.open_table(&crate::content_accounting_hashes::TABLE)?;
         tx.open_table(&crate::content_quota_gc::TABLE)?;
+        tx.open_table(&crate::content_quota_hashes::TABLE)?;
+        tx.open_table(&crate::content_quota_recovery::TABLE)?;
         tx.open_table(&db_version::TABLE)?;
         tx.open_table(&crate::db_init_time::TABLE)?;
         tx.open_table(&crate::reception_order_next::TABLE)?;
