@@ -121,8 +121,23 @@ headers, late content and shared-store reuse cannot resurrect that terminal stat
 
 The runner spawns nothing; its caller must own and join its future. Unique RAII
 runner ownership releases on cancellation/panic, after any synchronous transaction
-finishes. Production Client task integration, complete enabled ingress/audit coverage
-and DryRun remain required before any startup opt-in.
+finishes. Production Client task integration, immutable startup policy and complete
+enabled ingress/audit coverage remain required before any startup opt-in.
+
+The private DryRun branch owns separate immutable forecast ceilings and requires
+Disabled, empty admission ownership; it never installs enforcing acquisition caps.
+Preparation and ingestion retain Disabled behavior. Its bounded whole-source read
+snapshot performs no writes at all: no lifecycle/projection/counter/source changes,
+derived maintenance, demand mutation, rejection or GC. Accounting-unready and
+count/author/logical-byte/time overflow produce no projection. Complete reports are
+retained-only fresh-start author-first/global90% projections, not Enforce forecasts
+with reservations, demand, future workload or inherited hysteresis. Reports replace
+as-of observations rather than accumulate fresh victims; one attempt per monotonic
+second bounds repeated scanning. Model memory is count-bounded, no payload bodies
+are read, and sorting/DB operations are indivisible under cooperative time limits.
+Large databases can remain incomplete indefinitely. Guarded ledger zeroes under
+Disabled do not measure actual acquisition memory. Neither logical victims nor
+observed unique-store bytes promise physical reclamation.
 
 The private driver includes general author-first/global pressure on retained plus
 logically reserved bytes, with experimental floor90% low-water hysteresis.
@@ -177,7 +192,7 @@ supported client admission path. Adding any acquisition path or changing buffer
 representations is a capacity-audit trigger.
 
 Production activation still requires complete ranking-aware admission and Client
-worker integration, dry-run modeling,
+worker integration, the complete enabled-mode ingress audit,
 and independent review of the complete enabled runtime. Protecting local/state/
 unknown content from eviction does not exempt it from admission caps. Runtime
 clock policy trusts the system wall clock, per the operator decision; unknown

@@ -6,8 +6,10 @@ metadata are implemented; see the [implementation guide](payload-retention-polic
 and [database checkpoint](payload-retention-database.md). Admission/fetch ownership
 and a private, test-installed driver now integrate bounded demand/general pressure,
 hysteresis, conservative ranked durable Missing rejection and quota-only collection.
-No production runtime pruning or enabled quota configuration is available; DryRun and complete
-Client/startup/ingress integration remain unfinished.
+The private driver also supports bounded read-only whole-snapshot DryRun projections,
+with a separate forecast config and Disabled acquisition. No production runtime
+pruning or enabled quota configuration is available; complete Client/startup/ingress
+integration remains unfinished.
 
 ## Recommendation
 

@@ -367,7 +367,7 @@ authors can proceed. Missing notifications register before peeking, with bounded
 empty-queue recovery polling. Ancestor/head sync leaves durable Missing retries
 instead of stopping its worker on temporary pressure.
 
-Production activation still requires DryRun and complete Client/ingress integration
+Production activation still requires immutable startup policy and complete Client/ingress integration
 and audit. The private driver below
 already composes generation/pressure/reducer atomicity, independent readiness,
 hysteresis and bounded yielding batches.
@@ -516,11 +516,88 @@ reservation and actual ingestion; independent single-operation maintenance;
 deduplication/cancellation/expiry with zero paused buffer charges; shared-store
 reuse; alternate-author progress behind an exhausted higher-ranked demand;
 bounded continuation past a previously promoted future prefix;
-and byte-blocked waiting with runner cancellation/exclusivity. DryRun, immutable enabled
+and byte-blocked waiting with runner cancellation/exclusivity. Immutable enabled
 startup policy and the complete enabled bypass/load/body/race/overload audit remain
 activation blockers. General pressure and quota-only collection are integrated
 only in this non-activatable driver; unique stored bytes may remain after logical
 eviction, and no physical reclamation is claimed.
+
+### Bounded observation-only DryRun
+
+The private test constructor can instead install an immutable **forecast**
+configuration. It refuses an enforcing or nonempty admission ledger and a
+mismatched storing identity. Forecast ceilings never enter that ledger: ordinary
+preparation, shared-store reuse and ingestion retain Disabled behavior, including
+ordinary signed-deletion and validation effects. DryRun itself neither rejects
+acquisitions nor registers demand, reserves payloads, prunes, collects, or writes
+any database table. Its runner does **no derived maintenance**, including accounting,
+index, grace, nomination recovery or pressure-latch updates. The existing Enforce
+constructor and writer-side expected-config authority checks are unchanged.
+Both constructors remain test-only. There is no public partial-mode opt-in or
+production Client runner, and no hot switching between modes.
+
+Each attempt reads one coherent MVCC source snapshot at one fresh trusted system
+timestamp. It examines retained signed headers, lifecycle and immutable origins,
+not payload bodies. Ready accounting supplies observed retained-logical and unique
+store totals; the complete source sum must agree with retained accounting. The
+forecast's full policy/holder generation is immutable and independent of disposable
+candidate indexes: no index readiness, stale frontier, or maintenance write is needed.
+Unknown origins, future timestamps, grace, local authors, non-SocialPost kinds and
+zero-length payloads remain protected; protected retained bytes still count.
+
+The model has explicit limits on **all source headers visited** (including Missing
+and terminal events, maximum 4096), distinct retained authors (no greater than the
+header limit), total retained signed logical lengths, and cooperative elapsed time.
+The logical-byte bound is not an allocated-memory or content-decoding measurement:
+no payload bodies are read. Author/candidate/victim memory is bounded by the count
+limits, not database size; sorting and individual database operations are indivisible
+and may exceed the cooperative time allowance. One iterator lookahead can establish
+header overflow without decoding or retaining that extra header.
+
+Only a complete bounded snapshot produces a projection. Unready accounting or any
+exhausted count/byte/time allowance produces an explicit incomplete status and **no
+projected totals or victim list**, never extrapolation from a prefix. No cursor
+accumulates an ever-growing model. A database larger than the configured bound can
+remain incomplete indefinitely; production-shaped experiments and an operator-facing
+decision about that limitation remain later work, not a promised eventual simulation.
+
+The complete projection starts fresh hysteresis from retained usage only: trigger
+authors strictly above their explicit ceiling (including overrides), reduce them
+toward `floor(90% * ceiling)` in policy rank order, then test global pressure and
+reduce toward its 90% target. It reports logical victim identities/reasons/bytes,
+remaining logical bytes, protected bytes and unmet targets. A shared hash is charged
+once per retained event; observed unique stored bytes remain a separate number.
+It does not project unique-store GC or physical pages, and promises no reclamation.
+The model intentionally does **not** simulate reservations, demand priority/Fits/
+partial-plan barriers, durable Missing rejection, future arrivals, mutation during
+Enforce, or inherited Enforce latches. It is not an Enforce forecast under concurrent
+demand. Guarded admission counters are zero because the ledger must remain Disabled;
+that does not mean Disabled acquisitions use zero actual buffers or bounded total RAM.
+
+Reports are immutable **as-of snapshots**, potentially stale immediately after the
+read transaction. Every new attempt replaces the previous report rather than adds
+"fresh victims" or cumulative released bytes. A later mutation, clock advance or
+rollback is re-read and reclassified; an incomplete replacement discards an older
+complete projection. Errors clear the attempted report, and accidental enforcing
+configuration makes the runner fail closed rather than silently replacing it.
+The report includes its generation, as-of timestamp, limits, global forecast ceiling
+and completeness. Complete projections also carry the effective ceiling of each
+retained author, bounded by the author limit rather than the full override map.
+Detached reports therefore retain the budget context needed to interpret their targets.
+One snapshot attempt per monotonic second, even under direct-call/notification churn,
+combines with the existing caller-owned cancellable runner and recovery wait.
+Cancellation-safe attempt ownership prevents overlapping direct turns even when an
+indivisible operation exceeds that period. Disabled/empty ledger ownership is
+revalidated and held through publication; a mid-snapshot mismatch publishes no report.
+
+Tests compare every durable table byte-for-byte before and after repeated snapshots
+and runtime turns, including a real collectible quota-owned hash. Coverage includes
+shared/protected/grace/unknown content, author overrides/global targets, mutation/
+time/config changes, all incomplete bounds, complete-to-incomplete replacement,
+Disabled preparation/reuse/ingestion, pacing/cancellation/exclusivity and logical
+projection parity with a disposable Enforce fixture without concurrent demand.
+The complete startup/Client/HTTP/body/serialization ingress audit and combined
+eight-obligation activation review remain required; these DB tests are not that audit.
 
 ### Ranked durable Missing admission rejection
 

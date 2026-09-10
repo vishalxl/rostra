@@ -24,6 +24,12 @@ Its demand worker also supports conservative ranked durable Missing rejection:
 a fresh currently eligible retained index head must outrank the incoming event,
 and retained-only pressure must independently exceed the applicable cap. Skipped
 or protected-only boundaries still defer; this does not simulate future fit.
+The same private driver has an observation-only DryRun branch. Its independent
+forecast config leaves acquisition Disabled; bounded whole-source snapshots
+project retained-only author-first/global pressure without writes or GC.
+Incomplete snapshots publish no projection, and repeated reports are as-of
+replacements, not newly evicted bytes. See the database guide for bounds and
+the deliberately unsupported demand/future-workload model.
 
 ## Version 1 arithmetic and encoding
 
@@ -88,7 +94,7 @@ empirically selected deployment defaults.
   content state, projection readiness and zero-length payloads. A key or
   elapsed grace is not permission to discard content. See
   [SPEC-event-content-lifecycle](../crates/rostra-client-db/specs/SPEC-event-content-lifecycle.md).
-- Runtime opt-in/dry-run settings and worker integration are absent.
+- Production runtime opt-in and Client worker integration are absent.
   Author-specific ceilings and reservation primitives now live in the disabled
   database foundation, not this pure policy module. The executable pressure path
    includes a non-activatable database driver alongside the pure simulator, both

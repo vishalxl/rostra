@@ -45,6 +45,8 @@ pub(crate) struct PayloadRuntime {
     running: AtomicBool,
     /// Incarnation binding survives cancellation of a borrowed runner.
     pressure: PressureWorker,
+    /// Independent forecast configuration; admission remains Disabled.
+    dry_run: Option<crate::payload_dry_run::DryRun>,
 }
 
 /// Scheduler continuation only; no state here authorizes pruning.
@@ -155,11 +157,51 @@ impl PayloadRuntime {
             limits,
             running: AtomicBool::new(false),
             pressure: PressureWorker::default(),
+            dry_run: None,
         })
+    }
+
+    /// Install only in disposable tests; forecast caps never enter admission.
+    #[cfg(test)]
+    pub(crate) fn new_dry_run(
+        db: &Database,
+        generation: RetentionGeneration,
+        config: crate::PayloadAdmissionConfig,
+        limits: crate::payload_dry_run::DryRunLimits,
+    ) -> DbResult<Self> {
+        crate::payload_dry_run::DryRun::check_disabled(db)?;
+        if generation.holder() != db.self_id {
+            return Err(DbError::PayloadAccountingInvariant);
+        }
+        let identity = config.identity();
+        let dry_run = crate::payload_dry_run::DryRun::new(config, limits)
+            .ok_or(DbError::PayloadAccountingInvariant)?;
+        Ok(Self {
+            generation,
+            config: identity,
+            limits: RuntimeLimits {
+                operations: limits.events,
+                bytes: limits.logical_bytes,
+                gc_bytes: 0,
+                time: limits.time,
+            },
+            running: AtomicBool::new(false),
+            pressure: PressureWorker::default(),
+            dry_run: Some(dry_run),
+        })
+    }
+
+    /// Last bounded as-of forecast; not fresh work or current pruning
+    /// authority.
+    pub(crate) fn dry_run_report(&self) -> Option<crate::payload_dry_run::DryRunReport> {
+        self.dry_run.as_ref().and_then(|dry_run| dry_run.report())
     }
 
     /// Reject stale construction rather than silently installing a new policy.
     fn check_config(&self, db: &Database) -> DbResult<()> {
+        if self.dry_run.is_some() {
+            return crate::payload_dry_run::DryRun::check_disabled(db);
+        }
         if db
             .payload_admission
             .state
@@ -186,6 +228,10 @@ impl PayloadRuntime {
         db: &Database,
         event: &VerifiedEvent,
     ) -> DbResult<PayloadReservationOutcome> {
+        if self.dry_run.is_some() {
+            self.check_config(db)?;
+            return db.prepare_payload_acquisition_once(event).await;
+        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut demand: Option<PayloadDemand> = None;
         loop {
@@ -268,6 +314,10 @@ impl PayloadRuntime {
         db: &Database,
         cursor: &mut RuntimeCursor,
     ) -> DbResult<RuntimeTurn> {
+        if let Some(dry_run) = &self.dry_run {
+            dry_run.turn(db, self.generation).await?;
+            return Ok(RuntimeTurn::Wait);
+        }
         self.check_config(db)?;
         let deadline = Instant::now()
             .checked_add(self.limits.time)
