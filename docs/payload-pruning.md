@@ -47,7 +47,7 @@ The current code already provides much of the foundation:
 | `content_store` and `content_rc` | Hash-deduplicated bytes and event references |
 | Header content hash, length, kind | Ranking/admission metadata without downloading payload bytes |
 | Missing-content queue | Durable scheduling that pruning must remove or suppress |
-| Persisted iroh secret | A stable per-database storage-node identity |
+| Database's local `RostraId` | Retention identity independent of transport keys |
 
 Sources: [content lifecycle specification](../crates/rostra-client-db/specs/SPEC-event-content-lifecycle.md),
 [database lifecycle guide](../crates/rostra-client-db/docs/content-lifecycle.md),
@@ -67,23 +67,29 @@ missing-payload admission reservations.
 
 ## 2. Distance and identity
 
-Use the identity of the **storage replica**, not the author of the event and
-preferably not the node owner's `RostraId`.
+Use the **storing account's `RostraId`**, not the event author's identity or
+the storage device's iroh public key. For a client database, this is its local
+Rostra identity; for fetching, it is the candidate holder's Rostra identity.
 
-Two devices serving the same Rostra identity should retain different tails.
-Using their shared Rostra identity would give them identical rankings.
-The persisted iroh node public key is the natural initial storage identity.
-Reopening the same database must preserve it. Cloning a database with its node
-secret also clones its retention choices; rotating it requires rebuilding
-ranking indexes.
+Transport keys may need to rotate for privacy. Such rotation must not change
+the retention coordinate, rebuild eviction indexes, or reshuffle stored history.
+Using `RostraId` also lets fetchers rank candidate accounts before resolving
+their transport endpoints.
+
+Devices serving the same Rostra identity deliberately share the same distance
+preference. With identical inputs, policy, and budgets they retain the same
+tail; different received content, timestamps, or budgets can still produce
+different retained sets. We accept reduced within-account diversity: users are
+not expected to operate large numbers of replicas, and account-level fetching
+is simpler than enumerating and ranking all their devices.
 
 Define two domain-separated 256-bit coordinates using the project's
 cryptographic hash:
 
 ```text
-event_coordinate = H("rostra/retention/event/v1" || full_event_id)
-node_coordinate  = H("rostra/retention/node/v1"  || iroh_node_public_key)
-x = integer_big_endian(event_coordinate XOR node_coordinate)
+event_coordinate  = H("rostra/retention/event/v1"  || full_event_id)
+holder_coordinate = H("rostra/retention/holder/v1" || full_holder_rostra_id)
+x = integer_big_endian(event_coordinate XOR holder_coordinate)
 d = x / 2^256
 ```
 
@@ -126,7 +132,7 @@ Parameters:
 | `s0` | Size floor; tiny payloads have the same size penalty | 1 KiB |
 | `tau` | Age scale used to trade age against size and distance | 30 days |
 | `alpha` | Preference for smaller payloads | 0.5 |
-| `beta` | Strength of replica specialization | 1 |
+| `beta` | Strength of specialization between holder accounts | 1 |
 | `B_max` | Maximum closeness bonus | 64 |
 
 These are proposed experiment settings, not production defaults. The user's
@@ -135,7 +141,7 @@ storage budget should be explicit; there is no justified universal GiB quota.
 At fixed size and distance, older content loses. At fixed age and distance,
 larger content loses. At fixed age and size, farther content loses.
 There is no fresh random eviction draw: the cryptographic coordinates provide
-stable variation between replicas. Randomizing every sweep would create churn
+stable variation between holder accounts. Randomizing every sweep would create churn
 and destroy useful predictability for fetchers.
 
 ### A static key instead of continuously changing scores
@@ -221,17 +227,19 @@ Let `a = age/tau + alpha*ln(s)`. For `beta > 0`, retention requires:
 beta * ln B(d) >= ell + a
 ```
 
-For uniformly distributed node coordinates this yields:
+For uniformly distributed holder-account coordinates this yields:
 
 - Everyone retains it when `ell + a <= 0`.
 - A fraction approximately `exp(-(ell + a)/beta)` retains it when
   `0 < ell + a <= beta*ln(B_max)`.
 - Nobody retains it when `ell + a > beta*ln(B_max)`.
 
-With `m` independent replicas that actually received the payload, each keeping
-it with probability `p`, the toy-model probability of at least one surviving
+With `m` independent holder accounts that actually received the payload, each
+keeping it with probability `p`, the toy-model probability of at least one surviving
 copy is `1 - (1-p)^m`. For example, `p=0.1` gives only about 41% with five
-replicas, versus about 88% with twenty.
+holder accounts, versus about 88% with twenty. Multiple devices belonging to
+one account must not be counted as independent distance-based retention choices.
+They may improve reachability without adding distinct retention preferences.
 
 These are deductions from the proposed formula, **not availability estimates
 for Rostra**. Real replicas have different candidate sets, clocks, budgets,
@@ -488,20 +496,19 @@ Proposed common candidate-ranking helper:
    backoff restrictions.
 2. Prefer a known successful holder and a reachable author/archive when such
    information already exists.
-3. Among other plausible holders with known node coordinates, prefer the
+3. Among other plausible holder accounts, prefer the `RostraId` coordinate
    closest to the full event ID.
-4. Keep small bounded concurrency and eventually try farther/unknown peers.
-   Do not wait serially for many new identity resolutions just to sort them.
+4. Keep small bounded concurrency and eventually try farther peers.
 
-Candidate APIs currently use `RostraId`, while the retention coordinate above
-uses an iroh node ID. Resolve or reuse the endpoint identity actually being
-contacted before applying the metric. Do not sort Rostra identities and claim
-that this predicts rankings computed from iroh identities.
+Candidate APIs already use `RostraId`, so their coordinates can be calculated
+locally before endpoint resolution. Resolve and contact selected accounts
+through ordinary transport discovery; no new content RPC or per-device
+retention-coordinate advertisement is needed.
 
-Ordering the known endpoint for each Rostra identity can be introduced without
-a new content RPC. Enumerating multiple devices for one identity, authenticating
-their advertised storage coordinates, and choosing among them needs a separate
-discovery design if current resolution exposes only one.
+There is no need to enumerate an account's devices for distance ranking:
+all share one coordinate. Ordinary connection fallback may still try another
+device, and a miss on one device is not proof that every device lacks the
+payload. Transport-key rotation does not change candidate ordering.
 
 Peers need not publish their quota, cutoff, or payload inventory. Distance is a
 cheap hint: heterogeneous budgets and whether a node ever received an event can
@@ -512,7 +519,8 @@ matter more. Keep the fallback and measure hit rate.
 - **Event-ID grinding:** authors can vary event data to seek favorable
   coordinates. Domain separation does not prevent this. The bounded bonus and
   per-author quota limit the benefit; this is not Sybil resistance.
-- **Node-ID grinding:** peers can choose attractive IDs. Closeness is neither
+- **Holder-ID grinding:** peers can generate Rostra identities seeking attractive
+  coordinates; rotating only an iroh key gives no retention advantage. Closeness is neither
   trust nor evidence of possession. Verify returned content normally.
 - **Author churn:** new identities can evade per-author fairness only if admitted.
   Preserve Web-of-Trust admission and enforce the database-wide cap.
@@ -553,6 +561,9 @@ Required correctness tests:
 
 - Monotonic score properties, cap/zero distance, and static-key equivalence.
 - Restart-stable keys; deterministic ties and policy-version rebuilds.
+- Iroh key rotation leaves retention keys and candidate ordering unchanged;
+  same-RostraId devices use the same distance, and the simulator models their
+  correlated retention choices.
 - Author/global hysteresis, empty payloads, oversized victims, no eligible
   victims, and admission under continuous overload.
 - Shared hashes across authors, protected references, Missing references,
@@ -569,24 +580,26 @@ Never make a production-shaped database the first destructive test.
 
 ## 12. Decisions to discuss
 
-1. **Storage coordinate:** use persisted per-device iroh identity as recommended,
-   or accept same-RostraId devices retaining the same tail?
-2. **Tail length:** is a maximum distance age credit around four months a useful
+The storage-coordinate choice is settled for this draft: use the holder's
+`RostraId`, accepting correlated retention across its devices in exchange for
+transport-key independence and account-level fetching.
+
+1. **Tail length:** is a maximum distance age credit around four months a useful
    initial experiment, or should specialization reach much farther into history?
-3. **Fairness:** strict per-author caps plus global score ordering, or guaranteed
+2. **Fairness:** strict per-author caps plus global score ordering, or guaranteed
    equal shares at the cost of more allocation machinery?
-4. **Protected data:** protect local-authored and all state-bearing content by
+3. **Protected data:** protect local-authored and all state-bearing content by
    default? Which social content may disappear locally?
-5. **User retrieval:** is an initial unavailable-content indicator sufficient,
+4. **User retrieval:** is an initial unavailable-content indicator sufficient,
    or should bounded transient viewing ship with pruning?
-6. **Budget scope:** one client database first, or is multi-account host-wide
+5. **Budget scope:** one client database first, or is multi-account host-wide
    budgeting required in the first release?
-7. **Grace/admission tradeoff:** how much recently fetched content should receive
+6. **Grace/admission tradeoff:** how much recently fetched content should receive
    guaranteed local dwell time before it competes on age and distance?
 
 My suggested first implementation is the static score, per-author and
 per-database logical caps, bounded worker and GC, conservative eligibility,
 durable prune decisions, shared admission checks, and dry-run tooling.
-Distance-aware fetch ordering is a small follow-up once endpoint identity
-mapping is confirmed. Replica guarantees and state-source pruning remain
-separate projects.
+Distance-aware fetch ordering can use existing RostraId candidate lists as a
+small follow-up. Replica guarantees and state-source pruning remain separate
+projects.
