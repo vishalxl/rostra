@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::routing::{get, post};
@@ -22,6 +22,8 @@ const API_VERSION_HEADER: &str = "x-rostra-api-version";
 const API_CURRENT_VERSION: u32 = 0;
 
 const API_SECRET_HEADER: &str = "x-rostra-id-secret";
+/// Pin the ordinary Axum JSON limit so pre-parse capacity never trusts headers.
+const SIGNED_EVENT_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Serialize)]
 struct ApiErrorResponse {
@@ -121,7 +123,10 @@ pub fn api_router() -> Router<Arc<UiState>> {
             "/{rostra_id}/publish-social-post-prepare",
             post(publish_social_post_prepare),
         )
-        .route("/{rostra_id}/publish", post(publish_signed_event))
+        .route(
+            "/{rostra_id}/publish",
+            post(publish_signed_event).layer(DefaultBodyLimit::max(SIGNED_EVENT_BODY_LIMIT)),
+        )
         .route("/{rostra_id}/follow-managed", post(follow_managed))
         .route("/{rostra_id}/unfollow-managed", post(unfollow_managed))
         .route("/{rostra_id}/followees", get(get_followees))
@@ -556,8 +561,48 @@ async fn publish_signed_event(
     State(state): State<SharedState>,
     _version: ApiVersion,
     Path(rostra_id): Path<RostraId>,
-    Json(req): Json<PublishSignedEventRequest>,
+    request: Request,
 ) -> ApiResult<Json<PublishSignedEventResponse>> {
+    // Never create/open a database from an unverified path or malformed body.
+    // Runtime activation must also make unloaded-account pre-parse policy
+    // available without loading a database. No such configured account exists
+    // in this non-activatable checkpoint.
+    let existing_client = state.client(rostra_id).await.ok();
+    let existing_ref = existing_client
+        .as_ref()
+        .and_then(|client| client.client_ref().ok());
+    let capacity_error = |reason| {
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Payload storage capacity unavailable: {reason:?}; retry later"),
+        )
+    };
+    // Body, JSON string/scratch, and Vec -> Arc conversion can coexist.
+    // Codec/transport scratch and allocator overhead are not measured here.
+    let reserve = || match &existing_ref {
+        Some(client) => client
+            .db()
+            .reserve_payload_allocation(SIGNED_EVENT_BODY_LIMIT as u64),
+        None => Ok(None),
+    };
+    let body_capacity = reserve().map_err(capacity_error)?;
+    let string_capacity = reserve().map_err(capacity_error)?;
+    let mut payload_capacity = reserve().map_err(capacity_error)?;
+    let conversion_capacity = reserve().map_err(capacity_error)?;
+    let scratch_capacity = reserve().map_err(capacity_error)?;
+    let parse = Json::<PublishSignedEventRequest>::from_request(request, &state);
+    let parsed = if payload_capacity.is_some() {
+        tokio::time::timeout(std::time::Duration::from_secs(30), parse)
+            .await
+            .map_err(|_| api_error(StatusCode::REQUEST_TIMEOUT, "Payload body read timed out"))?
+    } else {
+        parse.await
+    };
+    let Json(req) = parsed.map_err(|err| api_error(err.status(), err.body_text()))?;
+    drop(body_capacity);
+    drop(string_capacity);
+    drop(conversion_capacity);
+    drop(scratch_capacity);
     // Verify author matches the path
     if req.event.author != rostra_id {
         return Err(api_error(
@@ -584,14 +629,12 @@ async fn publish_signed_event(
             )
         })?;
 
-    // Load client and store
     state.load_client(rostra_id).await.map_err(|e| {
         api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to load client: {e}"),
         )
     })?;
-
     let client = state.client(rostra_id).await.map_err(|e| {
         api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -605,16 +648,43 @@ async fn publish_signed_event(
         )
     })?;
 
-    client_ref
-        .db()
-        .try_process_event_with_content(&verified_event_content)
-        .await
-        .map_err(|e| {
-            api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to store event: {e}"),
-            )
-        })?;
+    let storage_error = |e| {
+        if let rostra_client_db::DbError::PayloadAdmissionPaused { reason } = e {
+            return capacity_error(reason);
+        }
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to store event: {e}"),
+        )
+    };
+    if let Some(payload_capacity) = &mut payload_capacity {
+        let buffer = match client_ref
+            .db()
+            .reserve_payload(&verified_event)
+            .await
+            .map_err(storage_error)?
+        {
+            rostra_client_db::PayloadReservationOutcome::Reserved(reservation) => Some(
+                payload_capacity
+                    .bind_to_reservation(&reservation)
+                    .map_err(capacity_error)?,
+            ),
+            rostra_client_db::PayloadReservationOutcome::Deferred(reason) => {
+                return Err(capacity_error(reason));
+            }
+            _ => None,
+        };
+        client_ref
+            .store_acquired_payload(verified_event_content, buffer)
+            .await
+            .map_err(storage_error)?;
+    } else {
+        client_ref
+            .db()
+            .try_process_event_with_content(&verified_event_content)
+            .await
+            .map_err(storage_error)?;
+    }
 
     // Get updated heads
     let mut heads: Vec<String> = client_ref
@@ -627,7 +697,7 @@ async fn publish_signed_event(
     heads.sort();
 
     Ok(Json(PublishSignedEventResponse {
-        event_id: ShortEventId::from(verified_event_content.event_id()).to_string(),
+        event_id: ShortEventId::from(verified_event.event_id).to_string(),
         heads,
     }))
 }

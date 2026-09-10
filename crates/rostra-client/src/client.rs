@@ -19,7 +19,7 @@ use rostra_client_db::{
     CurrentState, Database, DbError, DbResult, IdsFolloweesRecord, IdsFollowersRecord, WotData,
 };
 use rostra_core::event::{
-    Event, EventContentRaw, EventExt as _, IrohNodeId, PersonaTag, PersonasTagsSelector,
+    Event, EventContentKind as _, EventExt as _, IrohNodeId, PersonaTag, PersonasTagsSelector,
     SignedEvent, SocialPost, VerifiedEvent, VerifiedEventContent, content_kind,
 };
 use rostra_core::id::{RostraId, RostraIdSecretKey};
@@ -822,11 +822,6 @@ impl Client {
         self.networking.pkarr_client.clone()
     }
 
-    pub(crate) async fn does_have_event(&self, _event_id: rostra_core::EventId) -> bool {
-        // TODO: check
-        false
-    }
-
     /// Store verified event content, retaining author and event context on
     /// error.
     pub async fn store_event_with_content(
@@ -844,6 +839,19 @@ impl Client {
                 event_id,
                 source,
             })
+    }
+
+    /// Ingest an owned download, dropping its bytes before its buffer guard.
+    ///
+    /// Callers must reserve before acquisition. This does not retroactively
+    /// account already allocated external bytes or allocate another buffer.
+    pub fn store_acquired_payload(
+        &self,
+        content: VerifiedEventContent,
+        buffer: Option<rostra_client_db::PayloadBuffer>,
+    ) -> impl std::future::Future<Output = DbResult<()>> + '_ {
+        let payload = crate::acquired_payload::AcquiredPayload { content, buffer };
+        async move { payload.ingest(&self.db).await }
     }
 
     /// Store an oversized verified envelope without accepting its payload.
@@ -893,24 +901,61 @@ impl Client {
             self.db.get_self_random_eventid().await
         };
 
-        let (event, content) = Event::builder(&content)
+        let mut encoded = crate::encoded_payload::EncodedPayload::encode(&self.db, &content)?;
+        let event = Event::builder_raw_content()
             .author(self.id)
+            .kind(C::KIND)
+            .maybe_singleton_aux_key(content.singleton_key_aux())
             .maybe_parent_prev(current_head)
             .maybe_parent_aux(aux_event)
             .maybe_delete(replace)
-            .build()?;
+            .content(&encoded.raw)
+            .build();
 
         let signed_event = event.signed_by(id_secret);
 
         let verified_event = VerifiedEvent::verify_signed(self.id, signed_event)
             .expect("Can't fail to verify self-created event");
         let verified_event_content =
-            rostra_core::event::VerifiedEventContent::verify(verified_event, content)
+            rostra_core::event::VerifiedEventContent::verify(verified_event, encoded.raw)
                 .expect("Can't fail to verify self-created content");
-        self.db
-            .try_process_event_with_content(&verified_event_content)
+        if encoded.capacity.is_none() {
+            self.db
+                .try_process_event_with_content(&verified_event_content)
+                .await
+                .context(StorageSnafu)?;
+            return Ok(verified_event);
+        }
+        let reservation = self
+            .db
+            .reserve_payload(&verified_event)
             .await
             .context(StorageSnafu)?;
+        let buffer = match reservation {
+            rostra_client_db::PayloadReservationOutcome::Reserved(reservation) => {
+                let allocation = encoded
+                    .capacity
+                    .as_mut()
+                    .expect("Configured publication reserved provisional capacity");
+                Some(
+                    allocation
+                        .bind_to_reservation(&reservation)
+                        .map_err(|reason| DbError::PayloadAdmissionPaused { reason })
+                        .context(StorageSnafu)?,
+                )
+            }
+            rostra_client_db::PayloadReservationOutcome::Deferred(reason) => {
+                return Err(DbError::PayloadAdmissionPaused { reason }).context(StorageSnafu);
+            }
+            _ => None,
+        };
+        crate::acquired_payload::AcquiredPayload {
+            content: verified_event_content,
+            buffer,
+        }
+        .ingest(&self.db)
+        .await
+        .context(StorageSnafu)?;
 
         Ok(verified_event)
     }
@@ -1043,7 +1088,8 @@ impl Client {
         pub(crate) const ACTIVE_RESERVATION_TIMEOUT: Duration = Duration::from_secs(120);
         let mut known_head = None;
         let mut active_reservation: Option<(CompactTicket, Instant)> = None;
-        let mut event_and_content: Option<(SignedEvent, EventContentRaw)> = None;
+        let mut event_and_content: Option<(SignedEvent, crate::encoded_payload::EncodedPayload)> =
+            None;
 
         'try_connect_to_active: loop {
             let published_id_data = self.check_published_id_state().await;
@@ -1077,13 +1123,15 @@ impl Client {
 
                     if event_and_content.is_none() {
                         event_and_content = Some({
-                            let (event, content) = Event::builder(&SocialPost::new(
-                                body.clone(),
-                                None,
-                                BTreeSet::new(),
-                            ))
-                            .author(self.id)
-                            .build()?;
+                            let content = crate::encoded_payload::EncodedPayload::encode(
+                                &self.db,
+                                &SocialPost::new(body.clone(), None, BTreeSet::new()),
+                            )?;
+                            let event = Event::builder_raw_content()
+                                .author(self.id)
+                                .kind(content_kind::SocialPost::KIND)
+                                .content(&content.raw)
+                                .build();
 
                             (event.signed_by(id_secret), content)
                         });
@@ -1091,7 +1139,10 @@ impl Client {
 
                     let (signed_event, raw_content) =
                         event_and_content.as_ref().expect("Must be set by now");
-                    match conn.feed_event(*signed_event, raw_content.clone()).await {
+                    match conn
+                        .feed_event(*signed_event, raw_content.raw.clone())
+                        .await
+                    {
                         Ok(_) => {
                             debug!(target: LOG_TARGET, "Published");
                             return Ok(());

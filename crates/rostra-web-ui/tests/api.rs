@@ -3,6 +3,42 @@ mod common;
 use common::TestServer;
 use rostra_core::id::RostraIdSecretKey;
 
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn raw_signed_publish_bounds_body_before_envelope_validation() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let (id, _) = generate_identity(&driver).await;
+    let response = driver
+        .api_post_json(
+            &format!("/api/{id}/publish"),
+            None,
+            &serde_json::json!({ "content": "0".repeat(2 * 1024 * 1024) }),
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        413,
+        "body limit must precede missing/invalid envelope parsing"
+    );
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn malformed_raw_publish_does_not_load_arbitrary_identity() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let id = RostraIdSecretKey::generate().id();
+    assert!(!server.is_client_loaded(id).await);
+    let response = driver
+        .api_post_json(
+            &format!("/api/{id}/publish"),
+            None,
+            &serde_json::json!({ "content": "deadbeef" }),
+        )
+        .await;
+    assert_eq!(response.status(), 422);
+    assert!(!server.is_client_loaded(id).await);
+}
+
 /// Helper: generate an identity via the API and return (rostra_id, secret).
 async fn generate_identity(driver: &common::UiDriver) -> (String, String) {
     let resp = driver.api_get("/api/generate-id").await;

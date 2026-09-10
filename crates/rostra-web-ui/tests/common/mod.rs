@@ -17,6 +17,11 @@ pub struct TestServer {
 }
 
 impl TestServer {
+    /// Inspect loaded clients without creating/opening an identity database.
+    pub async fn is_client_loaded(&self, id: RostraId) -> bool {
+        self.clients.get(id).await.is_some()
+    }
+
     pub async fn start() -> Self {
         Self::start_on(SocketAddr::from(([127, 0, 0, 1], 0)), None, None).await
     }

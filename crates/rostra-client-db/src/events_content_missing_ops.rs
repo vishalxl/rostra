@@ -20,6 +20,48 @@ pub struct NextMissingContent {
 }
 
 impl Database {
+    /// Postpone a capacity-paused fetch without recording a peer attempt.
+    ///
+    /// The observed schedule is a compare-and-set token. A strictly later
+    /// schedule prevents a deferred front item from starving other authors or
+    /// spinning on capacity notifications; terminal/stale completions do
+    /// nothing.
+    pub async fn defer_content_fetch(
+        &self,
+        event_id: ShortEventId,
+        observed: Timestamp,
+        retry_at: Timestamp,
+    ) -> crate::DbResult<()> {
+        self.write_with(|tx| {
+            let mut states = tx.open_table(&events_content_state::TABLE)?;
+            let state = states.get(&event_id)?.map(|r| r.value());
+            let Some(EventContentState::Missing {
+                fetch_attempt_count,
+                last_fetch_attempt,
+                next_fetch_attempt,
+            }) = state
+            else {
+                return Ok(());
+            };
+            if next_fetch_attempt != observed || retry_at <= observed {
+                return Ok(());
+            }
+            let mut schedule = tx.open_table(&tables::events_content_missing::TABLE)?;
+            schedule.remove(&(observed, event_id))?;
+            schedule.insert(&(retry_at, event_id), &())?;
+            states.insert(
+                &event_id,
+                &EventContentState::Missing {
+                    fetch_attempt_count,
+                    last_fetch_attempt,
+                    next_fetch_attempt: retry_at,
+                },
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Check if an event's content is in the missing state.
     pub async fn is_event_content_missing(&self, event_id: ShortEventId) -> bool {
         self.read_with(|tx| {

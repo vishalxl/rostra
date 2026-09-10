@@ -58,16 +58,9 @@ pub(crate) async fn get_event_content_from_followers(
         event
     };
 
-    let Some(content) = connections_cache
-        .get_event_content_from_peers(networking, &peers, event)
+    connections_cache
+        .fetch_event_content_from_peers(networking, &peers, event, db)
         .await
-    else {
-        return Ok(false);
-    };
-
-    db.try_process_event_content(&content).await?;
-
-    Ok(true)
 }
 
 /// Downloads events from a child event, traversing backward toward older
@@ -175,11 +168,10 @@ pub(crate) async fn download_events_from_child(
                 );
 
                 content_fetch_attempts += 1;
-                if let Some(content) = connections
-                    .get_event_content_from_peers(networking, peers, event)
-                    .await
+                if connections
+                    .fetch_event_content_from_peers(networking, peers, event, storage)
+                    .await?
                 {
-                    storage.try_process_event_content(&content).await?;
                     new_contents += 1;
                 }
             }

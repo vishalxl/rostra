@@ -201,7 +201,7 @@ transactional counterpart is available for the later pressure operation and
 requires matching promoted reverse ownership and both forward mappings.
 Neither API authorizes pruning or converts selection into a quota request.
 
-## Shared admission foundation (phase 3a)
+## Shared admission and acquisition integration
 
 `PayloadAdmissionConfig` validates explicit nonzero logical database/common-author
 caps, optional full-`RostraId` author overrides, and independent in-flight
@@ -225,14 +225,19 @@ own transaction. Temporary author/global pressure is not yet ranked against the
 victim boundary and never produces a permanent quota rejection.
 
 Each lease can acquire distinct `PayloadBuffer` guards, one per payload-sized
-allocation/peer attempt. Four racing downloads charge four buffers but one
+allocation. Four racing downloads plus their Vec-to-Arc conversions can charge
+eight buffers but one
 logical event. Both logical acquisitions and buffers have independent count
 ceilings; buffers additionally have an aggregate byte ceiling. The guard API
 reserves capacity, not memory: callers must acquire before allocation and hold it
 through ingestion until those bytes are released. It does not measure allocator
 overhead, transport/BAO working memory, envelopes, retained notification/caller
 clones after acquisition completes, or DB file growth. It cannot retroactively bound already-allocated inputs to existing
-APIs.
+APIs. Provisional `PayloadAllocation` guards share this buffer ledger before a
+verified envelope exists. They grow before local serialization output allocation
+and can bind to a logical reservation without releasing/reacquiring a buffer slot.
+Failed binding retains its original charge; successful binding preserves the full
+allocation capacity, including any excess over signed length.
 
 Dropping the acquisition cancels it unless a buffer still owns its lifetime.
 Committed Processed/terminal transitions release the logical charge through the
@@ -258,41 +263,71 @@ a clear storage-capacity refusal, not a database corruption or peer failure.
 copying hash-store bytes, then uses the same materialization gate. A deferred
 shared-hash event gains its otherwise omitted Missing queue row, without scanning
 historical events. Envelope ingestion under configured admission also ensures
-that row exists. No client invokes the new reuse API yet; production scheduling
-is unchanged. Logical usage charges both materialized events even if their bytes
+that row exists. Client acquisition invokes reuse before networking, including when
+admission is disabled. Logical usage charges both materialized events even if their bytes
 share one stored hash.
 
-### Acquisition-path audit and next caller obligations
+### Acquisition-path audit
 
-| Path | Database boundary already covered | Still required before activation |
+| Path | Logical boundary | Pre-read/capacity owner |
 | --- | --- | --- |
-| Missing retries / ancestor synchronization | `util::rpc::download_events_from_child` ultimately uses guarded DB ingestion | Pre-read reservation, shared-store reuse first, typed pause propagation instead of retry failure |
-| Explicit direct fetch | `get_event_content_from_followers` uses guarded DB ingestion | Same pre-read reservation and terminal checks |
-| Pushed `FEED_EVENT` | `Client::store_event_with_content` uses guarded DB ingestion | Reserve before success response and BAO payload read; return existing suitable refusal semantics |
-| Local publication / head merger | `try_process_event_with_content` is guarded; empty events need no payload room | Pre-allocation budgeting where possible and storage-full error mapping; never override caps |
-| Raw signed web API (`routes/api.rs`) | Its direct `try_process_event_with_content` call is guarded | Bound request-body allocation before JSON/content verification, then transfer ownership to verified-event admission |
-| Hash-store reuse | New single-event reuse API uses the same gate | Call before fetching and pause without re-fetching the existing shared bytes |
+| Missing retries / ancestor synchronization | `util::rpc::download_events_from_child` uses guarded cache ingestion | Shared-store/terminal check before logical reservation; two guards per racing peer cover read and conversion; winner owned through ingestion |
+| Explicit direct fetch | `get_event_content_from_followers` uses the same cache owner | Same reuse, terminal, reservation and per-attempt contract |
+| Pushed `FEED_EVENT` | Owned guarded ingestion | Reserve read and conversion before success/BAO read; terminal/reused payloads return AlreadyHave, temporary pressure uses existing DoesNotNeed response |
+| Local publication / head merger | Guarded DB ingestion; empty merges need no payload room | Provisional CBOR writer charges before growth, separate conversion capacity, then binds surviving bytes to reservation; clear storage-capacity error |
+| Omni remote publication | Outgoing content does not materialize in this DB | Same bounded serializer retains provisional capacity through outbound attempts; no extra payload-sized allocation for Arc clones |
+| Raw signed web API (`routes/api.rs`) | Guarded owned ingestion after verification; disabled atomic ingestion preserved | Fixed 2-MiB HTTP body limit regardless of Content-Length; an already-loaded client's ledger supplies five conservative 2-MiB provisional slots for body, strings/scratch and Vec/Arc overlap before parse; one survives until ingestion |
+| Hash-store reuse | Single-event reuse API uses the same gate | Capacity for owned copy and conversion before copying; pause without refetching shared bytes |
 | Public direct DB ingestion | All three fallible ingestion variants and panic wrappers converge on the gate | External holders of already-allocated bytes own that memory; use the explicit pre-read guard API for controlled acquisition |
-| Direct P2P connection/cache APIs | Any later DB materialization is guarded | Do not expose production acquisition through an unmetered `Connection::get_event_content`; cache currently races four peers |
+| Direct P2P connection/cache APIs | Cache owns database acquisition/ingestion | Removed unguarded convenience read; `get_event_content_with_guard` retains caller-owned guard through transport without reversing DB→P2P dependency |
 
-Before adding runtime activation, all client acquisition owners must adopt the
-buffer/typed-result contract. The raw signed HTTP request allocates its body before
-it has a verified envelope: its pre-parse capacity must be bounded separately (or
-with a provisional buffer lease), not falsely claimed as covered by the current
-verified-envelope guard. Existing APIs' inline guards protect committed logical
-growth only; they do not prove pre-read memory bounds.
+This is still a **non-activatable checkpoint**. Low-level P2P callers and direct DB
+callers that already own bytes remain responsible for their allocation policy.
+A dummy transport guard is not a supported client acquisition path. HTTP's
+conservative five-slot reservation can reject an otherwise small request under
+tight limits; a two-slot read/conversion can likewise pause when only one slot
+remains. Neither path bypasses limits to complete a conversion. Transport scratch,
+allocator overhead, post-acquisition notification/caller clones and database file
+growth remain outside this declared acquisition-capacity accounting.
+Unverified raw publish paths must not create/open/compact databases: unloaded
+accounts are loaded only after JSON, author, signature and content verification.
+They have no configured admission ledger in this checkpoint. Runtime configuration
+must supply their pre-parse policy without loading a database (including concurrent
+lazy-load/configuration races) before activation; the existing per-request HTTP
+body limit alone is not an aggregate capacity bound for these requests.
 
-A Deferred queue-front item must not be retried in a tight loop or converted to a
-peer backoff failure. Register wakeups before checking work, recheck after a wake,
-and use bounded retry/config/grace wakeups to tolerate lost or self-generated
-signals. The later worker must supply ranking-aware temporary versus permanent
+The payload race schedules at most four attempts. A peer is consumed only after
+its read/conversion capacity is acquired; tight budgets wait for active reads and
+then try the same pending peer. They must not repeatedly skip a later available
+holder merely because an earlier unavailable holder owns the buffer slots.
+Each cache connect/read attempt has the existing 30-second peer-operation deadline,
+so a hanging first holder cannot retain tight-capacity slots indefinitely.
+Configured raw HTTP body parsing also has a 30-second deadline before releasing
+provisional capacity; unconfigured parsing retains ordinary disabled behavior.
+FEED senders count AlreadyHave as acknowledged delivery, avoiding repeated
+broadcasts after a peer accepted an earlier attempt. DoesNotNeed remains retryable
+because it can mean temporary capacity pressure rather than permanent refusal.
+
+Temporary pauses propagate as `DbError::PayloadAdmissionPaused`, not peer
+failure or permanent pruning. Missing retries postpone their observed schedule
+by 30 seconds with a compare-and-set, preserving attempt count/last-attempt time.
+A 100-ms minimum pause bounds self-wakes and non-forward/saturated clocks; later
+authors can proceed. Missing notifications register before peeking, with bounded
+empty-queue recovery polling. Ancestor/head sync leaves durable Missing retries
+instead of stopping its worker on temporary pressure.
+
+The later worker must supply ranking-aware temporary versus permanent
 admission, generation/pressure/reducer atomicity, distinct readiness dimensions,
-trusted-clock recovery, hysteresis, dry-run modeling and bounded yielding batches.
-No production clock can be inferred from these APIs or test timestamps.
+pressure policy, hysteresis, dry-run modeling and bounded yielding batches.
+The user-approved runtime clock assumption is to **trust the system clock**,
+including startup: no acknowledgement workflow or omission of otherwise known
+origins is required. Existing future/grace checks and protection for unknown legacy
+origins remain. This checkpoint does not implement or activate that worker.
 
 ## Next checkpoint
 
-Only after those foundations may phase 3b add complete client/worker integration.
+The next checkpoint adds runtime configuration and worker integration, including
+the unloaded-account HTTP policy boundary above, before any activation path.
 Logical quota release may reclaim no physical bytes when another reference
 survives. Headers and index overhead remain outside logical payload accounting.
 

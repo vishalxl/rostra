@@ -295,6 +295,8 @@ async fn hanging_follower_does_not_block_later_follower_and_head_retries() {
         .await
         .expect("the retry completes its typed FEED exchange")
         .expect("successful feed completion");
+    // The responsive follower retained the first delivery and now returns
+    // AlreadyHave. That acknowledgement must not keep the head in retry.
     assert!(
         !matches!(
             tokio::time::timeout(Duration::from_millis(300), attempts_rx.recv()).await,

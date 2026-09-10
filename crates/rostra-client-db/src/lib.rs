@@ -15,6 +15,7 @@ mod payload_admission;
 mod payload_admission_config;
 #[cfg(test)]
 mod payload_admission_tests;
+mod payload_allocation;
 mod payload_reservation;
 mod process_event_content_ops;
 mod process_event_ops;
@@ -67,6 +68,7 @@ pub use self::extension::{
 pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, PayloadUsage};
 pub use self::payload_admission::{PayloadIngestOutcome, PayloadReservationOutcome};
 pub use self::payload_admission_config::{PayloadAdmissionConfig, PayloadAdmissionLimits};
+pub use self::payload_allocation::PayloadAllocation;
 pub use self::payload_reservation::{
     PayloadAdmissionPause, PayloadAdmissionUsage, PayloadBuffer, PayloadReservation,
 };

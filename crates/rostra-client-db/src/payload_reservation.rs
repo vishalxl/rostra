@@ -9,7 +9,7 @@ use crate::PayloadAdmissionConfig;
 
 /// A temporary admission refusal, never a peer failure or durable prune
 /// decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, snafu::Snafu)]
 pub enum PayloadAdmissionPause {
     /// Exact logical accounting is still rebuilding.
     AccountingNotReady,
@@ -128,6 +128,8 @@ impl Drop for ReservationOwner {
 pub struct PayloadBuffer {
     /// Keeps the logical owner alive during the network read and ingestion.
     pub(crate) owner: Arc<ReservationOwner>,
+    /// Actual reserved capacity, possibly larger than the signed length.
+    pub(crate) bytes: u64,
 }
 
 impl PayloadReservation {
@@ -158,6 +160,7 @@ impl PayloadReservation {
         state.buffer_bytes = bytes;
         Ok(PayloadBuffer {
             owner: owner.clone(),
+            bytes: owner.bytes,
         })
     }
 }
@@ -166,7 +169,7 @@ impl Drop for PayloadBuffer {
     fn drop(&mut self) {
         let mut state = self.owner.ledger.state.lock().unwrap();
         state.buffers -= 1;
-        state.buffer_bytes -= self.owner.bytes;
+        state.buffer_bytes -= self.bytes;
         drop(state);
         self.owner.ledger.changed.notify_waiters();
     }

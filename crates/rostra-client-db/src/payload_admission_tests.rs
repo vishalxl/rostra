@@ -68,6 +68,177 @@ fn reserved(outcome: PayloadReservationOutcome) -> PayloadReservation {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn admission_provisional_growth_transfer_and_late_release() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    assert!(db.reserve_payload_allocation(u64::MAX)?.is_none());
+    ready(&db).await?;
+    let event = content(RostraIdSecretKey::generate(), 1, "provisional");
+    let n = u64::from(event.content_len());
+    configure(&db, config(n, n, 2, 3 * n)).await?;
+    let mut allocation = db.reserve_payload_allocation(0)?.unwrap();
+    allocation.try_grow(2 * n)?;
+    assert_eq!(
+        allocation.try_grow(4 * n),
+        Err(PayloadAdmissionPause::InFlightBytes)
+    );
+    assert_eq!(db.payload_admission_usage().buffer_bytes, 2 * n);
+    let conversion = db.reserve_payload_allocation(n)?.unwrap();
+    assert!(matches!(
+        db.reserve_payload_allocation(0),
+        Err(PayloadAdmissionPause::InFlightCount)
+    ));
+    drop(conversion);
+    let reservation = reserved(db.reserve_payload(&event.event).await?);
+    let buffer = allocation.bind_to_reservation(&reservation)?;
+    assert_eq!(
+        allocation.try_grow(0),
+        Err(PayloadAdmissionPause::ReservationExpired)
+    );
+    assert!(matches!(
+        allocation.bind_to_reservation(&reservation),
+        Err(PayloadAdmissionPause::ReservationExpired)
+    ));
+    drop(allocation);
+    assert_eq!(db.payload_admission_usage().buffers, 1);
+    assert_eq!(db.payload_admission_usage().buffer_bytes, 2 * n);
+    assert_eq!(
+        db.try_process_admitted_event_content(&event, Some(&buffer))
+            .await?,
+        PayloadIngestOutcome::Processed
+    );
+    assert_eq!(db.payload_admission_usage().acquisitions, 0);
+    assert_eq!(db.payload_admission_usage().buffer_bytes, 2 * n);
+    drop(buffer);
+    assert_eq!(db.payload_admission_usage().buffer_bytes, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_provisional_bad_binding_keeps_capacity_owned() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let other = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    ready(&db).await?;
+    ready(&other).await?;
+    let author = RostraIdSecretKey::generate();
+    let event = content(author, 1, "binding");
+    let n = u64::from(event.content_len());
+    configure(&db, config(n, n, 2, n)).await?;
+    configure(&other, config(n, n, 2, n)).await?;
+    let reservation = reserved(db.reserve_payload(&event.event).await?);
+    let mut foreign = other.reserve_payload_allocation(n)?.unwrap();
+    assert!(matches!(
+        foreign.bind_to_reservation(&reservation),
+        Err(PayloadAdmissionPause::ReservationExpired)
+    ));
+    assert_eq!(other.payload_admission_usage().buffer_bytes, n);
+    let mut short = db.reserve_payload_allocation(n - 1)?.unwrap();
+    assert!(matches!(
+        short.bind_to_reservation(&reservation),
+        Err(PayloadAdmissionPause::ReservationExpired)
+    ));
+    assert_eq!(db.payload_admission_usage().buffer_bytes, n - 1);
+    short.try_grow(n)?;
+    let deletion = Event::builder_raw_content()
+        .author(author.id())
+        .kind(EventKind::NULL)
+        .delete(event.event_id().to_short())
+        .build();
+    db.try_process_event(&VerifiedEvent::verify_signed(
+        author.id(),
+        deletion.signed_by(author),
+    )?)
+    .await?;
+    assert!(matches!(
+        short.bind_to_reservation(&reservation),
+        Err(PayloadAdmissionPause::ReservationExpired)
+    ));
+    assert_eq!(db.payload_admission_usage().buffer_bytes, n);
+    drop(short);
+    drop(foreign);
+    assert_eq!(db.payload_admission_usage().buffers, 0);
+    assert_eq!(other.payload_admission_usage().buffers, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_acquisition_reuses_store_and_stops_terminal_fetches() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let author = RostraIdSecretKey::generate();
+    let first = content(author, 1, "same bytes");
+    let second = content(author, 2, "same bytes");
+    db.try_process_event_with_content(&first).await?;
+    assert!(matches!(
+        db.prepare_payload_acquisition(&second.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    assert!(
+        !db.is_event_content_missing(second.event_id().to_short())
+            .await
+    );
+    ready(&db).await?;
+    let n = u64::from(first.content_len());
+    configure(&db, config(4 * n, 4 * n, 2, 2 * n)).await?;
+    let third = content(author, 3, "same bytes");
+    let occupied = db.reserve_payload_allocation(n)?.unwrap();
+    assert!(matches!(
+        db.prepare_payload_acquisition(&third.event).await?,
+        PayloadReservationOutcome::Deferred(PayloadAdmissionPause::InFlightCount)
+    ));
+    let missing = db.peek_next_missing_content().await.unwrap();
+    assert_eq!(missing.event_id, third.event_id().to_short());
+    assert_eq!(missing.fetch_attempt_count, 0);
+    drop(occupied);
+    assert!(matches!(
+        db.prepare_payload_acquisition(&third.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    assert!(db.peek_next_missing_content().await.is_none());
+    assert_eq!(db.payload_admission_usage().buffers, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_deferred_retry_does_not_count_peer_failure_or_starve_front() -> anyhow::Result<()>
+{
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let a = content(RostraIdSecretKey::generate(), 1, "one");
+    let b = content(RostraIdSecretKey::generate(), 1, "two");
+    db.try_process_event(&a.event).await?;
+    db.try_process_event(&b.event).await?;
+    let first = db.peek_next_missing_content().await.unwrap();
+    let later = first.scheduled_time.saturating_add_secs(30);
+    db.defer_content_fetch(first.event_id, first.scheduled_time, later)
+        .await?;
+    let next = db.peek_next_missing_content().await.unwrap();
+    assert_ne!(first.event_id, next.event_id);
+    assert_eq!(next.fetch_attempt_count, 0);
+    db.defer_content_fetch(
+        first.event_id,
+        first.scheduled_time,
+        later.saturating_add_secs(30),
+    )
+    .await?;
+    let crate::EventContentState::Missing {
+        fetch_attempt_count,
+        last_fetch_attempt,
+        next_fetch_attempt,
+    } = db.get_event_content_state(first.event_id).await.unwrap()
+    else {
+        panic!("Temporary pressure must keep Missing");
+    };
+    assert_eq!(fetch_attempt_count, 0);
+    assert_eq!(last_fetch_attempt, None);
+    assert_eq!(next_fetch_attempt, later);
+    for event in [&a, &b] {
+        db.try_process_event_with_content(event).await?;
+    }
+    db.defer_content_fetch(first.event_id, later, later.saturating_add_secs(30))
+        .await?;
+    assert!(db.peek_next_missing_content().await.is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn admission_disabled_and_explicit_config_validation() -> anyhow::Result<()> {
     let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
     let event = content(RostraIdSecretKey::generate(), 1, "disabled");

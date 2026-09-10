@@ -255,6 +255,10 @@ impl WotHeadSync {
             .await
             {
                 Ok(Ok(downloaded)) => downloaded,
+                Ok(Err(rostra_client_db::DbError::PayloadAdmissionPaused { .. })) => {
+                    // Missing scheduling owns the retry, not peer failure/backoff.
+                    continue;
+                }
                 Ok(Err(err)) => {
                     error!(
                         target: LOG_TARGET,

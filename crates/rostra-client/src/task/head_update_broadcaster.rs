@@ -8,6 +8,8 @@ use rostra_client_db::{
 use rostra_core::ShortEventId;
 use rostra_core::event::{EventContentRaw, EventExt as _, SignedEvent, VerifiedEventContent};
 use rostra_core::id::{RostraId, ToShort as _};
+use rostra_p2p::RpcError;
+use rostra_p2p::connection::FeedEventResponse;
 use rostra_util_error::{FmtCompact, WhateverResult};
 use snafu::ResultExt as _;
 use tokio::sync::broadcast;
@@ -312,11 +314,14 @@ impl HeadUpdateBroadcaster {
             .await
             .whatever_context("Couldn't connect")?;
 
-        conn.feed_event(*signed_event, event_content.clone())
-            .await
-            .whatever_context("Failed broadcasting head event")?;
-
-        Ok(())
+        match conn.feed_event(*signed_event, event_content.clone()).await {
+            Ok(_)
+            | Err(RpcError::Failed {
+                return_code: FeedEventResponse::RETURN_CODE_ALREADY_HAVE,
+            }) => Ok(()),
+            // DoesNotNeed can mean temporary payload capacity pressure.
+            Err(err) => Err(err).whatever_context("Failed broadcasting head event"),
+        }
     }
 }
 

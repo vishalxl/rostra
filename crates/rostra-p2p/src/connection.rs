@@ -536,10 +536,19 @@ impl Connection {
         Ok(Some(event))
     }
 
-    pub async fn get_event_content(
+    /// Read a payload while retaining caller-owned pre-read buffer capacity.
+    ///
+    /// The transport cannot know a storing account's budget. Client
+    /// integrations must supply their acquisition guard (one per concurrent
+    /// attempt), and retain the returned guard through ingestion and
+    /// release of the bytes. Low-level callers own their allocation policy;
+    /// `()` is not a client admission bypass. This API does not reserve
+    /// capacity itself.
+    pub async fn get_event_content_with_guard<G: Send>(
         &self,
         event: VerifiedEvent,
-    ) -> RpcResult<Option<VerifiedEventContent>> {
+        guard: G,
+    ) -> RpcResult<Option<(VerifiedEventContent, G)>> {
         let (_resp, content) = self
             .make_rpc_with_extra_data_recv(
                 &GetEventContentRequest(event.event_id.to_short()),
@@ -567,7 +576,7 @@ impl Connection {
             VerifiedEventContent::verify(event, content)
                 .expect("Bao transfer should guarantee correct content was received")
         });
-        Ok(verified_content)
+        Ok(verified_content.map(|content| (content, guard)))
     }
 
     pub async fn feed_event(

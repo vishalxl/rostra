@@ -65,11 +65,21 @@ impl MissingEventContentFetcher {
             let Ok(db) = self.client.db() else {
                 break;
             };
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let capacity_changed = db.payload_admission_changed();
+            tokio::pin!(capacity_changed);
+            capacity_changed.as_mut().enable();
 
             let Some(next) = db.peek_next_missing_content().await else {
                 // No missing content. Wait for notification.
                 trace!(target: LOG_TARGET, "No missing content, waiting for notification");
-                notify.notified().await;
+                tokio::select! {
+                    () = &mut notified => {},
+                    () = &mut capacity_changed => {},
+                    () = tokio::time::sleep(Duration::from_secs(30)) => {},
+                }
                 continue;
             };
 
@@ -85,7 +95,8 @@ impl MissingEventContentFetcher {
                 );
                 tokio::select! {
                     () = tokio::time::sleep(Duration::from_secs(wait_secs)) => {},
-                    () = notify.notified() => {},
+                    () = &mut notified => {},
+                    () = &mut capacity_changed => {},
                 }
                 continue;
             }
@@ -122,6 +133,30 @@ impl MissingEventContentFetcher {
                         "Could not fetch missing content from any peer"
                     );
                     false
+                }
+                Err(rostra_client_db::DbError::PayloadAdmissionPaused { reason }) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        %event_id,
+                        ?reason,
+                        "Payload acquisition paused; no peer failure recorded"
+                    );
+                    if let Err(err) = db
+                        .defer_content_fetch(
+                            event_id,
+                            next.scheduled_time,
+                            Timestamp::now()
+                                .max(next.scheduled_time)
+                                .saturating_add_secs(30),
+                        )
+                        .await
+                    {
+                        error!(target: LOG_TARGET, %err, "Failed to defer payload acquisition");
+                        return;
+                    }
+                    // Bound even rollback/saturated schedules and self-generated wakes.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
                 }
                 Err(err) => {
                     error!(

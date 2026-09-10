@@ -71,6 +71,15 @@ or missing-content retry state. The runtime does not globally restart stopped
 tasks; reopening or otherwise recovering the client remains an operational
 decision.
 
+Temporary payload-capacity pauses are not such failures. Acquisition retains
+Missing work, avoids peer backoff, and schedules a bounded later retry so a paused
+queue-front event cannot starve other authors. The connection cache owns shared-store
+reuse and per-attempt buffer admission; transport APIs retain caller-owned guards
+without depending on the database crate. Local publication returns a clear storage
+capacity error, while pushed payloads can receive the existing refusal response
+before sending bytes. Production admission remains disabled without a setter;
+caller integration alone does not authorize runtime pruning.
+
 Head handling depends on the operation. Local publication and retained state
 use the minimum event ID as a deterministic representative. Incremental
 broadcasts carry the exact newly accepted head. The broadcaster initially

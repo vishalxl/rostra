@@ -259,9 +259,16 @@ Concurrent copies of one payload each consume buffer capacity, but reserve its
 logical event charge only once. Committed materialization or terminal lifecycle
 changes release the logical reservation. They do not release buffers still owned
 by a network operation. Cancellation releases reservations through their owners;
-transaction rollback cannot publish a terminal release. These primitives do not
-yet bound client network reads: callers must acquire buffers before reading, and
-preserve their guards until the acquired bytes are released.
+transaction rollback cannot publish a terminal release. Client acquisition checks
+terminal state and tries shared-store reuse before fetching. Each racing read and
+its temporary Vec-to-Arc conversion has separate pre-allocation capacity; the
+winning buffer remains owned through ingestion. Local serialization and raw signed
+HTTP parsing for already-loaded accounts use provisional capacity before a verified
+envelope exists, then bind the surviving allocation to its logical reservation.
+Unloaded HTTP accounts retain the ordinary per-request body limit and are loaded
+only after validation; runtime activation must supply their pre-parse policy
+without creating databases from unverified paths. This bounds declared
+acquisition capacities, not whole-process memory or physical disk.
 
 Content bytes are keyed by hash and may satisfy multiple events, but each
 event's content-derived effects are processed independently. Reference counts
@@ -299,6 +306,9 @@ Missing payloads are ordered by their next fetch time. New work is eligible
 immediately and wakes the client fetcher after commit. Failed attempts update
 attempt metadata and a later retry time; retry policy is chosen by the client,
 while the database owns the schedule and state transition.
+Temporary admission pressure instead postpones the observed schedule without
+changing attempt count or last-attempt time. A strictly later compare-and-set
+update lets other authors proceed and avoids deferred-front busy loops.
 
 In canonical state, each event has at most one fetch-queue row. A current row
 exists only for a Missing event, and its timestamp equals that state's

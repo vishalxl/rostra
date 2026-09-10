@@ -22,7 +22,7 @@ use rostra_p2p::util::ToShort as _;
 use rostra_util_error::{BoxedError, FmtCompact as _};
 use snafu::{Location, OptionExt as _, ResultExt as _, Snafu};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
-use tracing::{debug, error, info, instrument, trace};
+use tracing::{debug, info, instrument, trace};
 
 use crate::client::{Client, ClientRefSnafu};
 use crate::error::StoreEventError;
@@ -393,7 +393,7 @@ impl RequestHandler {
         let event = VerifiedEvent::verify_received_as_is(event)
             .boxed()
             .context(InvalidRequestSnafu)?;
-        {
+        let reservation = {
             let client = self.client.app_ref_opt().context(ExitingSnafu)?;
 
             if client.event_size_limit() < event.content_len() {
@@ -407,16 +407,63 @@ impl RequestHandler {
                 return Ok(());
             }
 
-            if client.does_have_event(event.event_id).await {
+            match client.db().prepare_payload_acquisition(&event).await? {
+                rostra_client_db::PayloadReservationOutcome::Disabled => None,
+                rostra_client_db::PayloadReservationOutcome::Reserved(reservation) => {
+                    Some(reservation)
+                }
+                rostra_client_db::PayloadReservationOutcome::Unneeded => {
+                    Connection::write_return_code(
+                        &mut send,
+                        FeedEventResponse::RETURN_CODE_ALREADY_HAVE,
+                    )
+                    .await
+                    .context(RpcSnafu)?;
+                    return Ok(());
+                }
+                rostra_client_db::PayloadReservationOutcome::Deferred(_) => {
+                    Connection::write_return_code(
+                        &mut send,
+                        FeedEventResponse::RETURN_CODE_DOES_NOT_NEED,
+                    )
+                    .await
+                    .context(RpcSnafu)?;
+                    return Ok(());
+                }
+            }
+        };
+        let buffer = match reservation
+            .as_ref()
+            .map(|r| r.try_acquire_buffer())
+            .transpose()
+        {
+            Ok(buffer) => buffer,
+            Err(_) => {
                 Connection::write_return_code(
                     &mut send,
-                    FeedEventResponse::RETURN_CODE_ALREADY_HAVE,
+                    FeedEventResponse::RETURN_CODE_DOES_NOT_NEED,
                 )
                 .await
                 .context(RpcSnafu)?;
                 return Ok(());
             }
-        }
+        };
+        let conversion = match reservation
+            .as_ref()
+            .map(|r| r.try_acquire_buffer())
+            .transpose()
+        {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                Connection::write_return_code(
+                    &mut send,
+                    FeedEventResponse::RETURN_CODE_DOES_NOT_NEED,
+                )
+                .await
+                .context(RpcSnafu)?;
+                return Ok(());
+            }
+        };
         Connection::write_success_return_code(&mut send)
             .await
             .context(RpcSnafu)?;
@@ -429,6 +476,7 @@ impl RequestHandler {
                 .await
                 .context(RpcSnafu)?,
         );
+        drop(conversion);
 
         {
             let client = self.client.app_ref_opt().context(ExitingSnafu)?;
@@ -436,19 +484,12 @@ impl RequestHandler {
                 .boxed()
                 .context(InvalidRequestSnafu)?;
 
-            if let Err(err) = client
-                .store_event_with_content(event.event_id, &verified_content)
-                .await
-            {
-                error!(
-                    target: LOG_TARGET,
-                    author_id = %verified_content.author(),
-                    event_id = %verified_content.event_id(),
-                    err = %err,
-                    "Failed to store event received through FEED_EVENT"
-                );
-                return Err(err.into());
+            crate::acquired_payload::AcquiredPayload {
+                content: verified_content,
+                buffer,
             }
+            .ingest(client.db())
+            .await?;
         }
 
         Connection::write_success_return_code(&mut send)

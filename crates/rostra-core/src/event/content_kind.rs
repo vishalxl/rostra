@@ -45,6 +45,20 @@ pub trait EventContentKind: ::serde::Serialize + ::serde::de::DeserializeOwned {
         Ok(EventContentRaw::new(buf))
     }
 
+    /// Serialize into a caller-owned writer, allowing pre-allocation budgeting.
+    ///
+    /// The caller controls output capacity and can refuse a write before bytes
+    /// are allocated. Validation is identical to ordinary CBOR serialization.
+    fn serialize_cbor_to_writer<W: std::io::Write>(
+        &self,
+        writer: W,
+    ) -> ContentValidationResult<()> {
+        self.validate()?;
+        cbor4ii::serde::to_writer(writer, self).map_err(|err| ContentValidationError {
+            public_message: format!("CBOR encoding failed: {err}"),
+        })
+    }
+
     fn singleton_key_aux(&self) -> Option<EventAuxKey> {
         None
     }

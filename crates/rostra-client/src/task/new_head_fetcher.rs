@@ -385,6 +385,13 @@ impl NewHeadFetcher {
                 )
                 .await
                 {
+                    if matches!(
+                        err,
+                        rostra_client_db::DbError::PayloadAdmissionPaused { .. }
+                    ) {
+                        // Header ingestion retained durable Missing work for retry.
+                        continue;
+                    }
                     error!(
                         target: LOG_TARGET,
                         worker_id,

@@ -14,8 +14,9 @@ indexes now store full policy/holder generations, bound rebuild and grace work,
 and expose advisory author/global selection. Pressure, runtime clock trust and
 transactional worker integration remain separate requirements.
 The database also has a production-disabled shared admission foundation with
-explicit logical ceilings and separate acquisition-buffer leases; callers are
-not yet integrated, and no production activation API exists.
+explicit logical ceilings and separate acquisition-buffer leases. Client reads,
+shared-store reuse, local serialization and raw signed HTTP parsing now use those
+leases; no production activation API or destructive runtime worker exists.
 
 ## Version 1 arithmetic and encoding
 

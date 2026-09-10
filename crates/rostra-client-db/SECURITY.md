@@ -48,10 +48,12 @@ content kinds (such as follow/profile/vote), unknown kinds, unknown origins,
 nonexpired materialization grace and untrusted clocks.
 Missing admission rejection requires a known, nonfuture header origin but has
 not yet started materialization grace. Clock trust is an explicit caller
-assertion; a runtime worker must supply a concrete policy for unreliable clocks,
-including forward jumps. No automatic destructive worker is enabled.
+assertion; the approved runtime assumption trusts the system wall clock, including
+startup. No special acknowledgement or clock-monitor subsystem is required.
+Unknown legacy origins and existing future/grace checks remain protected.
+No automatic destructive worker is enabled.
 
-The phase-3a shared admission boundary remains production-disabled: its config
+The shared admission boundary remains production-disabled: its config
 is `None`, with no production setter or worker. Adding an activation path is a
 security/reliability revisit trigger, not routine configuration plumbing.
 Configured admission rechecks ready accounting and author/database current usage
@@ -63,14 +65,27 @@ drop. Cancellation drops unfinished ownership; rollback never publishes a
 terminal release.
 
 The buffer limit is declared capacity, not a whole-process memory measurement.
-Existing APIs' already-allocated content, raw HTTP request parsing, transport/
-codec working memory and clones retained after acquisition are outside its
-guarantee. Production activation requires pre-read admission on every acquisition
-path, including provisional/pre-parse HTTP budgeting and guard retention across
-each racing download, ingestion and buffer lifetime. Race, cancellation,
-transaction rollback and late-terminal-delivery coverage must accompany that
-integration. Protecting local/state/unknown content from eviction does not exempt
-it from admission caps.
+Existing APIs' already-allocated external content, transport/codec working memory,
+allocator overhead and clones retained after acquisition remain outside its
+guarantee. Client acquisition now reserves before reads, including a separate
+full-payload Vec-to-Arc conversion charge, and retains the winner through ingestion.
+Raw signed HTTP uses a pinned body limit and conservative simultaneous pre-parse
+charges from an already-loaded client's ledger; local serialization charges output
+growth before allocation. Unverified HTTP paths never create/open a database.
+An unloaded account has no configured ledger here: activation must make its
+pre-parse capacity policy available without DB creation, including lazy-load races.
+The body limit alone does not bound aggregate memory for these disabled requests.
+Low-level
+P2P callers still own their allocation policy; supplying a dummy guard is not a
+supported client admission path. Adding any acquisition path or changing buffer
+representations is a capacity-audit trigger.
+
+Production activation still requires ranking-aware admission, transactional
+pressure/worker integration, bounded hysteresis/readiness work, dry-run modeling,
+and independent review of the complete enabled runtime. Protecting local/state/
+unknown content from eviction does not exempt it from admission caps. Runtime
+clock policy trusts the system wall clock, per the operator decision; unknown
+legacy origins and existing future/grace checks remain conservative.
 
 Admission notifications are lossy: callers must register before checking work,
 then recheck, and also wake for startup, configuration, accounting readiness and

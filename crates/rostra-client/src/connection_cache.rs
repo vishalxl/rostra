@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::stream::{self, StreamExt as _};
 use rostra_core::ShortEventId;
-use rostra_core::event::{VerifiedEvent, VerifiedEventContent};
+use rostra_core::event::VerifiedEvent;
 use rostra_core::id::{RostraId, ToShort as _};
 use rostra_p2p::Connection;
 use tokio::sync::{Mutex, OnceCell};
@@ -157,48 +157,88 @@ impl ConnectionCache {
 
     /// Try to fetch event content from multiple peers with some parallelism.
     ///
-    /// Returns `Some(content)` from the first peer that has it, or `None`.
-    pub async fn get_event_content_from_peers(
+    /// Reuse the shared store first, then reserve each racing read
+    /// independently. Returns true when no further acquisition is needed or
+    /// ingestion succeeded. Capacity refusal is a typed temporary DB error,
+    /// never a peer failure.
+    pub async fn fetch_event_content_from_peers(
         &self,
         networking: &ClientNetworking,
         peers: &[RostraId],
         event: VerifiedEvent,
-    ) -> Option<VerifiedEventContent> {
-        let result = futures_lite::StreamExt::find_map(
-            &mut stream::iter(peers.iter().copied())
-                .map(|peer_id| {
-                    let cache = self.clone();
-                    async move {
-                        let conn = cache.get_or_connect(networking, peer_id).await.ok()?;
-                        match conn.get_event_content(event).await {
-                            Ok(Some(content)) => Some(content),
-                            Ok(None) => {
-                                debug!(
-                                    target: LOG_TARGET,
-                                    peer_id = %peer_id.to_short(),
-                                    event_id = %event.event_id.to_short(),
-                                    "Peer does not have content"
-                                );
-                                None
-                            }
-                            Err(_err) => {
-                                debug!(
-                                    target: LOG_TARGET,
-                                    peer_id = %peer_id.to_short(),
-                                    event_id = %event.event_id.to_short(),
-                                    "Failed to fetch content from peer"
-                                );
-                                None
-                            }
-                        }
-                    }
-                })
-                .buffer_unordered(4),
-            |result| result,
-        )
-        .await;
+        db: &rostra_client_db::Database,
+    ) -> rostra_client_db::DbResult<bool> {
+        use rostra_client_db::{DbError, PayloadReservationOutcome};
 
-        if result.is_none() {
+        let reservation = match db.prepare_payload_acquisition(&event).await? {
+            PayloadReservationOutcome::Disabled => None,
+            PayloadReservationOutcome::Reserved(reservation) => Some(reservation),
+            PayloadReservationOutcome::Unneeded => return Ok(true),
+            PayloadReservationOutcome::Deferred(reason) => {
+                return Err(DbError::PayloadAdmissionPaused { reason });
+            }
+        };
+        let result = crate::payload_read_race::race_payload_reads(
+            peers,
+            || {
+                let reservation = reservation.as_ref();
+                let buffer = reservation.map(|r| r.try_acquire_buffer()).transpose()?;
+                let conversion = reservation.map(|r| r.try_acquire_buffer()).transpose()?;
+                Ok((buffer, conversion))
+            },
+            |peer_id, (buffer, conversion)| {
+                let cache = self.clone();
+                async move {
+                    crate::task::outbound_deadline::within(
+                        crate::task::outbound_deadline::PEER_OPERATION_DEADLINE,
+                        async move {
+                            let conn = cache.get_or_connect(networking, peer_id).await.ok()?;
+                            match conn
+                                .get_event_content_with_guard(event, (buffer, conversion))
+                                .await
+                            {
+                                Ok(Some((content, (buffer, conversion)))) => {
+                                    drop(conversion);
+                                    Some(crate::acquired_payload::AcquiredPayload {
+                                        content,
+                                        buffer,
+                                    })
+                                }
+                                Ok(None) => {
+                                    debug!(
+                                        target: LOG_TARGET,
+                                        peer_id = %peer_id.to_short(),
+                                        event_id = %event.event_id.to_short(),
+                                        "Peer does not have content"
+                                    );
+                                    None
+                                }
+                                Err(_err) => {
+                                    debug!(
+                                        target: LOG_TARGET,
+                                        peer_id = %peer_id.to_short(),
+                                        event_id = %event.event_id.to_short(),
+                                        "Failed to fetch content from peer"
+                                    );
+                                    None
+                                }
+                            }
+                        },
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                }
+            },
+        )
+        .await
+        .map_err(|reason| DbError::PayloadAdmissionPaused { reason })?;
+
+        if let Some(payload) = result {
+            payload.ingest(db).await?;
+            return Ok(true);
+        }
+        {
             debug!(
                 target: LOG_TARGET,
                 event_id = %event.event_id.to_short(),
@@ -206,6 +246,6 @@ impl ConnectionCache {
             );
         }
 
-        result
+        Ok(false)
     }
 }

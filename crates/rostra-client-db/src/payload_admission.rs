@@ -46,6 +46,32 @@ pub enum PayloadIngestOutcome {
 }
 
 impl Database {
+    /// Retain the header, reuse stored bytes first, and reserve before
+    /// fetching.
+    ///
+    /// Terminal and already materialized events never start network
+    /// acquisition, including when admission limits are disabled. A
+    /// temporary pause remains distinct from peer failure and never creates
+    /// a quota decision.
+    pub async fn prepare_payload_acquisition(
+        &self,
+        event: &VerifiedEvent,
+    ) -> DbResult<PayloadReservationOutcome> {
+        self.try_process_event(event).await?;
+        match self
+            .try_materialize_stored_payload(event.event_id.to_short())
+            .await?
+        {
+            PayloadIngestOutcome::Unavailable => self.reserve_payload(event).await,
+            PayloadIngestOutcome::Deferred(reason) => {
+                Ok(PayloadReservationOutcome::Deferred(reason))
+            }
+            PayloadIngestOutcome::Processed
+            | PayloadIngestOutcome::Invalid
+            | PayloadIngestOutcome::Unchanged => Ok(PayloadReservationOutcome::Unneeded),
+        }
+    }
+
     /// Reserve one logical acquisition after retaining its verified envelope.
     ///
     /// No payload is downloaded/allocated and no quota pruning occurs. Ordinary
@@ -316,6 +342,15 @@ impl Database {
                 }
                 Err(err) => return Err(err),
             };
+            // Cow -> owned content currently copies Vec into Arc, temporarily
+            // owning two payload allocations.
+            let conversion = match self.reserve_payload_allocation(u64::from(event.content_len())) {
+                Ok(capacity) => capacity,
+                Err(reason) => {
+                    self.ensure_admission_missing_scheduled_tx(tx, id)?;
+                    return Ok(PayloadIngestOutcome::Deferred(reason));
+                }
+            };
             let content = tx
                 .open_table(&crate::content_store::TABLE)?
                 .get(&event.content_hash())?
@@ -323,6 +358,7 @@ impl Database {
             let Some(content) = content else {
                 return Ok(PayloadIngestOutcome::Unavailable);
             };
+            drop(conversion);
             let verified = VerifiedEventContent::verify(event, content)
                 .map_err(|_| DbError::PayloadAccountingInvariant)?;
             self.process_admitted_content_tx(tx, &verified, Timestamp::now(), buffer.as_ref())
