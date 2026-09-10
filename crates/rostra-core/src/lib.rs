@@ -4,6 +4,7 @@ use std::str::FromStr;
 #[cfg(feature = "bincode")]
 pub mod bincode;
 pub mod event;
+pub mod retention;
 
 #[cfg(feature = "rand")]
 pub mod rand;
