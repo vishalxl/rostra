@@ -1540,6 +1540,7 @@ emoji-picker {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
+  justify-content: space-evenly;
 
   position: sticky;
   top: 0;
@@ -1622,7 +1623,6 @@ emoji-picker {
 .o-mainBarTimeline__feedLink {
   display: inline-flex;
   align-items: center;
-  margin-left: auto;
   padding: 0 0.75rem;
   opacity: 0.5;
   background-image: none;
