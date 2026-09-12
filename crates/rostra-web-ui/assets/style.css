@@ -1560,7 +1560,6 @@ emoji-picker {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  justify-content: space-evenly;
 
   position: sticky;
   top: 0;
@@ -1572,7 +1571,9 @@ emoji-picker {
 
 .o-mainBarTimeline__tabs>* {
   display: inline-flex;
+  flex: 1 1 auto;
   align-items: center;
+  justify-content: center;
   gap: 0.25rem;
   font-weight: 600;
 
