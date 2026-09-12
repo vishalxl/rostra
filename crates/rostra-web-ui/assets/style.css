@@ -1607,6 +1607,11 @@ emoji-picker {
 }
 
 @container (max-width: 48.75rem) {
+  .o-mainBarTimeline__tabs>* {
+    justify-content: center;
+    padding-inline: clamp(0.625rem, 1.5cqw, 0.875rem);
+  }
+
   .o-mainBarTimeline__tabLabel {
     position: absolute;
     width: 1px;
@@ -1618,6 +1623,11 @@ emoji-picker {
     white-space: nowrap;
     border: 0;
   }
+}
+
+.o-mainBarTimeline__newCount:empty,
+.o-mainBarTimeline__pendingNotifications:empty {
+  display: none;
 }
 
 .o-mainBarTimeline__feedLink {
