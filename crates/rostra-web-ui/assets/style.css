@@ -861,8 +861,28 @@ emoji-picker {
   display: none;
 }
 
-.m-postView__content .lazyload-wrapper p {
-  font-style: italic;
+.m-postView__content .lazyload-message {
+  display: flex;
+  align-items: baseline;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.25rem 0.55rem;
+  border-left: 3px solid var(--color-link);
+  border-radius: var(--border-radius-std);
+  color: var(--color-link);
+  background: var(--color-post-highlight-bg);
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1.4;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.m-postView__content .lazyload-wrapper:hover .lazyload-message {
+  border-color: var(--color-link-hover);
+  color: var(--color-link-hover);
 }
 
 .m-postView__content .m-rostraMedia img,
