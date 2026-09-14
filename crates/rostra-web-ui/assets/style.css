@@ -534,12 +534,9 @@ img.u-userImage {
   width: 100%;
 }
 
-.o-mainBarTimeline__pendingNotifications {
-  padding: .5rem .1rem;
-}
-
+.o-mainBarTimeline__pendingNotifications,
 .o-mainBarTimeline__newCount {
-  padding: .5rem .1rem;
+  padding: 0 .1rem;
 }
 
 .o-mainBarTimeline.-hideReplies .o-mainBarTimeline__item.-reply {

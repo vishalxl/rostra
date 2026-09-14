@@ -247,6 +247,9 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     assert!(stylesheet.contains("@container (max-width: 48.75rem)"));
     assert!(stylesheet.contains("clip-path: inset(50%)"));
     assert!(stylesheet.contains(
+        ".o-mainBarTimeline__pendingNotifications,\n.o-mainBarTimeline__newCount {\n  padding: 0 .1rem;\n}"
+    ));
+    assert!(stylesheet.contains(
         ".o-shoutbox {\n  display: flex;\n  flex-direction: column;\n  container-type: inline-size;"
     ));
 
