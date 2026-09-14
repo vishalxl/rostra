@@ -1747,7 +1747,7 @@ impl UiState {
                             }
                         }
                         @if let Some(url) = external_url.as_ref() {
-                            div ."m-postView__linkHeader" {
+                            h1 ."m-postView__linkHeader" {
                                 a href=(url.as_str()) target="_blank" rel="noopener noreferrer" {
                                     @if let Some(title) = post_title.as_ref() {
                                         (title)
@@ -1757,7 +1757,7 @@ impl UiState {
                                 }
                             }
                         } @else if let Some(title) = post_title.as_ref() {
-                            div ."m-postView__linkHeader" {
+                            h1 ."m-postView__linkHeader" {
                                 (title)
                             }
                         }

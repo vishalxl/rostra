@@ -748,8 +748,7 @@ body:not(.-keyboard-nav) .m-postView__body:has(.m-postView__main[data-href]):hov
 }
 
 .m-postView__linkHeader {
-  font-weight: 600;
-  margin-top: 0.25rem;
+  font-size: 1.50rem;
 }
 
 .m-postView__linkHeader a {

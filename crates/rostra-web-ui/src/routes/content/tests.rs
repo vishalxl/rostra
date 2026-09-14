@@ -138,6 +138,17 @@ fn rendered_post_headings_use_a_scoped_geometric_scale() {
             "heading sizes should approximate a geometric progression"
         );
     }
+
+    assert!(
+        stylesheet
+            .split('}')
+            .filter_map(|rule| rule.split_once('{'))
+            .any(|(selector, declarations)| {
+                selector.trim() == ".m-postView__linkHeader"
+                    && declarations.contains("font-size: 1.50rem")
+            }),
+        "news titles should match rendered post h1 sizing"
+    );
 }
 
 /// Helper to render djot content with code block filter only
