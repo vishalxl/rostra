@@ -24,6 +24,8 @@ use crate::{SharedState, UiState};
 
 type MessageResult = Result<Response, Response>;
 
+const THREAD_PAGE_SIZE: usize = 100;
+
 /// Count exact-session unread messages only while that session retains DM
 /// authority.
 pub(super) async fn unread_count(
@@ -423,6 +425,15 @@ pub(super) struct ThreadQuery {
     focus_composer_on_open: bool,
 }
 
+struct ThreadRender<'a> {
+    query: ThreadQuery,
+    before: Option<(u64, ShortEventId)>,
+    history_fragment: bool,
+    draft: &'a str,
+    error: Option<(StatusCode, &'a str)>,
+    sent_draft_token: Option<&'a str>,
+}
+
 /// Render retained history and an ordinary HTTP composer with progressive
 /// enhancement.
 pub(super) async fn get_thread(
@@ -430,6 +441,7 @@ pub(super) async fn get_thread(
     session: MessageSession,
     Path(path): Path<RostraPathId>,
     OriginalUri(uri): OriginalUri,
+    AjaxRequest(is_ajax): AjaxRequest,
     Query(mut query): Query<ThreadQuery>,
 ) -> MessageResult {
     let client = session.client().ok_or_else(access_error)?;
@@ -437,27 +449,56 @@ pub(super) async fn get_thread(
     if let Some(response) = redirect_to_canonical(&uri, thread_url(peer)) {
         return Ok(response);
     }
+    let before = match (query.before_time, query.before_event) {
+        (None, None) => None,
+        (Some(timestamp), Some(event_id)) => Some((timestamp, event_id)),
+        _ => {
+            return Err(error_page(
+                StatusCode::BAD_REQUEST,
+                "Conversation history links require both cursor fields.",
+            ));
+        }
+    };
     query.focus_composer_on_open = query.before_time.is_none() && query.before_event.is_none();
-    render_thread(&state, &session, peer, query, "", None, None).await
+    render_thread(
+        &state,
+        &session,
+        peer,
+        ThreadRender {
+            query,
+            before,
+            history_fragment: is_ajax && before.is_some(),
+            draft: "",
+            error: None,
+            sent_draft_token: None,
+        },
+    )
+    .await
 }
 
 async fn render_thread(
     state: &UiState,
     session: &MessageSession,
     peer: RostraId,
-    query: ThreadQuery,
-    draft: &str,
-    error: Option<(StatusCode, &str)>,
-    sent_draft_token: Option<&str>,
+    render: ThreadRender<'_>,
 ) -> MessageResult {
+    let ThreadRender {
+        query,
+        before,
+        history_fragment,
+        draft,
+        error,
+        sent_draft_token,
+    } = render;
     let client = session.client().ok_or_else(access_error)?;
     let db = client.db();
     let entries = db
-        .dm_history_with_sequences(peer, query.before_time.zip(query.before_event), 33)
+        .dm_history_with_sequences(peer, before, THREAD_PAGE_SIZE + 1)
         .await
         .map_err(storage_error)?;
-    let csrf = session.csrf().await?;
-    let (entries, has_more) = take_page(entries);
+    let has_more = entries.len() > THREAD_PAGE_SIZE;
+    let mut entries = entries;
+    entries.truncate(THREAD_PAGE_SIZE);
     let next = has_more.then(|| {
         let oldest = entries.last().expect("nonempty page");
         format!(
@@ -486,6 +527,65 @@ async fn render_thread(
             .as_ref()
             .map(|profile| profile.display_name.as_str()),
     );
+    if error.is_none() {
+        let sequences = entries
+            .iter()
+            .filter_map(|entry| entry.incoming_sequence)
+            .collect::<Vec<_>>();
+        db.dm_mark_read(session.read_key(), &sequences)
+            .await
+            .map_err(storage_error)?;
+    }
+    let mut rendered_entries = Vec::with_capacity(entries.len());
+    for entry in entries.iter().rev() {
+        rendered_entries.push((
+            entry,
+            state
+                .render_content(&client, entry.entry.sender, &entry.entry.text)
+                .await,
+        ));
+    }
+    let history = html! {
+        div id="direct-message-history-page"
+            x-init=[before.is_some().then_some(
+                "$nextTick(() => Promise.resolve(typeof MathJax !== 'undefined' ? MathJax.typesetPromise() : undefined).then(() => { if (typeof Prism !== 'undefined') { Prism.highlightAll(); } requestAnimationFrame(() => document.body.scrollTo(0, document.body.scrollHeight)); }))"
+            )]
+        {
+            @if let Some(next) = next {
+                a ."m-directMessages__older"
+                    href=(next)
+                    x-target="direct-message-history-page"
+                    x-init="$nextTick(() => requestAnimationFrame(() => { const root = document.body; const margin = Math.round(root.clientHeight * 2.5); new IntersectionObserver((entries, observer) => { if (entries[0].isIntersecting) { observer.disconnect(); $ajax($el.href, { targets: ['direct-message-history-page'] }); } }, { root, rootMargin: `${margin}px 0px 0px 0px` }).observe($el); }))"
+                { "Older messages" }
+            }
+            @if entries.is_empty() { p { "No messages on this installation yet." } }
+            ol ."m-directMessages__history" {
+                @for (entry, rendered_text) in rendered_entries {
+                    li ."m-directMessages__message" ."-outgoing"[entry.entry.sender == session.user.id()] {
+                        p {
+                            strong {
+                                @if entry.entry.sender == session.user.id() {
+                                    (self_label)
+                                } @else {
+                                    (peer_label)
+                                }
+                            }
+                            " · "
+                            (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.entry.timestamp)))
+                        }
+                        div ."m-directMessages__text m-postView__content" { (rendered_text) }
+                        @if entry.entry.conflicted {
+                            p role="status" { "A conflicting authenticated message reused this message ID. The first saved text is shown." }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if history_fragment {
+        return Ok(Maud(history).into_response());
+    }
+    let csrf = session.csrf().await?;
     let draft_key = format!("direct-message-draft-{}-{peer}", session.user.id());
     let draft_token_key = format!("direct-message-draft-token-{}-{peer}", session.user.id());
     let draft_token = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 32]>());
@@ -509,37 +609,10 @@ async fn render_thread(
         )
     });
     let conversations = db.dm_conversations(None, 32).await.map_err(storage_error)?;
-    let mut panel_data = conversation_panel_data(db, session, &conversations).await?;
-    if error.is_none() {
-        let sequences = entries
-            .iter()
-            .filter_map(|entry| entry.incoming_sequence)
-            .collect::<Vec<_>>();
-        let marked = db
-            .dm_mark_read(session.read_key(), &sequences)
-            .await
-            .map_err(storage_error)?;
-        panel_data.unread = panel_data.unread.saturating_sub(marked);
-        if let Some((_, _, unread)) = panel_data
-            .rows
-            .iter_mut()
-            .find(|(row_peer, _, _)| *row_peer == peer)
-        {
-            *unread = unread.saturating_sub(marked);
-        }
-    }
+    let panel_data = conversation_panel_data(db, session, &conversations).await?;
     let unread_after = panel_data.unread;
     let panel = render_conversation_panel(&panel_data, None, Some(peer));
     let loading = fragment::AjaxLoadingAttrs::for_class("m-directMessages__sendButton");
-    let mut rendered_entries = Vec::with_capacity(entries.len());
-    for entry in entries.iter().rev() {
-        rendered_entries.push((
-            entry,
-            state
-                .render_content(&client, entry.entry.sender, &entry.entry.text)
-                .await,
-        ));
-    }
     let mut response = page(
         panel,
         html! {
@@ -555,29 +628,7 @@ async fn render_thread(
                     "Sending is unavailable: this installation may be retired, or no eligible recipient device is known. No message will be queued."
                 }
             }
-            @if let Some(next) = next { a href=(next) { "Older messages" } }
-            @if entries.is_empty() { p { "No messages on this installation yet." } }
-            ol ."m-directMessages__history" {
-                @for (entry, rendered_text) in rendered_entries {
-                    li ."m-directMessages__message" ."-outgoing"[entry.entry.sender == session.user.id()] {
-                        p {
-                            strong {
-                                @if entry.entry.sender == session.user.id() {
-                                    (self_label)
-                                } @else {
-                                    (peer_label)
-                                }
-                            }
-                            " · "
-                            (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.entry.timestamp)))
-                        }
-                        div ."m-directMessages__text m-postView__content" { (rendered_text) }
-                        @if entry.entry.conflicted {
-                            p role="status" { "A conflicting authenticated message reused this message ID. The first saved text is shown." }
-                        }
-                    }
-                }
-            }
+            (history)
             form method="post" action=(thread_url(peer))
                 x-data=(draft_state)
                 x-init=[clear_draft]
@@ -651,10 +702,14 @@ pub(super) async fn post_message(
             &state,
             &session,
             peer,
-            ThreadQuery::default(),
-            &form.text,
-            Some(error),
-            None,
+            ThreadRender {
+                query: ThreadQuery::default(),
+                before: None,
+                history_fragment: false,
+                draft: &form.text,
+                error: Some(error),
+                sent_draft_token: None,
+            },
         )
         .await;
     }
@@ -669,10 +724,14 @@ pub(super) async fn post_message(
             &state,
             &session,
             peer,
-            ThreadQuery::default(),
-            "",
-            None,
-            sent_draft_token,
+            ThreadRender {
+                query: ThreadQuery::default(),
+                before: None,
+                history_fragment: false,
+                draft: "",
+                error: None,
+                sent_draft_token,
+            },
         )
         .await;
     }

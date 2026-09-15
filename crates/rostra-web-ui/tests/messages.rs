@@ -978,7 +978,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .len(),
         1
     );
-    for index in 1..32 {
+    for index in 1..100 {
         alice_client
             .send_direct_message(alice_secret, bob_id, format!("page {index}"))
             .await
@@ -990,7 +990,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         document
             .select(&Selector::parse(".m-directMessages__message").unwrap())
             .count(),
-        32
+        100
     );
     assert!(
         !document
@@ -1007,16 +1007,69 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         document
             .select(&Selector::parse(".m-directMessages__message").unwrap())
             .count(),
-        32
+        100
     );
-    let older = document
+    let older_link = document
         .select(&Selector::parse("a").unwrap())
         .find(|link| link.text().collect::<String>() == "Older messages")
-        .unwrap()
+        .expect("older-history link");
+    assert_eq!(
+        older_link.value().attr("x-target"),
+        Some("direct-message-history-page")
+    );
+    let intersection = older_link
         .value()
-        .attr("href")
-        .unwrap();
+        .attr("x-init")
+        .expect("older-history intersection observer");
+    assert!(intersection.contains("IntersectionObserver"));
+    assert!(intersection.contains("root.clientHeight * 2.5"));
+    assert!(intersection.contains("rootMargin: `${margin}px 0px 0px 0px`"));
+    let older = older_link.value().attr("href").expect("older-history URL");
+    assert!(older.contains("before_time="));
+    assert!(older.contains("&before_event="));
+
+    let response = alice.ajax_get(older).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    private_headers(&response);
+    let fragment = Html::parse_fragment(&response.text().await.unwrap());
+    let history_page = fragment
+        .select(&Selector::parse("#direct-message-history-page").unwrap())
+        .next()
+        .expect("older-history fragment");
+    let position = history_page
+        .value()
+        .attr("x-init")
+        .expect("older-history positioning");
+    assert!(position.contains("MathJax.typesetPromise()"));
+    assert!(position.contains("Prism.highlightAll()"));
+    assert!(position.contains("requestAnimationFrame"));
+    assert!(
+        position.find("typesetPromise").unwrap() < position.find("scrollTo").unwrap(),
+        "rich-content layout must finish before final positioning"
+    );
+    assert_eq!(
+        history_page
+            .select(&Selector::parse(".m-directMessages__message").unwrap())
+            .count(),
+        1
+    );
+    assert!(
+        fragment
+            .select(&Selector::parse("#direct-message-thread").unwrap())
+            .next()
+            .is_none(),
+        "pagination fragments must replace only the bounded history page"
+    );
+    assert!(
+        fragment
+            .select(&Selector::parse("textarea[name=text]").unwrap())
+            .next()
+            .is_none()
+    );
+
     let response = alice.get(older).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    private_headers(&response);
     let document = Html::parse_document(&response.text().await.unwrap());
     assert_eq!(
         document
@@ -1035,6 +1088,25 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .expect("older-history composer");
     assert_eq!(textarea.value().attr("autofocus"), None);
     assert_eq!(textarea.value().attr("x-init"), None);
+
+    for invalid_cursor in [
+        format!("{path}?before_time=1"),
+        format!(
+            "{path}?before_event={}",
+            sent.first().expect("sent message").event_id
+        ),
+    ] {
+        let response = alice.get(&invalid_cursor).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        private_headers(&response);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("both cursor fields")
+        );
+    }
     drop(alice_client);
     drop(bob_client);
     server.shutdown().await;

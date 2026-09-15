@@ -83,7 +83,7 @@ impl Database {
         self.read_with(|tx| {
             use std::ops::Bound;
 
-            let limit = limit.min(64);
+            let limit = limit.min(101);
             let mut entries = Vec::new();
             if limit == 0 {
                 return Ok(entries);

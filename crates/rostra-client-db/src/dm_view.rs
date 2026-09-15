@@ -100,7 +100,7 @@ impl Database {
 
     /// Atomically mark only the supplied incoming local-arrival sequences read.
     pub async fn dm_mark_read(&self, session: [u8; 16], sequences: &[u64]) -> DbResult<usize> {
-        let sequences = sequences.iter().copied().take(64).collect::<Vec<_>>();
+        let sequences = sequences.iter().copied().take(100).collect::<Vec<_>>();
         self.write_with(|tx| {
             let incoming = tx.open_table(&crate::events_dm_incoming::TABLE)?;
             let history = tx.open_table(&crate::events_dm_history::TABLE)?;

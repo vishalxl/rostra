@@ -235,7 +235,7 @@ async fn dm_history_index_pages_and_rebuilds_without_ciphertext() -> anyhow::Res
                 .await?;
             db.write_with(|tx| db.reprocess_migration_stash(tx)).await?;
         }
-        let first = db.dm_history_with(peer, None, usize::MAX).await?;
+        let first = db.dm_history_with(peer, None, 64).await?;
         assert_eq!(first.len(), 64);
         let last = first.last().unwrap();
         let second = db

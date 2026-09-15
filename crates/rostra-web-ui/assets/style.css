@@ -3757,6 +3757,12 @@ body.-keyboard-nav * {
   padding: 0;
 }
 
+.m-directMessages__older {
+  display: block;
+  margin-block: 1rem;
+  text-align: center;
+}
+
 .m-directMessages__conversations {
   margin-top: 1rem;
   list-style: none;
