@@ -174,6 +174,7 @@ impl UnavailablePostContent {
 
 fn unavailable_post_content_markup(
     content_id: Option<&str>,
+    title: Markup,
     unavailable: UnavailablePostContent,
 ) -> Markup {
     let availability = match unavailable {
@@ -191,6 +192,7 @@ fn unavailable_post_content_markup(
                 ."m-postView__content -unavailable"
                 data-content-availability=(availability)
             {
+                (title)
                 p { (unavailable.message()) }
             }
         } @else {
@@ -198,8 +200,40 @@ fn unavailable_post_content_markup(
                 ."m-postView__content -unavailable"
                 data-content-availability=(availability)
             {
+                (title)
                 p { (unavailable.message()) }
             }
+        }
+    }
+}
+
+fn post_title_markup(external_url: Option<&Url>, post_title: Option<&str>) -> Markup {
+    html! {
+        @if let Some(url) = external_url {
+            h1 ."m-postView__linkHeader" {
+                a href=(url.as_str()) target="_blank" rel="noopener noreferrer" {
+                    @if let Some(title) = post_title {
+                        (title)
+                    } @else {
+                        (url.as_str())
+                    }
+                }
+            }
+        } @else if let Some(title) = post_title {
+            h1 ."m-postView__linkHeader" {
+                (title)
+            }
+        }
+    }
+}
+
+fn present_post_content_markup(content_id: Option<&str>, content: Markup) -> Markup {
+    html! {
+        div
+            id=[content_id]
+            ."m-postView__content -present"
+        {
+            (content)
         }
     }
 }
@@ -216,15 +250,15 @@ fn fetch_post_response(
         return axum::response::Redirect::to(&post_url(author, event_id)).into_response();
     }
     if let Some(rendered_content) = rendered_content {
-        return Maud(html! {
-            div id=(content_id) ."m-postView__content -present" {
-                (rendered_content)
-            }
-        })
+        return Maud(present_post_content_markup(
+            Some(content_id),
+            rendered_content,
+        ))
         .into_response();
     }
     Maud(unavailable_post_content_markup(
         Some(content_id),
+        Markup::default(),
         unavailable,
     ))
     .into_response()
@@ -1388,11 +1422,15 @@ pub async fn fetch_missing_post(
         if let (Some(_event), Some(post_record)) = (event, db.get_social_post(event_id).await) {
             if post_record.author == author_id {
                 if let Some(djot_content) = post_record.content.djot_content.as_ref() {
-                    rendered_content = Some(
-                        state
+                    rendered_content = Some(html! {
+                        (post_title_markup(
+                            post_record.content.url.as_ref(),
+                            post_record.content.title.as_deref(),
+                        ))
+                        (state
                             .render_content(&client, post_record.author, djot_content)
-                            .await,
-                    );
+                            .await)
+                    });
                 }
             }
         }
@@ -1682,7 +1720,10 @@ impl UiState {
         });
 
         let post_content_rendered = if let Some(content) = content.as_ref() {
-            Some(self.render_content(client, author, content).await)
+            Some(html! {
+                (post_title_markup(external_url.as_ref(), post_title.as_deref()))
+                (self.render_content(client, author, content).await)
+            })
         } else {
             None
         };
@@ -1746,21 +1787,6 @@ impl UiState {
                                 }
                             }
                         }
-                        @if let Some(url) = external_url.as_ref() {
-                            h1 ."m-postView__linkHeader" {
-                                a href=(url.as_str()) target="_blank" rel="noopener noreferrer" {
-                                    @if let Some(title) = post_title.as_ref() {
-                                        (title)
-                                    } @else {
-                                        (url.as_str())
-                                    }
-                                }
-                            }
-                        } @else if let Some(title) = post_title.as_ref() {
-                            h1 ."m-postView__linkHeader" {
-                                (title)
-                            }
-                        }
                     }
                     @if let Some(event_id) = event_id {
                         details ."m-postView__actionMenu" {
@@ -1810,16 +1836,19 @@ impl UiState {
                 }
 
                 @if let Some(post_content_rendered) = post_content_rendered {
-                    div."m-postView__content -present"
-                        id=[post_thread_id.zip(event_id).map(|(ctx, id)| post_content_html_id(ctx, id))]
-                    {
-                        (post_content_rendered)
-                    }
+                    @let content_id = post_thread_id
+                        .zip(event_id)
+                        .map(|(ctx, id)| post_content_html_id(ctx, id));
+                    (present_post_content_markup(content_id.as_deref(), post_content_rendered))
                 } @else if let Some(unavailable) = unavailable {
                     @let content_id = post_thread_id
                         .zip(event_id)
                         .map(|(ctx, id)| post_content_html_id(ctx, id));
-                    (unavailable_post_content_markup(content_id.as_deref(), unavailable))
+                    (unavailable_post_content_markup(
+                        content_id.as_deref(),
+                        post_title_markup(external_url.as_ref(), post_title.as_deref()),
+                        unavailable,
+                    ))
                 }
             }
 

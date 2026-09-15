@@ -643,6 +643,7 @@ body:not(.-keyboard-nav) .m-postView__body:has(.m-postView__main[data-href]):hov
 
 .m-postView__userImage {
   margin: 2pt;
+  align-self: flex-start;
 }
 
 .m-postView__contentSide {
@@ -742,10 +743,6 @@ body:not(.-keyboard-nav) .m-postView__body:has(.m-postView__main[data-href]):hov
 
 .m-postView__personaTag:not(:last-child)::after {
   content: ", ";
-}
-
-.m-postView__linkHeader {
-  font-size: 1.50rem;
 }
 
 .m-postView__linkHeader a {
