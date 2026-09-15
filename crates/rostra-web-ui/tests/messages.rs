@@ -321,8 +321,19 @@ async fn ajax_send_clears_only_the_submitted_draft_instance() {
     let server = TestServer::start().await;
     let alice = server.driver();
     let bob = server.driver();
-    let (alice_id, _) = alice.login_new_identity().await;
+    let (alice_id, alice_secret) = alice.login_new_identity().await;
     let (bob_id, _) = bob.login_new_identity().await;
+    server
+        .client(alice_id)
+        .await
+        .post_social_profile_update(
+            alice_secret,
+            "Alice Example".to_owned(),
+            String::new(),
+            None,
+        )
+        .await
+        .unwrap();
     replicate_device(&server, bob_id, alice_id).await;
 
     let path = format!("/messages/{}", bob_id.to_short());
@@ -347,6 +358,14 @@ async fn ajax_send_clears_only_the_submitted_draft_instance() {
         page.select(&Selector::parse("#direct-message-thread").unwrap())
             .next()
             .is_some()
+    );
+    assert_eq!(
+        page.select(&Selector::parse(".m-directMessages__message.-outgoing strong").unwrap())
+            .next()
+            .expect("enhanced outgoing author")
+            .text()
+            .collect::<String>(),
+        "Alice Example"
     );
     let composer = page
         .select(&Selector::parse("form[x-init]").unwrap())
@@ -379,6 +398,25 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     let (alice_id, alice_secret) = alice.login_new_identity().await;
     let (bob_id, bob_secret) = bob.login_new_identity().await;
     server
+        .client(alice_id)
+        .await
+        .post_social_profile_update(
+            alice_secret,
+            "Alice Example".to_owned(),
+            String::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    let alice_profile_event = server
+        .client(alice_id)
+        .await
+        .db()
+        .get_social_profile(alice_id)
+        .await
+        .unwrap()
+        .event_id;
+    server
         .client(bob_id)
         .await
         .post_social_profile_update(bob_secret, "Bob Example".to_owned(), String::new(), None)
@@ -394,6 +432,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .event_id;
     replicate_device(&server, alice_id, bob_id).await;
     replicate_device(&server, bob_id, alice_id).await;
+    replicate_event(&server, alice_id, bob_id, alice_profile_event).await;
     replicate_event(&server, bob_id, alice_id, bob_profile_event).await;
     let path = format!("/messages/{}", bob_id.to_short());
     let page = alice.get("/messages").await.text().await.unwrap();
@@ -643,6 +682,15 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     let bob_page = bob.get(&bob_path).await;
     assert_eq!(bob_page.status(), StatusCode::OK);
     let bob_page = Html::parse_document(&bob_page.text().await.unwrap());
+    assert_eq!(
+        bob_page
+            .select(&Selector::parse(".m-directMessages__message:not(.-outgoing) strong").unwrap())
+            .next()
+            .expect("incoming author")
+            .text()
+            .collect::<String>(),
+        "Alice Example"
+    );
     let bob_draft_state = bob_page
         .select(&Selector::parse("form[x-data]").unwrap())
         .next()
@@ -672,6 +720,16 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
                 .any(|element| element.text().collect::<String>() == text)
         );
     }
+    let page = alice.get(&path).await;
+    let page = Html::parse_document(&page.text().await.unwrap());
+    assert_eq!(
+        page.select(&Selector::parse(".m-directMessages__message.-outgoing strong").unwrap())
+            .next()
+            .expect("outgoing author")
+            .text()
+            .collect::<String>(),
+        "Alice Example"
+    );
     let conversations = alice.get("/messages").await.text().await.unwrap();
     let conversations = Html::parse_document(&conversations);
     let conversation = conversations
@@ -902,9 +960,10 @@ async fn conversation_header_uses_unnamed_fallback_and_escapes_profile_names() {
     let charlie = server.driver();
     let (alice_id, _) = alice.login_new_identity().await;
     let (bob_id, bob_secret) = bob.login_new_identity().await;
-    let (charlie_id, _) = charlie.login_new_identity().await;
+    let (charlie_id, charlie_secret) = charlie.login_new_identity().await;
     replicate_device(&server, bob_id, alice_id).await;
     replicate_device(&server, charlie_id, alice_id).await;
+    replicate_device(&server, alice_id, charlie_id).await;
 
     let fallback = alice
         .get(&format!("/messages/{}", charlie_id.to_short()))
@@ -944,6 +1003,56 @@ async fn conversation_header_uses_unnamed_fallback_and_escapes_profile_names() {
         .to_owned();
     assert!(charlie_draft.contains(&alice_id.to_string()));
     assert!(charlie_draft.contains(&charlie_id.to_string()));
+    server
+        .client(charlie_id)
+        .await
+        .send_direct_message(charlie_secret, alice_id, "from unnamed profile".to_owned())
+        .await
+        .unwrap();
+    let event_id = server
+        .client(charlie_id)
+        .await
+        .db()
+        .dm_history_with(alice_id, None, 1)
+        .await
+        .unwrap()
+        .pop()
+        .expect("sent message")
+        .event_id;
+    replicate_event(&server, charlie_id, alice_id, event_id).await;
+    let alice_client = server.client(alice_id).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if !alice_client
+                .db()
+                .dm_history_with(charlie_id, None, 1)
+                .await
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("incoming message should reach Alice's history");
+    let fallback = alice
+        .get(&format!("/messages/{}", charlie_id.to_short()))
+        .await;
+    assert_eq!(fallback.status(), StatusCode::OK);
+    private_headers(&fallback);
+    let fallback = Html::parse_document(&fallback.text().await.unwrap());
+    assert_eq!(
+        fallback
+            .select(&Selector::parse(".m-directMessages__message:not(.-outgoing) strong").unwrap())
+            .next()
+            .expect("unnamed incoming author")
+            .text()
+            .collect::<String>(),
+        "Unnamed profile"
+    );
+    drop(alice_client);
 
     let malicious_name = "<img src=x onerror=alert(1)>".to_owned();
     server

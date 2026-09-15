@@ -475,6 +475,13 @@ async fn render_thread(
             .as_ref()
             .map(|profile| profile.display_name.as_str()),
     );
+    let self_profile = db.get_social_profile(session.user.id()).await;
+    let self_label = message_display_name(
+        session.user.id(),
+        self_profile
+            .as_ref()
+            .map(|profile| profile.display_name.as_str()),
+    );
     let draft_key = format!("direct-message-draft-{}-{peer}", session.user.id());
     let draft_token_key = format!("direct-message-draft-token-{}-{peer}", session.user.id());
     let draft_token = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 32]>());
@@ -542,7 +549,13 @@ async fn render_thread(
                 @for entry in entries.iter().rev() {
                     li ."m-directMessages__message" ."-outgoing"[entry.entry.sender == session.user.id()] {
                         p {
-                            strong { @if entry.entry.sender == session.user.id() { "You" } @else { "Peer" } }
+                            strong {
+                                @if entry.entry.sender == session.user.id() {
+                                    (self_label)
+                                } @else {
+                                    (peer_label)
+                                }
+                            }
                             " · "
                             (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.entry.timestamp)))
                         }
