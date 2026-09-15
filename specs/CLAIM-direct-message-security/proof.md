@@ -164,12 +164,14 @@ the sending installation.
    It does not accept another browser's shared account activation.
    POST handlers validate a separate random session synchronizer token before
    sending, retiring, or re-enrolling. They never use the actual session token
-   as an HTML form value. Message text is Maud-escaped plain text, not markup,
-   and private pages have no embeds or automatic external links. Conversation
-   pages share the application shell, navigation, and self-hosted Alpine/app
-   runtime with ordinary pages, but omit rich-content scripts and styles.
-   Their CSP permits same-origin scripts and Alpine's expression evaluator
-   but no inline or remote script source. Browser drafts use distinct
+   as an HTML form value. Message text uses the posts' sanitized Djot renderer,
+   so user-controlled raw HTML and dangerous URLs do not become executable
+   content. Conversation pages share the application shell, navigation, and
+   self-hosted rich-content runtime with ordinary pages.
+   Their CSP permits same-origin scripts and fonts, Alpine's expression
+   evaluator, and inline styles required by self-hosted MathJax, but no inline
+   or remote script source; sanitized message content cannot supply styles.
+   Browser drafts use distinct
    account-and-recipient local-storage keys. An AJAX send clears only when the
    response's submitted draft-instance token still matches the current persisted
    instance; edits rotate that token, so a delayed response does not clear newer

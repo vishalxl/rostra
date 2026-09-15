@@ -34,17 +34,22 @@ identity rules before use.
 These workflows return ordinary complete HTML pages and 303 redirects and remain
 usable without JavaScript. Thread composers use the same self-hosted Alpine
 persistence mechanism as new-post forms for account-and-recipient-scoped browser
-drafts and Ctrl+Enter submission. Message text is escaped plain text, never Djot,
-HTML, external embeds, or automatic links. All response classes, including
-extractor errors, missing routes, and redirects, use private/no-store caching,
-identity/no-compression, no-referrer, nosniff, framing denial, and a restrictive
-CSP that permits only the required same-origin scripts, CSS, images, and forms.
+drafts and Ctrl+Enter submission. Message text uses the same sanitized Djot
+renderer as posts. Renderer output remains non-executable, and the private-page
+CSP prevents message content from initiating third-party media requests. All
+response classes, including extractor errors, missing routes, and redirects,
+use private/no-store caching, identity/no-compression, no-referrer, nosniff,
+framing denial, and a restrictive CSP that permits only the required
+same-origin scripts, CSS, fonts, images, and forms. It permits inline styles for
+the self-hosted MathJax renderer, while sanitized message content cannot supply
+style elements or attributes.
 Alpine's AJAX requests have same-origin connect access, and its attribute
 expression evaluator requires `unsafe-eval`; no inline or remote script source
-is allowed. No message text enters a URL, log, delivery receipt, or
-decryption-result callback. Local plaintext, including browser-persisted drafts,
-persists independently of ciphertext and epoch-key deletion; this is not
-endpoint or forensic-storage confidentiality.
+is allowed. The message workflow does not copy plaintext into request URLs,
+logs, delivery receipts, or decryption-result callbacks; rendered safe links
+remain user-controlled navigation targets. Local plaintext, including
+browser-persisted drafts, persists independently of ciphertext and epoch-key
+deletion; this is not endpoint or forensic-storage confidentiality.
 
 The named script, CSP, and browser-storage details describe the current
 implementation, not immutable stakeholder choices. Changes may use other

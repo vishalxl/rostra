@@ -3814,7 +3814,6 @@ body.-keyboard-nav * {
 }
 
 .m-directMessages__text {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

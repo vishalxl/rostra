@@ -5,12 +5,19 @@ use crate::UiState;
 use crate::error::RequestResult;
 use crate::routes::unlock::session::UserSession;
 
-/// Resource sets share the UI runtime; private plain-text pages omit rich
-/// media.
+/// Resource sets control rich-content assets and the public-page footer
+/// independently.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageResources {
     Standard,
     Private,
+    PrivateRich,
+}
+
+impl PageResources {
+    fn includes_rich_content(self) -> bool {
+        matches!(self, Self::Standard | Self::PrivateRich)
+    }
 }
 
 /// Feed discovery links for inclusion in HTML head
@@ -46,7 +53,7 @@ impl UiState {
                     meta name="robots" content="noindex";
                 }
                 link rel="stylesheet" type="text/css" href="/assets/style.css";
-                @if resources == PageResources::Standard {
+                @if resources.includes_rich_content() {
                 // Prism.js themes - conditionally loaded based on color scheme
                 link rel="stylesheet" type="text/css" href="/assets/libs/prismjs/prism.min.css" media="(prefers-color-scheme: light)";
                 link rel="stylesheet" type="text/css" href="/assets/libs/prismjs/prism-tomorrow.min.css" media="(prefers-color-scheme: dark)";
@@ -97,7 +104,7 @@ impl UiState {
                 script defer src="/assets/libs/alpine-ajax@0.12.6.js" {}
                 script defer src="/assets/app.js" {}
                 script defer src="/assets/libs/alpinejs@3.14.3.js" {}
-                @if resources == PageResources::Standard {
+                @if resources.includes_rich_content() {
                 // Load Prism.js for code highlighting
                 // Note: C must load before C++ since C++ extends C
                 script defer src="/assets/libs/prismjs/prism-core.min.js" {}
@@ -115,6 +122,7 @@ impl UiState {
                 // Prism.js plugins - toolbar must load before copy-to-clipboard
                 script defer src="/assets/libs/prismjs/prism-toolbar.min.js" {}
                 script defer src="/assets/libs/prismjs/prism-copy-to-clipboard.min.js" {}
+                script defer src="/assets/libs/mathjax-3.2.2/tex-mml-chtml.js" {}
                 }
             }
         }
@@ -202,7 +210,7 @@ impl UiState {
 pub(crate) fn render_html_body(
     content: Markup,
     layout_class: &str,
-    resources: PageResources,
+    _resources: PageResources,
 ) -> Markup {
     html! {
         body ."o-body" x-data="notifications" {
@@ -221,9 +229,6 @@ pub(crate) fn render_html_body(
                 }
             }
             div ."o-pageLayout" .(layout_class) { (content) }
-            @if resources == PageResources::Standard {
-                (render_html_footer())
-            }
         }
     }
 }
@@ -260,12 +265,5 @@ pub fn truncate_at_word_boundary(s: &str, max_len: usize) -> String {
         format!("{}...", &truncated[..last_space])
     } else {
         format!("{truncated}...")
-    }
-}
-
-/// A static footer.
-pub(crate) fn render_html_footer() -> Markup {
-    html! {
-        script defer src="/assets/libs/mathjax-3.2.2/tex-mml-chtml.js" {}
     }
 }

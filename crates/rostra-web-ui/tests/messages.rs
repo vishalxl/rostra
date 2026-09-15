@@ -26,6 +26,8 @@ fn private_headers(response: &Response) {
     assert!(csp.contains("default-src 'none'"));
     assert!(csp.contains("script-src 'self' 'unsafe-eval'"));
     assert!(csp.contains("connect-src 'self'"));
+    assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
+    assert!(csp.contains("font-src 'self'"));
 }
 
 fn token(page: &str) -> String {
@@ -140,7 +142,7 @@ fn assert_conversation_panel_has_no_start_form(document: &Html) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn private_workspace_uses_the_shared_shell_without_rich_content_resources() {
+async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
     let server = TestServer::start().await;
     let writer = server.driver();
     writer.login_new_identity().await;
@@ -161,6 +163,10 @@ async fn private_workspace_uses_the_shared_shell_without_rich_content_resources(
     let expected_runtime = following
         .select(&runtime)
         .filter_map(|script| script.value().attr("src"))
+        .collect::<Vec<_>>();
+    let expected_private_runtime = expected_runtime
+        .iter()
+        .copied()
         .filter(|src| !src.contains("/prismjs/") && !src.contains("/mathjax-"))
         .collect::<Vec<_>>();
     for path in ["/messages", "/settings/messages", "/messages/not-an-id"] {
@@ -173,7 +179,11 @@ async fn private_workspace_uses_the_shared_shell_without_rich_content_resources(
                 .select(&runtime)
                 .filter_map(|script| script.value().attr("src"))
                 .collect::<Vec<_>>(),
-            expected_runtime,
+            if path == "/settings/messages" {
+                expected_private_runtime.clone()
+            } else {
+                expected_runtime.clone()
+            },
         );
         assert!(
             document
@@ -249,7 +259,22 @@ async fn private_pages_require_this_sessions_secret_and_protect_all_responses() 
             "/assets/libs/alpinejs-morph@3.14.3.js",
             "/assets/libs/alpine-ajax@0.12.6.js",
             "/assets/app.js",
-            "/assets/libs/alpinejs@3.14.3.js"
+            "/assets/libs/alpinejs@3.14.3.js",
+            "/assets/libs/prismjs/prism-core.min.js",
+            "/assets/libs/prismjs/prism-c.min.js",
+            "/assets/libs/prismjs/prism-cpp.min.js",
+            "/assets/libs/prismjs/prism-javascript.min.js",
+            "/assets/libs/prismjs/prism-python.min.js",
+            "/assets/libs/prismjs/prism-rust.min.js",
+            "/assets/libs/prismjs/prism-java.min.js",
+            "/assets/libs/prismjs/prism-bash.min.js",
+            "/assets/libs/prismjs/prism-json.min.js",
+            "/assets/libs/prismjs/prism-yaml.min.js",
+            "/assets/libs/prismjs/prism-markdown.min.js",
+            "/assets/libs/prismjs/prism-sql.min.js",
+            "/assets/libs/prismjs/prism-toolbar.min.js",
+            "/assets/libs/prismjs/prism-copy-to-clipboard.min.js",
+            "/assets/libs/mathjax-3.2.2/tex-mml-chtml.js"
         ]
     );
     let response = writer.get("/messages/invalid").await;
@@ -602,7 +627,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         Some("Send message (Ctrl+Enter)")
     );
     let csrf = token(&page);
-    let text = "<img src=\"https://outsider.invalid/pixel\"> **not markup**\nsecond line";
+    let text = "# Rendered message\n\n*important* and $`x^2`\n\n<img src=\"https://outsider.invalid/pixel\">\n<style>body { display: none }</style>\n<span style=\"background: red\">styled</span>\n\n[unsafe](javascript:alert(1))";
     let response = alice
         .post_form(&path, &[("text", text), ("csrf", "wrong")])
         .await;
@@ -710,14 +735,43 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         let document = Html::parse_document(&response.text().await.unwrap());
         assert!(
             document
-                .select(&Selector::parse("img, iframe, script:not([src])").unwrap())
+                .select(
+                    &Selector::parse("img, iframe, script:not([src]), style, [style]").unwrap(),
+                )
                 .next()
                 .is_none()
         );
+        let rendered = document
+            .select(&Selector::parse(".m-directMessages__text.m-postView__content").unwrap())
+            .find(|element| {
+                element
+                    .select(&Selector::parse("h1").unwrap())
+                    .any(|heading| heading.text().collect::<String>() == "Rendered message")
+            })
+            .expect("Djot-rendered direct message");
+        assert_eq!(
+            rendered
+                .select(&Selector::parse("strong").unwrap())
+                .next()
+                .expect("Djot strong text")
+                .text()
+                .collect::<String>(),
+            "important"
+        );
+        assert_eq!(
+            rendered
+                .select(&Selector::parse(".math.inline").unwrap())
+                .next()
+                .expect("Djot inline math")
+                .text()
+                .collect::<String>(),
+            "\\(x^2\\)"
+        );
         assert!(
-            document
-                .select(&Selector::parse(".m-directMessages__text").unwrap())
-                .any(|element| element.text().collect::<String>() == text)
+            rendered
+                .select(&Selector::parse("a[href='#']").unwrap())
+                .any(|link| link.text().collect::<String>() == "unsafe"),
+            "dangerous URLs should use the posts' sanitized fallback"
         );
     }
     let page = alice.get(&path).await;

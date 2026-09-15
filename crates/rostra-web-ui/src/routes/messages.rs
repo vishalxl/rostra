@@ -1,4 +1,4 @@
-//! Plain-text, HTML-first private-message workflows with session-only access.
+//! HTML-first private-message workflows with session-only access.
 
 mod session;
 mod settings;
@@ -6,7 +6,7 @@ mod settings;
 mod tests;
 
 use axum::Form;
-use axum::extract::{OriginalUri, Path, Query};
+use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use maud::{DOCTYPE, Markup, html};
@@ -18,9 +18,9 @@ use self::session::MessageSession;
 pub(super) use self::settings::{get_retirement, get_settings, post_settings};
 use super::url::{RostraPathId, profile_url, redirect_to_canonical};
 use super::{Maud, fragment, recovery};
-use crate::UiState;
 use crate::layout::{PageResources, render_html_body, render_top_nav};
 use crate::util::extractors::AjaxRequest;
+use crate::{SharedState, UiState};
 
 type MessageResult = Result<Response, Response>;
 
@@ -97,7 +97,7 @@ pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
         ),
     );
     response.headers_mut().insert(
@@ -118,6 +118,7 @@ fn page(
     private_page(
         title,
         "m-directMessagesLayout",
+        PageResources::PrivateRich,
         html! {
             nav ."o-navBar m-directMessages__sidebar" ."-threadOpen"[thread_open]
                 aria-label="Private messages"
@@ -149,14 +150,19 @@ fn page(
 
 /// Share the document, asset policy, and notification runtime with normal
 /// pages.
-fn private_page(title: &str, layout_class: &str, content: Markup) -> Response {
+fn private_page(
+    title: &str,
+    layout_class: &str,
+    resources: PageResources,
+    content: Markup,
+) -> Response {
     Maud(html! {
         (DOCTYPE)
         html lang="en" {
             (UiState::render_html_head(
-                &format!("{title} — Rostra"), None, None, None, true, PageResources::Private,
+                &format!("{title} — Rostra"), None, None, None, true, resources,
             ))
-            (render_html_body(content, layout_class, PageResources::Private))
+            (render_html_body(content, layout_class, resources))
         }
     })
     .into_response()
@@ -167,6 +173,7 @@ fn settings_page(title: &str, content: Markup) -> Response {
     private_page(
         title,
         "",
+        PageResources::Private,
         html! {
             (super::settings::settings_navbar("messages"))
             main ."o-mainBar" {
@@ -430,6 +437,7 @@ pub(super) struct ThreadQuery {
 /// Render retained history and an ordinary HTTP composer with progressive
 /// enhancement.
 pub(super) async fn get_thread(
+    State(state): State<SharedState>,
     session: MessageSession,
     Path(path): Path<RostraPathId>,
     OriginalUri(uri): OriginalUri,
@@ -440,11 +448,11 @@ pub(super) async fn get_thread(
     if let Some(response) = redirect_to_canonical(&uri, thread_url(peer)) {
         return Ok(response);
     }
-    render_thread(client.db(), &session, peer, query, "", None, None).await
+    render_thread(&state, &session, peer, query, "", None, None).await
 }
 
 async fn render_thread(
-    db: &rostra_client_db::Database,
+    state: &UiState,
     session: &MessageSession,
     peer: RostraId,
     query: ThreadQuery,
@@ -452,6 +460,8 @@ async fn render_thread(
     error: Option<(StatusCode, &str)>,
     sent_draft_token: Option<&str>,
 ) -> MessageResult {
+    let client = session.client().ok_or_else(access_error)?;
+    let db = client.db();
     let entries = db
         .dm_history_with_sequences(peer, query.before_time.zip(query.before_event), 33)
         .await
@@ -531,6 +541,15 @@ async fn render_thread(
     let unread_after = panel_data.unread;
     let panel = render_conversation_panel(&panel_data, None, Some(peer));
     let loading = fragment::AjaxLoadingAttrs::for_class("m-directMessages__sendButton");
+    let mut rendered_entries = Vec::with_capacity(entries.len());
+    for entry in entries.iter().rev() {
+        rendered_entries.push((
+            entry,
+            state
+                .render_content(&client, entry.entry.sender, &entry.entry.text)
+                .await,
+        ));
+    }
     let mut response = page(
         "Conversation",
         panel,
@@ -550,7 +569,7 @@ async fn render_thread(
             @if let Some(next) = next { a href=(next) { "Older messages" } }
             @if entries.is_empty() { p { "No messages on this installation yet." } }
             ol ."m-directMessages__history" {
-                @for entry in entries.iter().rev() {
+                @for (entry, rendered_text) in rendered_entries {
                     li ."m-directMessages__message" ."-outgoing"[entry.entry.sender == session.user.id()] {
                         p {
                             strong {
@@ -563,7 +582,7 @@ async fn render_thread(
                             " · "
                             (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.entry.timestamp)))
                         }
-                        p ."m-directMessages__text" { (&entry.entry.text) }
+                        div ."m-directMessages__text m-postView__content" { (rendered_text) }
                         @if entry.entry.conflicted {
                             p role="status" { "A conflicting authenticated message reused this message ID. The first saved text is shown." }
                         }
@@ -599,7 +618,7 @@ async fn render_thread(
     Ok(response)
 }
 
-/// Plain-text send form; never derive Debug for plaintext-bearing input.
+/// Direct-message send form; never derive Debug for plaintext-bearing input.
 #[derive(Deserialize)]
 pub(super) struct SendForm {
     /// Independent session-bound CSRF token.
@@ -613,6 +632,7 @@ pub(super) struct SendForm {
 
 /// Send once through an ordinary POST followed by a 303 redirect.
 pub(super) async fn post_message(
+    State(state): State<SharedState>,
     session: MessageSession,
     Path(path): Path<RostraPathId>,
     AjaxRequest(is_ajax): AjaxRequest,
@@ -635,7 +655,7 @@ pub(super) async fn post_message(
     };
     if let Some(error) = error {
         return render_thread(
-            client.db(),
+            &state,
             &session,
             peer,
             ThreadQuery::default(),
@@ -653,7 +673,7 @@ pub(super) async fn post_message(
                 .all(|byte| byte.is_ascii_hexdigit()))
         .then_some(form.draft_token.as_str());
         return render_thread(
-            client.db(),
+            &state,
             &session,
             peer,
             ThreadQuery::default(),
