@@ -14,6 +14,9 @@ function job_lint() {
 # this gives us caching between different
 # builds and decent isolation.
 function job_cargo() {
+    selfci step start "web UI JavaScript"
+    nix build -L .#ci.webUiJavascript
+
     selfci step start "cargo.lock up to date"
     if ! cargo update --workspace --locked -q; then
       selfci step fail

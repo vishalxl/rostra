@@ -5,6 +5,14 @@ use crate::UiState;
 use crate::error::RequestResult;
 use crate::routes::unlock::session::UserSession;
 
+/// Resource sets share the UI runtime; private plain-text pages omit rich
+/// media.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageResources {
+    Standard,
+    Private,
+}
+
 /// Feed discovery links for inclusion in HTML head
 pub struct FeedLinks {
     pub title: String,
@@ -22,16 +30,14 @@ pub struct OpenGraphMeta {
 impl UiState {
     /// Html page header
     pub(crate) fn render_html_head(
-        &self,
         page_title: &str,
         feed_links: Option<&FeedLinks>,
         og: Option<&OpenGraphMeta>,
         json_ld: Option<&str>,
         noindex: bool,
+        resources: PageResources,
     ) -> Markup {
         html! {
-            (DOCTYPE)
-            html lang="en";
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
@@ -40,10 +46,12 @@ impl UiState {
                     meta name="robots" content="noindex";
                 }
                 link rel="stylesheet" type="text/css" href="/assets/style.css";
+                @if resources == PageResources::Standard {
                 // Prism.js themes - conditionally loaded based on color scheme
                 link rel="stylesheet" type="text/css" href="/assets/libs/prismjs/prism.min.css" media="(prefers-color-scheme: light)";
                 link rel="stylesheet" type="text/css" href="/assets/libs/prismjs/prism-tomorrow.min.css" media="(prefers-color-scheme: dark)";
                 link rel="stylesheet" type="text/css" href="/assets/libs/prismjs/prism-toolbar.min.css";
+                }
                 @if is_rostra_dev_mode_set() {
                     link rel="icon" type="image/svg+xml" href="/assets/favicon-dev.svg";
                 } @else {
@@ -80,10 +88,7 @@ impl UiState {
                 @if let Some(json_ld) = json_ld {
                     script type="application/ld+json" { (maud::PreEscaped(json_ld)) }
                 }
-                // Hide elements with x-cloak until Alpine initializes
-                style { "[x-cloak] { display: none !important; }" }
-                // Hide JS-only elements when JS is disabled
-                noscript { style { ".u-requiresJs { display: none !important; }" } }
+                noscript { link rel="stylesheet" href="/assets/nojs.css"; }
                 // Load Alpine.js right away so it's immediately available, use defer to make it
                 // non-blocking. ALL plugins must load BEFORE Alpine core.
                 script defer src="/assets/libs/alpinejs-persist@3.14.3.js" {}
@@ -92,6 +97,7 @@ impl UiState {
                 script defer src="/assets/libs/alpine-ajax@0.12.6.js" {}
                 script defer src="/assets/app.js" {}
                 script defer src="/assets/libs/alpinejs@3.14.3.js" {}
+                @if resources == PageResources::Standard {
                 // Load Prism.js for code highlighting
                 // Note: C must load before C++ since C++ extends C
                 script defer src="/assets/libs/prismjs/prism-core.min.js" {}
@@ -109,6 +115,7 @@ impl UiState {
                 // Prism.js plugins - toolbar must load before copy-to-clipboard
                 script defer src="/assets/libs/prismjs/prism-toolbar.min.js" {}
                 script defer src="/assets/libs/prismjs/prism-copy-to-clipboard.min.js" {}
+                }
             }
         }
     }
@@ -123,28 +130,10 @@ impl UiState {
         noindex: bool,
     ) -> RequestResult<Markup> {
         Ok(html! {
-            (self.render_html_head(title, feed_links, og, json_ld, noindex))
-            body ."o-body"
-                x-data="notifications"
-            {
-                // Global notification area
-                div ."o-notificationArea" {
-                    template x-for="notification in notifications" ":key"="notification.id" {
-                        div x-cloak
-                            ."o-notification"
-                            ":class"=r#"{
-                                '-error': notification.type === 'error',
-                                '-success': notification.type === 'success',
-                                '-info': notification.type === 'info'
-                            }"#
-                            "@click"="removeNotification(notification.id)"
-                            x-text="notification.message"
-                        {}
-                    }
-                }
-
-                div ."o-pageLayout" { (content) }
-                (render_html_footer())
+            (DOCTYPE)
+            html lang="en" {
+                (Self::render_html_head(title, feed_links, og, json_ld, noindex, PageResources::Standard))
+                (render_html_body(content, "", PageResources::Standard))
             }
         })
     }
@@ -204,22 +193,57 @@ impl UiState {
 
     /// Renders the top navigation bar with Home, Support, and Settings links
     pub fn render_top_nav(&self) -> Markup {
-        html! {
-            div ."o-topNav" {
-                a ."o-topNav__item" href="/" {
-                    span ."o-topNav__icon -home" aria-hidden="true" {}
-                    span ."o-topNav__label" { "Home" }
+        render_top_nav()
+    }
+}
+
+/// Render the common application body, including AJAX error notifications.
+pub(crate) fn render_html_body(
+    content: Markup,
+    layout_class: &str,
+    resources: PageResources,
+) -> Markup {
+    html! {
+        body ."o-body" x-data="notifications" {
+            div ."o-notificationArea" {
+                template x-for="notification in notifications" ":key"="notification.id" {
+                    div x-cloak
+                        ."o-notification"
+                        ":class"=r#"{
+                            '-error': notification.type === 'error',
+                            '-success': notification.type === 'success',
+                            '-info': notification.type === 'info'
+                        }"#
+                        "@click"="removeNotification(notification.id)"
+                        x-text="notification.message"
+                    {}
                 }
-                a ."o-topNav__item"
-                    href="https://github.com/dpc/rostra/discussions"
-                {
-                    span ."o-topNav__icon -support" aria-hidden="true" {}
-                    span ."o-topNav__label" { "Support" }
-                }
-                a ."o-topNav__item" href="/settings/profile" {
-                    span ."o-topNav__icon -settings" aria-hidden="true" {}
-                    span ."o-topNav__label" { "Settings" }
-                }
+            }
+            div ."o-pageLayout" .(layout_class) { (content) }
+            @if resources == PageResources::Standard {
+                (render_html_footer())
+            }
+        }
+    }
+}
+
+/// Render the same top navigation for stateful and private-response pages.
+pub(crate) fn render_top_nav() -> Markup {
+    html! {
+        div ."o-topNav" {
+            a ."o-topNav__item" href="/" {
+                span ."o-topNav__icon -home" aria-hidden="true" {}
+                span ."o-topNav__label" { "Home" }
+            }
+            a ."o-topNav__item"
+                href="https://github.com/dpc/rostra/discussions"
+            {
+                span ."o-topNav__icon -support" aria-hidden="true" {}
+                span ."o-topNav__label" { "Support" }
+            }
+            a ."o-topNav__item" href="/settings/profile" {
+                span ."o-topNav__icon -settings" aria-hidden="true" {}
+                span ."o-topNav__label" { "Settings" }
             }
         }
     }

@@ -166,8 +166,9 @@ the sending installation.
    sending, retiring, or re-enrolling. They never use the actual session token
    as an HTML form value. Message text is Maud-escaped plain text, not markup,
    and private pages have no embeds or automatic external links. Conversation
-   pages load only the self-hosted Alpine persistence, AJAX, and core scripts;
-   their CSP permits those same-origin scripts and Alpine's expression evaluator
+   pages share the application shell, navigation, and self-hosted Alpine/app
+   runtime with ordinary pages, but omit rich-content scripts and styles.
+   Their CSP permits same-origin scripts and Alpine's expression evaluator
    but no inline or remote script source. Browser drafts use distinct
    account-and-recipient local-storage keys. An AJAX send clears only when the
    response's submitted draft-instance token still matches the current persisted

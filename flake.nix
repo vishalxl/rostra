@@ -87,6 +87,17 @@
                 );
               in
               rec {
+                webUiJavascript =
+                  pkgs.runCommand "rostra-web-ui-javascript-tests"
+                    {
+                      nativeBuildInputs = [ pkgs.nodejs ];
+                    }
+                    ''
+                      ROSTRA_ALPINE_AJAX_BUNDLE=${buildSrc}/crates/rostra-web-ui/assets/libs/alpine-ajax@0.12.6.js \
+                        node --test ${./crates/rostra-web-ui/tests/alpine-ajax.js}
+                      touch $out
+                    '';
+
                 workspaceDeps = craneLib.buildWorkspaceDepsOnly { };
 
                 workspace = craneLib.buildWorkspace {

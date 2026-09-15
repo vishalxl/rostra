@@ -3642,7 +3642,11 @@ body.-keyboard-nav * {
   border-radius: var(--border-radius-std);
 }
 
-/* Send button icon */
+[x-cloak] {
+  display: none !important;
+}
+
+/* Private-message workspace */
 .m-directMessages {
   min-width: 0;
 }
@@ -3727,6 +3731,10 @@ body.-keyboard-nav * {
 }
 
 .m-directMessages textarea {
+  height: auto;
+  min-height: 8rem;
+  padding-block: 0.5rem;
+  cursor: text;
   resize: vertical;
 }
 

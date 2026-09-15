@@ -18,6 +18,8 @@ use self::session::MessageSession;
 pub(super) use self::settings::{get_retirement, get_settings, post_settings};
 use super::url::{RostraPathId, profile_url, redirect_to_canonical};
 use super::{Maud, fragment, recovery};
+use crate::UiState;
+use crate::layout::{PageResources, render_html_body, render_top_nav};
 use crate::util::extractors::AjaxRequest;
 
 type MessageResult = Result<Response, Response>;
@@ -105,8 +107,7 @@ pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
     response
 }
 
-/// Render a complete private page with only the composer scripts and
-/// same-origin resources.
+/// Render the workspace through the shared application shell.
 fn page(
     title: &str,
     conversation_panel: Markup,
@@ -114,149 +115,70 @@ fn page(
     thread_open: bool,
     unread: usize,
 ) -> Response {
+    private_page(
+        title,
+        "m-directMessagesLayout",
+        html! {
+            nav ."o-navBar m-directMessages__sidebar" ."-threadOpen"[thread_open]
+                aria-label="Private messages"
+            {
+                (render_top_nav())
+                div id="direct-message-conversations" ."m-directMessages__conversationPanel" {
+                    (conversation_panel)
+                }
+            }
+            main ."o-mainBar" {
+                div ."o-mainBarTimeline m-directMessages" {
+                    div id="direct-message-tabs" ."o-mainBarTimeline__tabs" {
+                        a ."o-mainBarTimeline__back" href="/" aria-label="Back" {
+                            span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+                        }
+                        (fragment::timeline_tab_links(
+                            "messages",
+                            super::timeline::PendingCounts { messages: unread, ..Default::default() },
+                            false,
+                        ))
+                    }
+                    div id="direct-message-thread"
+                        ."m-directMessages__thread" ."-open"[thread_open] { (content) }
+                }
+            }
+        },
+    )
+}
+
+/// Share the document, asset policy, and notification runtime with normal
+/// pages.
+fn private_page(title: &str, layout_class: &str, content: Markup) -> Response {
     Maud(html! {
         (DOCTYPE)
         html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1.0";
-                meta name="color-scheme" content="light dark";
-                meta name="robots" content="noindex";
-                title { (title) " — Rostra" }
-                link rel="stylesheet" href="/assets/style.css";
-                script defer src="/assets/libs/alpinejs-persist@3.14.3.js" {}
-                script defer src="/assets/libs/alpine-ajax@0.12.6.js" {}
-                script defer src="/assets/libs/alpinejs@3.14.3.js" {}
-            }
-            body ."o-body" {
-                div ."o-pageLayout m-directMessagesLayout" {
-                    nav ."o-navBar m-directMessages__sidebar" ."-threadOpen"[thread_open]
-                        aria-label="Private messages"
-                    {
-                        div ."o-topNav" {
-                            a ."o-topNav__item" href="/" {
-                                span ."o-topNav__icon -home" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Home" }
-                            }
-                            a ."o-topNav__item" href="https://github.com/dpc/rostra/discussions" {
-                                span ."o-topNav__icon -support" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Support" }
-                            }
-                            a ."o-topNav__item" href="/settings/profile" {
-                                span ."o-topNav__icon -settings" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Settings" }
-                            }
-                        }
-                        div ."m-directMessages__conversationPanel" {
-                            (conversation_panel)
-                        }
-                    }
-                    main ."o-mainBar" {
-                        div ."o-mainBarTimeline m-directMessages" {
-                            div ."o-mainBarTimeline__tabs" {
-                                a ."o-mainBarTimeline__back" href="/" aria-label="Back" {
-                                    span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
-                                }
-                                a ."o-mainBarTimeline__followees" href="/following" {
-                                    span ."o-mainBarTimeline__tabIcon -followees" aria-hidden="true" {}
-                                    span ."o-mainBarTimeline__tabLabel" { "Following" }
-                                }
-                                a ."o-mainBarTimeline__network" href="/network" {
-                                    span ."o-mainBarTimeline__tabIcon -network" aria-hidden="true" {}
-                                    span ."o-mainBarTimeline__tabLabel" { "Network" }
-                                }
-                                a ."o-mainBarTimeline__news" href="/news" {
-                                    span ."o-mainBarTimeline__tabIcon -news" aria-hidden="true" {}
-                                    span ."o-mainBarTimeline__tabLabel" { "News" }
-                                }
-                                a ."o-mainBarTimeline__notifications" href="/notifications" {
-                                    span ."o-mainBarTimeline__tabIcon -notifications" aria-hidden="true" {}
-                                    span ."o-mainBarTimeline__tabLabel" { "Notifications" }
-                                }
-                                a ."o-mainBarTimeline__shoutbox" href="/shoutbox" {
-                                    span ."o-mainBarTimeline__tabIcon -shoutbox" aria-hidden="true" {}
-                                    span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
-                                }
-                                a ."o-mainBarTimeline__messages -active" href="/messages"
-                                    aria-current="page"
-                                {
-                                    span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
-                                    span ."o-mainBarTimeline__tabLabel" { "Messages" }
-                                    @if unread > 0 {
-                                        span ."o-mainBarTimeline__newCount" {
-                                            (unread.min(99))
-                                            @if unread >= 99 { "+" }
-                                        }
-                                    }
-                                }
-                            }
-                            div id="direct-message-thread"
-                                ."m-directMessages__thread" ."-open"[thread_open] { (content) }
-                        }
-                    }
-                }
-            }
+            (UiState::render_html_head(
+                &format!("{title} — Rostra"), None, None, None, true, PageResources::Private,
+            ))
+            (render_html_body(content, layout_class, PageResources::Private))
         }
     })
     .into_response()
 }
 
-/// Render script-free message administration inside the Settings exception
-/// shell.
+/// Render private message administration with the shared Settings navigation.
 fn settings_page(title: &str, content: Markup) -> Response {
-    Maud(html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1.0";
-                meta name="color-scheme" content="light dark";
-                meta name="robots" content="noindex";
-                title { (title) " — Rostra" }
-                link rel="stylesheet" href="/assets/style.css";
-            }
-            body ."o-body" {
-                div ."o-pageLayout" {
-                    nav ."o-navBar" aria-label="Settings" {
-                        div ."o-topNav" {
-                            a ."o-topNav__item" href="/following" {
-                                span ."o-topNav__icon -back" aria-hidden="true" {}
-                                span ."o-topNav__label" { "Back" }
-                            }
-                        }
-                        div ."o-settingsNav" {
-                            div ."o-settingsNav__group" {
-                                h3 ."o-settingsNav__groupHeader" { "Account" }
-                                a ."o-settingsNav__item" href="/settings/identity" { "Identity" }
-                                a ."o-settingsNav__item -active" href="/settings/messages"
-                                    aria-current="page" { "Message devices" }
-                            }
-                            div ."o-settingsNav__group" {
-                                h3 ."o-settingsNav__groupHeader" { "Social" }
-                                a ."o-settingsNav__item" href="/settings/profile" { "My Profile" }
-                                a ."o-settingsNav__item" href="/settings/following" { "Following" }
-                                a ."o-settingsNav__item" href="/settings/followers" { "Followers" }
-                            }
-                            div ."o-settingsNav__group" {
-                                h3 ."o-settingsNav__groupHeader" { "Developer" }
-                                a ."o-settingsNav__item" href="/settings/events" { "Event Explorer" }
-                                a ."o-settingsNav__item" href="/settings/p2p" { "P2P Explorer" }
-                            }
-                        }
+    private_page(
+        title,
+        "",
+        html! {
+            (super::settings::settings_navbar("messages"))
+            main ."o-mainBar" {
+                div ."o-mainBarTimeline m-directMessages" {
+                    div ."o-mainBarTimeline__tabs" {
+                        span ."o-mainBarTimeline__settingsTitle" { (title) }
                     }
-                    main ."o-mainBar" {
-                        div ."o-mainBarTimeline m-directMessages" {
-                            div ."o-mainBarTimeline__tabs" {
-                                span ."o-mainBarTimeline__settingsTitle" { (title) }
-                            }
-                            div ."o-settingsContent" { (content) }
-                        }
-                    }
+                    div ."o-settingsContent" { (content) }
                 }
             }
-        }
-    })
-    .into_response()
+        },
+    )
 }
 
 fn error_page(status: StatusCode, message: &str) -> Response {
@@ -267,7 +189,7 @@ fn error_page(status: StatusCode, message: &str) -> Response {
             p role="alert" { (message) }
             p { a href="/messages" { "Return to conversations" } }
         },
-        false,
+        true,
         0,
     );
     *response.status_mut() = status;
@@ -280,6 +202,13 @@ struct ConversationPanel {
 }
 
 const UNNAMED_PROFILE: &str = "Unnamed profile";
+
+/// The default profile name is an identity string, not a chosen display name.
+fn message_display_name(peer: RostraId, name: Option<&str>) -> &str {
+    name.map(str::trim)
+        .filter(|name| !name.is_empty() && *name != peer.to_short().to_string())
+        .unwrap_or(UNNAMED_PROFILE)
+}
 
 async fn conversation_panel_data(
     db: &rostra_client_db::Database,
@@ -297,12 +226,14 @@ async fn conversation_panel_data(
             .dm_count_unread(session.read_key(), Some(peer), 99)
             .await
             .map_err(storage_error)?;
-        let display_name = db
-            .get_social_profile(peer)
-            .await
-            .map(|profile| profile.display_name)
-            .filter(|display_name| !display_name.trim().is_empty())
-            .unwrap_or_else(|| UNNAMED_PROFILE.to_owned());
+        let profile = db.get_social_profile(peer).await;
+        let display_name = message_display_name(
+            peer,
+            profile
+                .as_ref()
+                .map(|profile| profile.display_name.as_str()),
+        )
+        .to_owned();
         rows.push((peer, display_name, pending));
     }
     Ok(ConversationPanel { rows, unread })
@@ -538,12 +469,12 @@ async fn render_thread(
         Err(error) => return Err(storage_error(error)),
     };
     let peer_profile = db.get_social_profile(peer).await;
-    let peer_display_name = peer_profile
-        .as_ref()
-        .map(|profile| profile.display_name.as_str())
-        .map(str::trim)
-        .filter(|display_name| !display_name.is_empty());
-    let peer_label = peer_display_name.unwrap_or(UNNAMED_PROFILE);
+    let peer_label = message_display_name(
+        peer,
+        peer_profile
+            .as_ref()
+            .map(|profile| profile.display_name.as_str()),
+    );
     let draft_key = format!("direct-message-draft-{}-{peer}", session.user.id());
     let draft_token_key = format!("direct-message-draft-token-{}-{peer}", session.user.id());
     let draft_token = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 32]>());
@@ -588,6 +519,7 @@ async fn render_thread(
     }
     let unread_after = panel_data.unread;
     let panel = render_conversation_panel(&panel_data, None, Some(peer));
+    let loading = fragment::AjaxLoadingAttrs::for_class("m-directMessages__sendButton");
     let mut response = page(
         "Conversation",
         panel,
@@ -624,7 +556,9 @@ async fn render_thread(
             form method="post" action=(thread_url(peer))
                 x-data=(draft_state)
                 x-init=[clear_draft]
-                x-target="direct-message-thread"
+                x-target="direct-message-thread direct-message-conversations direct-message-tabs"
+                "@ajax:before"=(loading.before)
+                "@ajax:after"=(loading.after)
                 "x-on:keyup.enter.ctrl"="if (!$event.repeat && !$event.isComposing && $event.keyCode !== 229) { $el.requestSubmit(); }"
             {
                 input type="hidden" name="csrf" value=(csrf);

@@ -407,73 +407,82 @@ impl UiState {
         _session: &UserSession,
         active_category: &str,
     ) -> RequestResult<Markup> {
-        Ok(html! {
-            nav ."o-navBar" {
-                div ."o-topNav" {
-                    a ."o-topNav__item" href="/following" {
-                        span ."o-topNav__icon -back" aria-hidden="true" {}
-                        span ."o-topNav__label" { "Back" }
+        Ok(settings_navbar(active_category))
+    }
+}
+
+/// Render Settings navigation without requiring authority to read account data.
+pub(super) fn settings_navbar(active_category: &str) -> Markup {
+    html! {
+        nav ."o-navBar" aria-label="Settings" {
+            div ."o-topNav" {
+                a ."o-topNav__item" href="/following" {
+                    span ."o-topNav__icon -back" aria-hidden="true" {}
+                    span ."o-topNav__label" { "Back" }
+                }
+            }
+
+            div ."o-settingsNav" {
+                div ."o-settingsNav__group" {
+                    h3 ."o-settingsNav__groupHeader" { "Account" }
+                    a ."o-settingsNav__item"
+                        ."-active"[active_category == "identity"]
+                        aria-current=[(active_category == "identity").then_some("page")]
+                        href="/settings/identity"
+                    {
+                        "Identity"
+                    }
+                    a ."o-settingsNav__item"
+                        ."-active"[active_category == "messages"]
+                        aria-current=[(active_category == "messages").then_some("page")]
+                        href="/settings/messages"
+                    {
+                        "Message devices"
+                    }
+                }
+                div ."o-settingsNav__group" {
+                    h3 ."o-settingsNav__groupHeader" { "Social" }
+                    a ."o-settingsNav__item"
+                        ."-active"[active_category == "profile"]
+                        href="/settings/profile"
+                    {
+                        "My Profile"
+                    }
+                    a ."o-settingsNav__item"
+                        ."-active"[active_category == "following"]
+                        href="/settings/following"
+                    {
+                        "Following"
+                    }
+                    a ."o-settingsNav__item"
+                        ."-active"[active_category == "followers"]
+                        href="/settings/followers"
+                    {
+                        "Followers"
                     }
                 }
 
-                div ."o-settingsNav" {
-                    div ."o-settingsNav__group" {
-                        h3 ."o-settingsNav__groupHeader" { "Account" }
-                        a ."o-settingsNav__item"
-                            ."-active"[active_category == "identity"]
-                            href="/settings/identity"
-                        {
-                            "Identity"
-                        }
-                        a ."o-settingsNav__item"
-                            ."-active"[active_category == "messages"]
-                            href="/settings/messages"
-                        {
-                            "Message devices"
-                        }
+                div ."o-settingsNav__group" {
+                    h3 ."o-settingsNav__groupHeader" { "Developer" }
+                    a ."o-settingsNav__item"
+                        ."-active"[active_category == "events"]
+                        href="/settings/events"
+                    {
+                        "Event Explorer"
                     }
-                    div ."o-settingsNav__group" {
-                        h3 ."o-settingsNav__groupHeader" { "Social" }
-                        a ."o-settingsNav__item"
-                            ."-active"[active_category == "profile"]
-                            href="/settings/profile"
-                        {
-                            "My Profile"
-                        }
-                        a ."o-settingsNav__item"
-                            ."-active"[active_category == "following"]
-                            href="/settings/following"
-                        {
-                            "Following"
-                        }
-                        a ."o-settingsNav__item"
-                            ."-active"[active_category == "followers"]
-                            href="/settings/followers"
-                        {
-                            "Followers"
-                        }
-                    }
-
-                    div ."o-settingsNav__group" {
-                        h3 ."o-settingsNav__groupHeader" { "Developer" }
-                        a ."o-settingsNav__item"
-                            ."-active"[active_category == "events"]
-                            href="/settings/events"
-                        {
-                            "Event Explorer"
-                        }
-                        a ."o-settingsNav__item"
-                            ."-active"[active_category == "p2p"]
-                            href="/settings/p2p"
-                        {
-                            "P2P Explorer"
-                        }
+                    a ."o-settingsNav__item"
+                        ."-active"[active_category == "p2p"]
+                        href="/settings/p2p"
+                    {
+                        "P2P Explorer"
                     }
                 }
             }
-        })
+        }
     }
+}
 
+impl UiState {
     /// Render identity settings, including the matching secret only for a
     /// secure read-write session.
     pub fn render_identity_settings(&self, session: &UserSession) -> Markup {

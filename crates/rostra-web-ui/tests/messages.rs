@@ -41,29 +41,36 @@ fn token(page: &str) -> String {
 }
 
 async fn settings_token(driver: &UiDriver) -> String {
-    let response = driver.get("/settings/messages").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    private_headers(&response);
-    let page = response.text().await.unwrap();
-    let document = Html::parse_document(&page);
-    if document
-        .select(&Selector::parse("input[name=csrf]").unwrap())
-        .next()
-        .is_some()
-    {
-        return token(&page);
-    }
-    let confirmation = document
-        .select(&Selector::parse("a[href^='/settings/messages/retire/']").unwrap())
-        .next()
-        .unwrap()
-        .value()
-        .attr("href")
-        .unwrap();
-    let response = driver.get(confirmation).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    private_headers(&response);
-    token(&response.text().await.unwrap())
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = driver.get("/settings/messages").await;
+            assert_eq!(response.status(), StatusCode::OK);
+            private_headers(&response);
+            let page = response.text().await.unwrap();
+            let document = Html::parse_document(&page);
+            if document
+                .select(&Selector::parse("input[name=csrf]").unwrap())
+                .next()
+                .is_some()
+            {
+                return token(&page);
+            }
+            if let Some(confirmation) = document
+                .select(&Selector::parse("a[href^='/settings/messages/retire/']").unwrap())
+                .next()
+            {
+                let response = driver.get(confirmation.value().attr("href").unwrap()).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                private_headers(&response);
+                return token(&response.text().await.unwrap());
+            }
+            // Enrollment persists the installation before publishing its device
+            // announcement. During that interval neither lifecycle form exists.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("message-device enrollment should expose a lifecycle form")
 }
 
 async fn replicate_device(server: &TestServer, source: RostraId, target: RostraId) {
@@ -133,6 +140,78 @@ fn assert_conversation_panel_has_no_start_form(document: &Html) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn private_workspace_uses_the_shared_shell_without_rich_content_resources() {
+    let server = TestServer::start().await;
+    let writer = server.driver();
+    writer.login_new_identity().await;
+    let following = Html::parse_document(&writer.get("/following").await.text().await.unwrap());
+    let settings =
+        Html::parse_document(&writer.get("/settings/profile").await.text().await.unwrap());
+    let favicon = Selector::parse("head link[rel=icon]").unwrap();
+    let runtime = Selector::parse("head script[src]").unwrap();
+    let top_nav = Selector::parse(".o-topNav a").unwrap();
+    let tabs = Selector::parse(".o-mainBarTimeline__tabs a").unwrap();
+    let settings_nav = Selector::parse(".o-settingsNav a").unwrap();
+    let links = |document: &Html, selector: &Selector| {
+        document
+            .select(selector)
+            .map(|link| link.value().attr("href").unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let expected_runtime = following
+        .select(&runtime)
+        .filter_map(|script| script.value().attr("src"))
+        .filter(|src| !src.contains("/prismjs/") && !src.contains("/mathjax-"))
+        .collect::<Vec<_>>();
+    for path in ["/messages", "/settings/messages", "/messages/not-an-id"] {
+        let response = writer.get(path).await;
+        private_headers(&response);
+        let document = Html::parse_document(&response.text().await.unwrap());
+        assert_eq!(links(&document, &favicon), links(&following, &favicon));
+        assert_eq!(
+            document
+                .select(&runtime)
+                .filter_map(|script| script.value().attr("src"))
+                .collect::<Vec<_>>(),
+            expected_runtime,
+        );
+        assert!(
+            document
+                .select(&Selector::parse("script:not([src]), style, [style]").unwrap())
+                .next()
+                .is_none()
+        );
+        assert!(
+            document
+                .select(&Selector::parse("body[x-data=notifications] .o-notificationArea").unwrap())
+                .next()
+                .is_some()
+        );
+        if path == "/settings/messages" {
+            assert_eq!(
+                links(&document, &settings_nav),
+                links(&settings, &settings_nav)
+            );
+        } else {
+            assert_eq!(links(&document, &top_nav), links(&following, &top_nav));
+            assert_eq!(links(&document, &tabs), links(&following, &tabs));
+        }
+        if path == "/messages/not-an-id" {
+            assert!(
+                document
+                    .select(&Selector::parse("#direct-message-thread.-open [role=alert]").unwrap())
+                    .next()
+                    .is_some(),
+                "private errors must remain visible in the mobile thread layout"
+            );
+        }
+    }
+    let css = writer.get("/assets/nojs.css").await;
+    assert_eq!(css.status(), StatusCode::OK);
+    assert!(css.text().await.unwrap().contains(".u-requiresJs"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn private_pages_require_this_sessions_secret_and_protect_all_responses() {
     let server = TestServer::start().await;
     let anonymous = server.driver();
@@ -166,7 +245,10 @@ async fn private_pages_require_this_sessions_secret_and_protect_all_responses() 
         scripts,
         [
             "/assets/libs/alpinejs-persist@3.14.3.js",
+            "/assets/libs/alpinejs-intersect@3.14.3.js",
+            "/assets/libs/alpinejs-morph@3.14.3.js",
             "/assets/libs/alpine-ajax@0.12.6.js",
+            "/assets/app.js",
             "/assets/libs/alpinejs@3.14.3.js"
         ]
     );
@@ -414,6 +496,28 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .expect("persisted draft state");
     assert!(draft_state.contains(&alice_id.to_string()));
     assert!(draft_state.contains(&bob_id.to_string()));
+    for target in composer
+        .value()
+        .attr("x-target")
+        .unwrap()
+        .split_whitespace()
+    {
+        assert!(
+            document
+                .select(&Selector::parse(&format!("#{target}")).unwrap())
+                .next()
+                .is_some()
+        );
+    }
+    assert!(
+        composer
+            .value()
+            .attr("x-target")
+            .unwrap()
+            .contains("direct-message-conversations")
+    );
+    assert!(composer.value().attr("@ajax:before").is_some());
+    assert!(composer.value().attr("@ajax:after").is_some());
     assert_eq!(
         composer.value().attr("x-on:keyup.enter.ctrl"),
         Some(

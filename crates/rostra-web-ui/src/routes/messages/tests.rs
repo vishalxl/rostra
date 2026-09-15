@@ -9,6 +9,33 @@ use tracing::{Event, Metadata, Subscriber};
 use super::{error_page, publication_error, sensitive_response, storage_error, take_page};
 
 #[test]
+fn default_identity_names_are_not_shown_as_message_display_names() {
+    use rostra_core::id::ToShort as _;
+
+    let id = rostra_core::id::RostraIdSecretKey::generate().id();
+    for name in [
+        None,
+        Some(""),
+        Some("  "),
+        Some(id.to_short().to_string().as_str()),
+    ] {
+        assert_eq!(
+            super::message_display_name(id, name),
+            super::UNNAMED_PROFILE
+        );
+    }
+    assert_eq!(super::message_display_name(id, Some(" Alice ")), "Alice");
+    let other = rostra_core::id::RostraIdSecretKey::generate().id();
+    for name in [
+        id.to_string(),
+        other.to_string(),
+        other.to_short().to_string(),
+    ] {
+        assert_eq!(super::message_display_name(id, Some(&name)), name);
+    }
+}
+
+#[test]
 fn bounded_lookahead_only_offers_pages_with_another_row() {
     for count in [0, 1, 31, 32, 33, 64] {
         let (page, more) = take_page((0..count).collect::<Vec<_>>());

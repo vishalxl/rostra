@@ -911,58 +911,13 @@ impl UiState {
 
                     } @else {
 
-                        a ."o-mainBarTimeline__followees"
-                            ."-active"[mode.is_followees()]
-                            href=(TimelineMode::Followees.to_path())
-                            aria-current=[mode.is_followees().then_some("page")]
-                        {
-                            span ."o-mainBarTimeline__tabIcon -followees" aria-hidden="true" {}
-                            span ."o-mainBarTimeline__tabLabel" { "Following" }
-                            span ."o-mainBarTimeline__newCount" x-text="formatCount(followees)" {}
-                        }
-                        a ."o-mainBarTimeline__network"
-                            ."-active"[mode.is_network()]
-                            href=(TimelineMode::Network.to_path())
-                            aria-current=[mode.is_network().then_some("page")]
-                        {
-                            span ."o-mainBarTimeline__tabIcon -network" aria-hidden="true" {}
-                            span ."o-mainBarTimeline__tabLabel" { "Network" }
-                            span ."o-mainBarTimeline__newCount" x-text="formatCount(network)" {}
-                        }
-                        a ."o-mainBarTimeline__news"
-                            ."-active"[mode.is_news()]
-                            href=(TimelineMode::News.to_path())
-                            aria-current=[mode.is_news().then_some("page")]
-                        {
-                            span ."o-mainBarTimeline__tabIcon -news" aria-hidden="true" {}
-                            span ."o-mainBarTimeline__tabLabel" { "News" }
-                        }
-                        a ."o-mainBarTimeline__notifications"
-                            ."-active"[mode.is_notifications()]
-                            href=(TimelineMode::Notifications.to_path())
-                            aria-current=[mode.is_notifications().then_some("page")]
-                            ":class"="{ '-pending': notifications > 0 }"
-                        {
-                            span ."o-mainBarTimeline__tabIcon -notifications" aria-hidden="true" {}
-                            span ."o-mainBarTimeline__tabLabel" { "Notifications" }
-                            span ."o-mainBarTimeline__pendingNotifications" x-text="formatCount(notifications)" {}
-                        }
-                        a ."o-mainBarTimeline__shoutbox"
-                            href="/shoutbox"
-                            ":class"="{ '-pending': shoutbox > 0 }"
-                        {
-                            span ."o-mainBarTimeline__tabIcon -shoutbox" aria-hidden="true" {}
-                            span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
-                            span ."o-mainBarTimeline__newCount" x-text="formatCount(shoutbox)" {}
-                        }
-                        a ."o-mainBarTimeline__messages"
-                            href="/messages"
-                            ":class"="{ '-pending': messages > 0 }"
-                        {
-                            span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
-                            span ."o-mainBarTimeline__tabLabel" { "Messages" }
-                            span ."o-mainBarTimeline__newCount" x-text="formatCount(messages)" {}
-                        }
+                        (super::fragment::timeline_tab_links(
+                            if mode.is_followees() { "followees" }
+                            else if mode.is_network() { "network" }
+                            else if mode.is_news() { "news" }
+                            else if mode.is_notifications() { "notifications" }
+                            else { "" }, pending_counts, true,
+                        ))
                     }
                 }
                 // DEBUG: notification counting info (enable with ROSTRA_DEBUG_NOTIFICATIONS=1)

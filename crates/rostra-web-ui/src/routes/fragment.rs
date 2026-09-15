@@ -8,6 +8,53 @@ use std::collections::BTreeSet;
 use maud::{Markup, html};
 use rostra_core::event::PersonaTag;
 
+/// Render the shared timeline destinations with static or live unread badges.
+///
+/// Live callers supply the surrounding `badgeCounts` Alpine component. Private
+/// pages can use ordinary server counts without opening an updates connection.
+pub(crate) fn timeline_tab_links(
+    active: &str,
+    counts: super::timeline::PendingCounts,
+    live: bool,
+) -> Markup {
+    html! {
+        @for (key, path, label, count) in [
+            ("followees", "/following", "Following", counts.followees),
+            ("network", "/network", "Network", counts.network),
+            ("news", "/news", "News", 0),
+            ("notifications", "/notifications", "Notifications", counts.notifications),
+            ("shoutbox", "/shoutbox", "Shoutbox", counts.shoutbox),
+            ("messages", "/messages", "Messages", counts.messages),
+        ] {
+            a .(format!("o-mainBarTimeline__{key}"))
+                ."-active"[active == key]
+                ."-pending"[count > 0 && matches!(key, "notifications" | "shoutbox" | "messages")]
+                href=(path)
+                aria-current=[(active == key).then_some("page")]
+                ":class"=[(live && matches!(key, "notifications" | "shoutbox" | "messages"))
+                    .then(|| format!("{{ '-pending': {key} > 0 }}"))]
+            {
+                span ."o-mainBarTimeline__tabIcon" .(format!("-{key}")) aria-hidden="true" {}
+                span ."o-mainBarTimeline__tabLabel" { (label) }
+                @if key != "news" {
+                    span .(if key == "notifications" {
+                        "o-mainBarTimeline__pendingNotifications"
+                    } else {
+                        "o-mainBarTimeline__newCount"
+                    })
+                        x-text=[live.then(|| format!("formatCount({key})"))]
+                    {
+                        @if count > 0 {
+                            (count.min(99))
+                            @if count >= 99 { "+" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Renders a user avatar image.
 pub fn avatar(class: &str, src: impl maud::Render, alt: &str) -> Markup {
     html! {

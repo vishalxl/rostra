@@ -139,51 +139,7 @@ pub async fn get_shoutbox(
                 {
                     span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
                 }
-                a ."o-mainBarTimeline__followees"
-                    href="/following"
-                {
-                    span ."o-mainBarTimeline__tabIcon -followees" aria-hidden="true" {}
-                    span ."o-mainBarTimeline__tabLabel" { "Following" }
-                    span ."o-mainBarTimeline__newCount" x-text="formatCount(followees)" {}
-                }
-                a ."o-mainBarTimeline__network"
-                    href="/network"
-                {
-                    span ."o-mainBarTimeline__tabIcon -network" aria-hidden="true" {}
-                    span ."o-mainBarTimeline__tabLabel" { "Network" }
-                    span ."o-mainBarTimeline__newCount" x-text="formatCount(network)" {}
-                }
-                a ."o-mainBarTimeline__news"
-                    href="/news"
-                {
-                    span ."o-mainBarTimeline__tabIcon -news" aria-hidden="true" {}
-                    span ."o-mainBarTimeline__tabLabel" { "News" }
-                }
-                a ."o-mainBarTimeline__notifications"
-                    href="/notifications"
-                    ":class"="{ '-pending': notifications > 0 }"
-                {
-                    span ."o-mainBarTimeline__tabIcon -notifications" aria-hidden="true" {}
-                    span ."o-mainBarTimeline__tabLabel" { "Notifications" }
-                    span ."o-mainBarTimeline__pendingNotifications" x-text="formatCount(notifications)" {}
-                }
-                a ."o-mainBarTimeline__shoutbox -active"
-                    href="/shoutbox"
-                    aria-current="page"
-                    ":class"="{ '-pending': shoutbox > 0 }"
-                {
-                    span ."o-mainBarTimeline__tabIcon -shoutbox" aria-hidden="true" {}
-                    span ."o-mainBarTimeline__tabLabel" { "Shoutbox" }
-                    span ."o-mainBarTimeline__newCount" x-text="formatCount(shoutbox)" {}
-                }
-                a ."o-mainBarTimeline__messages"
-                    href="/messages"
-                    ":class"="{ '-pending': messages > 0 }"
-                {
-                    span ."o-mainBarTimeline__tabIcon -messages" aria-hidden="true" {}
-                    span ."o-mainBarTimeline__tabLabel" { "Messages" }
-                    span ."o-mainBarTimeline__newCount" x-text="formatCount(messages)" {}
-                }
+                (super::fragment::timeline_tab_links("shoutbox", super::timeline::PendingCounts { messages, ..Default::default() }, true))
             }
 
             // Scrollable messages area (oldest at top, newest at bottom)
