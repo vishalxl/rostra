@@ -889,6 +889,7 @@ impl UiState {
                         href="/"
                         onclick="history.back(); return false;"
                         aria-label="Back"
+                        title="Back"
                     {
                         span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
                     }
@@ -905,6 +906,7 @@ impl UiState {
                         a ."o-mainBarTimeline__feedLink"
                             href=(profile_feed_url(profile_id))
                             title="Atom feed"
+                            aria-label="Atom feed"
                         {
                             span ."o-mainBarTimeline__feedLinkIcon" {}
                         }

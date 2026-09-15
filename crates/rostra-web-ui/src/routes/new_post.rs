@@ -239,13 +239,13 @@ pub async fn post_new_post(
     // Clear the form content after posting (clear_content = true clears persisted
     // draft)
     let clean_form = if form.news {
-        state.news_post_form_inner(
+        UiState::news_post_form_inner(
             state.ro_mode(session.session_token()),
             Some(client_ref.rostra_id()),
             true,
         )
     } else {
-        state.new_post_form_inner(
+        UiState::new_post_form_inner(
             state.ro_mode(session.session_token()),
             Some(client_ref.rostra_id()),
             true,
@@ -579,7 +579,7 @@ pub async fn get_inline_reply(
 
     // AJAX path: return the fragment
     if is_ajax {
-        let form_markup = state.render_inline_reply_form(
+        let form_markup = UiState::render_inline_reply_form(
             form.reply_to,
             form.post_thread_id,
             self_id,
@@ -757,7 +757,6 @@ fn focus_on_inline_reply_content(textarea_id: &str) -> Markup {
 
 impl UiState {
     fn render_inline_reply_form(
-        &self,
         reply_to: ExternalEventId,
         post_thread_id: ShortEventId,
         self_id: RostraId,
@@ -879,12 +878,14 @@ impl UiState {
                                 href="https://htmlpreview.github.io/?https://github.com/jgm/djot/blob/master/doc/syntax.html"
                                 target="_blank"
                                 title="Formatting help"
+                                aria-label="Formatting help"
                             {
                                 span ."m-inlineReply__helpButtonIcon" {}
                             }
                             a ."m-inlineReply__emojiButton u-requiresJs"
                                 href="#"
                                 title="Insert emoji"
+                                aria-label="Insert emoji"
                                 onclick=(emoji_onclick)
                             { "😀" }
                             button
@@ -892,6 +893,7 @@ impl UiState {
                                 type="submit"
                                 form=(attach_form_id)
                                 title="Attach media"
+                                aria-label="Attach media"
                                 disabled[ro.to_disabled()]
                             {
                                 span ."m-inlineReply__attachButtonIcon" {}
@@ -901,6 +903,7 @@ impl UiState {
                                 type="submit"
                                 form=(cancel_form_id)
                                 title="Cancel"
+                                aria-label="Cancel"
                                 onclick=(cancel_onclick)
                             {
                                 span ."m-inlineReply__cancelButtonIcon" {}
@@ -912,6 +915,7 @@ impl UiState {
                                 .call())
                         } @else {
                             (fragment::button("m-inlineReply__previewButton", "Preview")
+                                .title("Preview reply (Ctrl+Enter)")
                                 .call())
                         }
                     }
@@ -966,11 +970,10 @@ impl UiState {
     }
 
     pub(crate) fn news_post_form(&self, ro: RoMode, user_id: Option<RostraId>) -> Markup {
-        self.news_post_form_inner(ro, user_id, false)
+        Self::news_post_form_inner(ro, user_id, false)
     }
 
     pub(crate) fn news_post_form_inner(
-        &self,
         ro: RoMode,
         user_id: Option<RostraId>,
         clear_content: bool,
@@ -1096,12 +1099,15 @@ impl UiState {
                             href="https://htmlpreview.github.io/?https://github.com/jgm/djot/blob/master/doc/syntax.html"
                             target="_blank"
                             title="Formatting help"
+                            aria-label="Formatting help"
                         {
                             span ."m-newPostForm__helpButtonIcon" {}
                         }
                         a
                             ."m-newPostForm__emojiButton u-requiresJs"
                             href="#"
+                            title="Insert emoji"
+                            aria-label="Insert emoji"
                             onclick="toggleEmojiPicker('emoji-picker-container', event)"
                         { "😀" }
                         @if ro.is_ro() {
@@ -1110,6 +1116,7 @@ impl UiState {
                                 .call())
                         } @else {
                             (fragment::button("m-newPostForm__previewButton", "Preview")
+                                .title("Preview post (Ctrl+Enter)")
                                 .call())
                         }
                     }
@@ -1146,15 +1153,10 @@ impl UiState {
         ro: RoMode,
         user_id: Option<RostraId>,
     ) -> Markup {
-        self.new_post_form_inner(ro, user_id, false)
+        Self::new_post_form_inner(ro, user_id, false)
     }
 
-    fn new_post_form_inner(
-        &self,
-        ro: RoMode,
-        user_id: Option<RostraId>,
-        clear_content: bool,
-    ) -> Markup {
+    fn new_post_form_inner(ro: RoMode, user_id: Option<RostraId>, clear_content: bool) -> Markup {
         html! {
             // Hidden form for new post preview updates (must be outside main form)
             form id="new-post-preview-form"
@@ -1258,12 +1260,15 @@ impl UiState {
                             href="https://htmlpreview.github.io/?https://github.com/jgm/djot/blob/master/doc/syntax.html"
                             target="_blank"
                             title="Formatting help"
+                            aria-label="Formatting help"
                         {
                             span ."m-newPostForm__helpButtonIcon" {}
                         }
                         a
                             ."m-newPostForm__emojiButton u-requiresJs"
                             href="#"
+                            title="Insert emoji"
+                            aria-label="Insert emoji"
                             onclick="toggleEmojiPicker('emoji-picker-container', event)"
                         { "😀" }
                         @if user_id.is_some() {
@@ -1272,6 +1277,7 @@ impl UiState {
                                 type="submit"
                                 form="media-attach-form"
                                 title="Attach media"
+                                aria-label="Attach media"
                                 disabled[ro.to_disabled()]
                             {
                                 span ."m-newPostForm__attachButtonIcon" {}
@@ -1281,6 +1287,7 @@ impl UiState {
                                 ."m-newPostForm__attachButton u-requiresJs"
                                 type="button"
                                 title="Attach media"
+                                aria-label="Attach media"
                                 disabled
                             {
                                 span ."m-newPostForm__attachButtonIcon" {}
@@ -1292,6 +1299,7 @@ impl UiState {
                                 .call())
                         } @else {
                             (fragment::button("m-newPostForm__previewButton", "Preview")
+                                .title("Preview post (Ctrl+Enter)")
                                 .call())
                         }
                     }
@@ -1328,3 +1336,6 @@ impl UiState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -5,11 +5,12 @@ use rostra_client_db::{EventContentAvailability, QuotaPruneReason};
 use rostra_core::event::SocialPost;
 use rostra_core::id::RostraId;
 use rostra_core::{ExternalEventId, ShortEventId, Timestamp};
+use scraper::{Html, Selector};
 
 use super::{
     UnavailablePostContent, fetch_post_response, find_own_reaction, is_own_reaction,
-    post_title_markup, present_post_content_markup, requested_author_matches_event,
-    unavailable_post_content_markup,
+    post_title_markup, present_post_content_markup, render_inline_edit_post_form,
+    requested_author_matches_event, unavailable_post_content_markup,
 };
 
 #[test]
@@ -26,6 +27,32 @@ fn retained_event_cannot_be_rendered_as_another_author() {
         requested_author,
         Some(actual_author)
     ));
+}
+
+#[test]
+fn post_editor_advertises_its_existing_ctrl_enter_shortcut() {
+    let document = Html::parse_fragment(
+        &render_inline_edit_post_form(
+            RostraId::from_bytes([42; 32]),
+            ShortEventId::from_bytes([43; 16]),
+            ShortEventId::from_bytes([44; 16]),
+            "post-target",
+            "Post content",
+            None,
+        )
+        .into_string(),
+    );
+    let save = document
+        .select(&Selector::parse(".m-inlineReply__previewButton").unwrap())
+        .next()
+        .expect("post editor should render Save");
+    assert_eq!(save.value().attr("title"), Some("Save post (Ctrl+Enter)"));
+
+    let textarea = document
+        .select(&Selector::parse(".m-inlineReply__content").unwrap())
+        .next()
+        .expect("post editor should render a textarea");
+    assert!(textarea.value().attr("x-on:keyup.enter.ctrl").is_some());
 }
 
 #[test]

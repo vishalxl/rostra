@@ -96,6 +96,7 @@ impl UiState {
                             .data_value(&self_id.to_string())
                             .onclick("copyIdToClipboard(event)")
                             .aria_label("Copy RostraId")
+                            .title("Copy RostraId")
                             .call())
                     }
                 }

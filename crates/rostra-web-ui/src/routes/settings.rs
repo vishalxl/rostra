@@ -503,6 +503,7 @@ impl UiState {
                         .data_value(&id)
                         .onclick("copyIdToClipboard(event)")
                         .aria_label("Copy RostraId")
+                        .title("Copy RostraId")
                         .call())
                 }
             }

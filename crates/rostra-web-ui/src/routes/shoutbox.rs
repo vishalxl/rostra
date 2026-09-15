@@ -136,6 +136,7 @@ pub async fn get_shoutbox(
                     href="/"
                     onclick="history.back(); return false;"
                     aria-label="Back"
+                    title="Back"
                 {
                     span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
                 }

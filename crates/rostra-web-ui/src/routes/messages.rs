@@ -130,7 +130,7 @@ fn page(
             main ."o-mainBar" {
                 div ."o-mainBarTimeline m-directMessages" {
                     div id="direct-message-tabs" ."o-mainBarTimeline__tabs" {
-                        a ."o-mainBarTimeline__back" href="/" aria-label="Back" {
+                        a ."o-mainBarTimeline__back" href="/" aria-label="Back" title="Back" {
                             span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
                         }
                         (fragment::timeline_tab_links(

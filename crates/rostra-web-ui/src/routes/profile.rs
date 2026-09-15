@@ -321,6 +321,7 @@ impl UiState {
                             .data_value(&profile_id.to_string())
                             .onclick("copyIdToClipboard(event)")
                             .aria_label("Copy RostraId")
+                            .title("Copy RostraId")
                             .call())
                         @if session.id() != profile_id {
                             a ."m-profileSummary__messageButton u-button"

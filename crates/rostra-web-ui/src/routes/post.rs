@@ -1053,7 +1053,9 @@ fn render_inline_edit_post_form(
                                 .form(&cancel_form_id)
                                 .call())
                         }
-                        (fragment::button("m-inlineReply__previewButton", "Save").call())
+                        (fragment::button("m-inlineReply__previewButton", "Save")
+                            .title("Save post (Ctrl+Enter)")
+                            .call())
                     }
                 }
 

@@ -199,6 +199,7 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
         .next()
         .unwrap();
     assert_eq!(back.value().attr("aria-label"), Some("Back"));
+    assert_eq!(back.value().attr("title"), Some("Back"));
     assert!(
         back.select(&Selector::parse(".o-mainBarTimeline__tabIcon.-back").unwrap())
             .next()
