@@ -2451,6 +2451,11 @@ input:checked+.slider:before {
   background: var(--color-button-bg-hover);
 }
 
+.o-settingsNav__item:focus-visible {
+  outline: 2px solid var(--color-link);
+  outline-offset: 2px;
+}
+
 .o-settingsNav__item.-active {
   background: var(--color-button-bg);
   font-weight: bold;
@@ -3747,16 +3752,14 @@ body.-keyboard-nav * {
 }
 
 .m-directMessages__history,
-.m-directMessages__conversations,
 .m-directMessages__devices {
   list-style: none;
   padding: 0;
 }
 
 .m-directMessages__conversations {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  margin-top: 1rem;
+  list-style: none;
 }
 
 .m-directMessages__conversations > li {
@@ -3764,23 +3767,14 @@ body.-keyboard-nav * {
   padding: 0;
 }
 
-.m-directMessages__conversations > li > a {
+.m-directMessages__conversationLink {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.2rem 0.5rem;
-  padding: 0.75rem;
-  color: inherit;
-  text-decoration: none;
-}
-
-.m-directMessages__conversations > li.-active {
-  background: var(--color-pre-bg);
-  border-color: var(--color-link);
 }
 
 .m-directMessages__conversationPeer {
   overflow: hidden;
-  font-weight: bold;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3797,7 +3791,6 @@ body.-keyboard-nav * {
 }
 
 .m-directMessages__message,
-.m-directMessages__conversations > li,
 .m-directMessages__devices > li {
   padding: 1rem;
   margin-block: 1rem;

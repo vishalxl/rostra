@@ -749,6 +749,19 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         !conversation.text().collect::<String>().contains(text),
         "conversation list must not expose message previews"
     );
+    let selected = alice.get(&path).await;
+    let selected = Html::parse_document(&selected.text().await.unwrap());
+    let conversation_panel = selected
+        .select(&Selector::parse(".m-directMessages__conversationPanel").unwrap())
+        .next()
+        .expect("conversation panel");
+    assert!(
+        conversation_panel
+            .select(&Selector::parse(&format!("a[aria-current=page][href='{path}']")).unwrap(),)
+            .next()
+            .is_some(),
+        "the open conversation should expose its current-page state"
+    );
     let local = alice_client
         .db()
         .dm_local_installation()

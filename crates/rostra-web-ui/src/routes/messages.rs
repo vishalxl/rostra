@@ -248,10 +248,14 @@ fn render_conversation_panel(
         @if panel.rows.is_empty() {
             p ."m-directMessages__empty" { "No conversations on this installation yet." }
         }
-        ul ."m-directMessages__conversations" {
+        ul ."o-settingsNav__group m-directMessages__conversations" {
             @for (peer, display_name, pending) in &panel.rows {
-                li ."-active"[selected == Some(*peer)] {
-                    a href=(thread_url(*peer)) {
+                li {
+                    a ."o-settingsNav__item m-directMessages__conversationLink"
+                        ."-active"[selected == Some(*peer)]
+                        aria-current=[(selected == Some(*peer)).then_some("page")]
+                        href=(thread_url(*peer))
+                    {
                         span ."m-directMessages__conversationPeer" { (display_name) }
                         @if *pending > 0 {
                             span ."m-directMessages__unread" aria-label=(format!("{pending} unread messages")) {
