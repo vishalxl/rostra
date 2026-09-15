@@ -3678,11 +3678,6 @@ body.-keyboard-nav * {
 
 .m-directMessages__threadHeader h1 a {
   color: inherit;
-  text-decoration: none;
-}
-
-.m-directMessages__threadHeader h1 a:hover {
-  text-decoration: underline;
 }
 
 .m-directMessages__thread {
