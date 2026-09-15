@@ -16,8 +16,7 @@ use serde::Deserialize;
 
 use self::session::MessageSession;
 pub(super) use self::settings::{get_retirement, get_settings, post_settings};
-use super::post::metadata::display_name_or_short_id;
-use super::url::{RostraPathId, redirect_to_canonical};
+use super::url::{RostraPathId, profile_url, redirect_to_canonical};
 use super::{Maud, fragment, recovery};
 
 type MessageResult = Result<Response, Response>;
@@ -271,15 +270,11 @@ fn error_page(status: StatusCode, message: &str) -> Response {
 }
 
 struct ConversationPanel {
-    rows: Vec<(rostra_client_db::dm::HistoryEntry, RostraId, usize)>,
-    recipient_suggestions: Vec<RecipientSuggestion>,
+    rows: Vec<(RostraId, String, usize)>,
     unread: usize,
 }
 
-struct RecipientSuggestion {
-    id: RostraId,
-    label: String,
-}
+const UNNAMED_PROFILE: &str = "Unnamed profile";
 
 async fn conversation_panel_data(
     db: &rostra_client_db::Database,
@@ -297,34 +292,15 @@ async fn conversation_panel_data(
             .dm_count_unread(session.read_key(), Some(peer), 99)
             .await
             .map_err(storage_error)?;
-        rows.push((entry.clone(), peer, pending));
-    }
-    let mut seen = std::collections::HashSet::new();
-    let suggestion_ids = rows
-        .iter()
-        .map(|(_, peer, _)| *peer)
-        .chain(db.get_known_identities_bounded(64).await)
-        .filter(|id| *id != session.user.id() && seen.insert(*id))
-        .take(64)
-        .collect::<Vec<_>>();
-
-    let mut recipient_suggestions = Vec::with_capacity(suggestion_ids.len());
-    for id in suggestion_ids {
-        let label = db
-            .get_social_profile(id)
+        let display_name = db
+            .get_social_profile(peer)
             .await
             .map(|profile| profile.display_name)
-            .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| id.to_short().to_string());
-        recipient_suggestions.push(RecipientSuggestion { id, label });
+            .filter(|display_name| !display_name.trim().is_empty())
+            .unwrap_or_else(|| UNNAMED_PROFILE.to_owned());
+        rows.push((peer, display_name, pending));
     }
-    recipient_suggestions.sort_by_cached_key(|suggestion| suggestion.label.to_lowercase());
-
-    Ok(ConversationPanel {
-        rows,
-        recipient_suggestions,
-        unread,
-    })
+    Ok(ConversationPanel { rows, unread })
 }
 
 fn render_conversation_panel(
@@ -333,37 +309,19 @@ fn render_conversation_panel(
     selected: Option<RostraId>,
 ) -> Markup {
     html! {
-        form ."m-directMessages__start" method="get" action="/messages/open" {
-            label for="message-peer" { "Start a conversation" }
-             div ."m-directMessages__startRow" {
-                 input id="message-peer" name="peer" type="text" required
-                    list="message-peer-suggestions" autocomplete="off"
-                    placeholder="Recipient's name or Rostra ID";
-                 (fragment::button("m-directMessages__openButton", "Open").call())
-             }
-             datalist id="message-peer-suggestions" {
-                 @for suggestion in &panel.recipient_suggestions {
-                     option value=(suggestion.id.to_short()) label=(&suggestion.label) {}
-                 }
-             }
-         }
         @if panel.rows.is_empty() {
             p ."m-directMessages__empty" { "No conversations on this installation yet." }
         }
         ul ."m-directMessages__conversations" {
-            @for (entry, peer, pending) in &panel.rows {
+            @for (peer, display_name, pending) in &panel.rows {
                 li ."-active"[selected == Some(*peer)] {
                     a href=(thread_url(*peer)) {
-                        span ."m-directMessages__conversationPeer" { (peer.to_short()) }
+                        span ."m-directMessages__conversationPeer" { (display_name) }
                         @if *pending > 0 {
                             span ."m-directMessages__unread" aria-label=(format!("{pending} unread messages")) {
                                 ((*pending).min(99))
                                 @if *pending >= 99 { "+" }
                             }
-                        }
-                        span ."m-directMessages__preview" {
-                            (entry.text.chars().take(80).collect::<String>())
-                            @if entry.text.chars().count() > 80 { "…" }
                         }
                     }
                 }
@@ -477,7 +435,7 @@ pub(super) async fn get_messages(
         html! {
             div ."m-directMessages__welcome" {
                 h2 { "Your conversations" }
-                p { "Choose a recipient on the left, or start a new conversation." }
+                p { "Choose a conversation on the left." }
                 p { "History is local to this installation and does not automatically appear on another device." }
             }
         },
@@ -578,8 +536,7 @@ async fn render_thread(
         .map(|profile| profile.display_name.as_str())
         .map(str::trim)
         .filter(|display_name| !display_name.is_empty());
-    let peer_short_id = peer.to_short().to_string();
-    let peer_label = display_name_or_short_id(peer_display_name, &peer_short_id);
+    let peer_label = peer_display_name.unwrap_or(UNNAMED_PROFILE);
     let conversations = db.dm_conversations(None, 32).await.map_err(storage_error)?;
     let mut panel_data = conversation_panel_data(db, session, &conversations).await?;
     if error.is_none() {
@@ -595,7 +552,7 @@ async fn render_thread(
         if let Some((_, _, unread)) = panel_data
             .rows
             .iter_mut()
-            .find(|(_, row_peer, _)| *row_peer == peer)
+            .find(|(row_peer, _, _)| *row_peer == peer)
         {
             *unread = unread.saturating_sub(marked);
         }
@@ -608,11 +565,9 @@ async fn render_thread(
         html! {
             header ."m-directMessages__threadHeader" {
                 a ."m-directMessages__mobileBack" href="/messages" { "← Conversations" }
-                h1 { (peer_label) }
-                @if peer_display_name.is_some() {
-                    p ."m-directMessages__identity" { (peer_short_id) }
+                h1 {
+                    a href=(profile_url(peer)) { (peer_label) }
                 }
-                p { "Private conversation" }
             }
             @if let Some((_, error)) = error { p role="alert" { (error) } }
             @if unavailable {
@@ -639,8 +594,7 @@ async fn render_thread(
             }
             form method="post" action=(thread_url(peer)) {
                 input type="hidden" name="csrf" value=(csrf);
-                label for="message-text" { "Plain-text message (up to 16 KiB of UTF-8)" }
-                textarea id="message-text" name="text" rows="5" required
+                textarea id="message-text" name="text" rows="5" required aria-label="Message"
                     maxlength="16384" autocomplete="off" disabled[unavailable] { (draft) }
                 (fragment::button("m-directMessages__sendButton", "Send")
                     .disabled(unavailable)

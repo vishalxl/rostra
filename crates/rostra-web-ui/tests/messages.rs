@@ -104,7 +104,7 @@ async fn replicate_event(
         .unwrap();
 }
 
-fn assert_conversation_panel_keeps_its_workflow_controls(document: &Html) {
+fn assert_conversation_panel_has_no_start_form(document: &Html) {
     let panel = document
         .select(&Selector::parse(".m-directMessages__conversationPanel").unwrap())
         .next()
@@ -113,8 +113,8 @@ fn assert_conversation_panel_keeps_its_workflow_controls(document: &Html) {
         panel
             .select(&Selector::parse("form[action='/messages/open']").unwrap())
             .next()
-            .is_some(),
-        "conversation panel should retain the ordinary start-conversation form"
+            .is_none(),
+        "conversation panel should only list existing conversations"
     );
     assert!(
         panel
@@ -254,26 +254,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     let path = format!("/messages/{}", bob_id.to_short());
     let page = alice.get("/messages").await.text().await.unwrap();
     let document = Html::parse_document(&page);
-    assert_conversation_panel_keeps_its_workflow_controls(&document);
-    let open_form = document
-        .select(&Selector::parse("form[action='/messages/open']").unwrap())
-        .next()
-        .unwrap();
-    assert_eq!(open_form.value().attr("method"), Some("get"));
-    let peer_input = open_form
-        .select(&Selector::parse("input[name='peer']").unwrap())
-        .next()
-        .unwrap();
-    assert_eq!(
-        peer_input.value().attr("list"),
-        Some("message-peer-suggestions")
-    );
-    let bob_short = bob_id.to_short().to_string();
-    let suggestion = open_form
-        .select(&Selector::parse("datalist option").unwrap())
-        .find(|option| option.value().attr("value") == Some(bob_short.as_str()))
-        .expect("locally known recipient suggestion");
-    assert_eq!(suggestion.value().attr("label"), Some("Bob Example"));
+    assert_conversation_panel_has_no_start_form(&document);
     let response = alice.get(&format!("/messages/open?peer={bob_id}")).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()[header::LOCATION], path);
@@ -305,7 +286,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     assert_eq!(response.status(), StatusCode::OK);
     let page = response.text().await.unwrap();
     let document = Html::parse_document(&page);
-    assert_conversation_panel_keeps_its_workflow_controls(&document);
+    assert_conversation_panel_has_no_start_form(&document);
     let header = document
         .select(&Selector::parse(".m-directMessages__threadHeader").unwrap())
         .next()
@@ -319,14 +300,19 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .collect::<String>(),
         "Bob Example"
     );
+    let recipient_link = header
+        .select(&Selector::parse("h1 a").unwrap())
+        .next()
+        .expect("recipient profile link");
     assert_eq!(
-        header
-            .select(&Selector::parse(".m-directMessages__identity").unwrap())
-            .next()
-            .expect("recipient ID")
+        recipient_link.value().attr("href"),
+        Some(format!("/profile/{}", bob_id.to_short()).as_str())
+    );
+    assert!(
+        !header
             .text()
-            .collect::<String>(),
-        bob_id.to_short().to_string()
+            .collect::<String>()
+            .contains("Private conversation")
     );
     assert!(
         document
@@ -342,6 +328,15 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .value()
             .attr("disabled")
             .is_none()
+    );
+    assert_eq!(
+        document
+            .select(&Selector::parse("textarea[name=text]").unwrap())
+            .next()
+            .expect("message composer")
+            .value()
+            .attr("aria-label"),
+        Some("Message")
     );
     assert!(
         document
@@ -448,14 +443,24 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
                 .any(|element| element.text().collect::<String>() == text)
         );
     }
-    assert!(
-        alice
-            .get("/messages")
-            .await
+    let conversations = alice.get("/messages").await.text().await.unwrap();
+    let conversations = Html::parse_document(&conversations);
+    let conversation = conversations
+        .select(&Selector::parse(&format!("a[href='{path}']")).unwrap())
+        .next()
+        .expect("conversation");
+    assert_eq!(
+        conversation
+            .select(&Selector::parse(".m-directMessages__conversationPeer").unwrap())
+            .next()
+            .expect("conversation display name")
             .text()
-            .await
-            .unwrap()
-            .contains(&path)
+            .collect::<String>(),
+        "Bob Example"
+    );
+    assert!(
+        !conversation.text().collect::<String>().contains(text),
+        "conversation list must not expose message previews"
     );
     let local = alice_client
         .db()
@@ -661,7 +666,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn conversation_header_falls_back_to_ids_and_escapes_local_profile_names() {
+async fn conversation_header_uses_unnamed_fallback_and_escapes_profile_names() {
     let server = TestServer::start().await;
     let alice = server.driver();
     let bob = server.driver();
@@ -689,14 +694,16 @@ async fn conversation_header_falls_back_to_ids_and_escapes_local_profile_names()
             .expect("fallback identity")
             .text()
             .collect::<String>(),
-        charlie_id.to_short().to_string()
+        "Unnamed profile"
     );
-    assert!(
+    assert_eq!(
         fallback_header
-            .select(&Selector::parse(".m-directMessages__identity").unwrap())
+            .select(&Selector::parse("h1 a").unwrap())
             .next()
-            .is_none(),
-        "the fallback ID should not repeat as secondary context"
+            .expect("fallback profile link")
+            .value()
+            .attr("href"),
+        Some(format!("/profile/{}", charlie_id.to_short()).as_str())
     );
 
     let malicious_name = "<img src=x onerror=alert(1)>".to_owned();
@@ -737,12 +744,12 @@ async fn conversation_header_falls_back_to_ids_and_escapes_local_profile_names()
     );
     assert_eq!(
         header
-            .select(&Selector::parse(".m-directMessages__identity").unwrap())
+            .select(&Selector::parse("h1 a").unwrap())
             .next()
-            .expect("recipient ID")
-            .text()
-            .collect::<String>(),
-        bob_id.to_short().to_string()
+            .expect("recipient profile link")
+            .value()
+            .attr("href"),
+        Some(format!("/profile/{}", bob_id.to_short()).as_str())
     );
     assert!(
         header
