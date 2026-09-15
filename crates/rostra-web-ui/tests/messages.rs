@@ -402,6 +402,12 @@ async fn ajax_send_clears_only_the_submitted_draft_instance() {
     assert!(clear.contains("localStorage.getItem"));
     assert!(clear.contains("text = ''"));
     assert!(clear.contains("draftToken = "));
+    let textarea = page
+        .select(&Selector::parse("textarea[name=text]").unwrap())
+        .next()
+        .expect("AJAX response composer");
+    assert_eq!(textarea.value().attr("autofocus"), None);
+    assert_eq!(textarea.value().attr("x-init"), None);
 
     let page = alice.get(&path).await;
     assert_eq!(page.status(), StatusCode::OK);
@@ -546,6 +552,17 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .attr("aria-label"),
         Some("Message")
     );
+    let textarea = document
+        .select(&Selector::parse("textarea[name=text]").unwrap())
+        .next()
+        .expect("message composer");
+    assert_eq!(textarea.value().attr("autofocus"), Some(""));
+    assert_eq!(
+        textarea.value().attr("x-init"),
+        Some(
+            "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus({ preventScroll: true }); })"
+        )
+    );
     let composer = document
         .select(&Selector::parse("form[action^='/messages/']").unwrap())
         .find(|form| {
@@ -652,15 +669,13 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     private_headers(&response);
     let document = Html::parse_document(&response.text().await.unwrap());
-    assert_eq!(
-        document
-            .select(&Selector::parse("textarea").unwrap())
-            .next()
-            .unwrap()
-            .text()
-            .collect::<String>(),
-        oversized
-    );
+    let textarea = document
+        .select(&Selector::parse("textarea").unwrap())
+        .next()
+        .expect("validation response composer");
+    assert_eq!(textarea.text().collect::<String>(), oversized);
+    assert_eq!(textarea.value().attr("autofocus"), None);
+    assert_eq!(textarea.value().attr("x-init"), None);
     let response = alice
         .post_form(&path, &[("text", text), ("csrf", csrf.as_str())])
         .await;
@@ -1014,6 +1029,12 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .select(&Selector::parse("a").unwrap())
             .any(|link| link.text().collect::<String>() == "Older messages")
     );
+    let textarea = document
+        .select(&Selector::parse("textarea[name=text]").unwrap())
+        .next()
+        .expect("older-history composer");
+    assert_eq!(textarea.value().attr("autofocus"), None);
+    assert_eq!(textarea.value().attr("x-init"), None);
     drop(alice_client);
     drop(bob_client);
     server.shutdown().await;

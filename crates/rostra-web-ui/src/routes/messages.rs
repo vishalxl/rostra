@@ -417,6 +417,10 @@ pub(super) struct ThreadQuery {
     before_time: Option<u64>,
     /// Event-ID tie breaker.
     before_event: Option<ShortEventId>,
+    /// Browser convenience applied only when entering the latest conversation
+    /// view.
+    #[serde(skip)]
+    focus_composer_on_open: bool,
 }
 
 /// Render retained history and an ordinary HTTP composer with progressive
@@ -426,13 +430,14 @@ pub(super) async fn get_thread(
     session: MessageSession,
     Path(path): Path<RostraPathId>,
     OriginalUri(uri): OriginalUri,
-    Query(query): Query<ThreadQuery>,
+    Query(mut query): Query<ThreadQuery>,
 ) -> MessageResult {
     let client = session.client().ok_or_else(access_error)?;
     let peer = resolve_peer(path, client.db()).await?;
     if let Some(response) = redirect_to_canonical(&uri, thread_url(peer)) {
         return Ok(response);
     }
+    query.focus_composer_on_open = query.before_time.is_none() && query.before_event.is_none();
     render_thread(&state, &session, peer, query, "", None, None).await
 }
 
@@ -585,6 +590,10 @@ async fn render_thread(
                 input type="hidden" name="draft_token" x-model="draftToken";
                 textarea id="message-text" name="text" rows="5" required aria-label="Message"
                     maxlength="16384" autocomplete="off" disabled[unavailable]
+                    autofocus[query.focus_composer_on_open]
+                    x-init=[query.focus_composer_on_open.then_some(
+                        "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus({ preventScroll: true }); })"
+                    )]
                     x-model="text"
                     "@input"="draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')" { (draft) }
                 (fragment::button("m-directMessages__sendButton", "Send")
