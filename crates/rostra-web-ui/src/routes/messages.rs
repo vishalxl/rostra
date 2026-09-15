@@ -108,15 +108,8 @@ pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
 }
 
 /// Render the workspace through the shared application shell.
-fn page(
-    title: &str,
-    conversation_panel: Markup,
-    content: Markup,
-    thread_open: bool,
-    unread: usize,
-) -> Response {
+fn page(conversation_panel: Markup, content: Markup, thread_open: bool, unread: usize) -> Response {
     private_page(
-        title,
         "m-directMessagesLayout",
         PageResources::PrivateRich,
         html! {
@@ -150,18 +143,13 @@ fn page(
 
 /// Share the document, asset policy, and notification runtime with normal
 /// pages.
-fn private_page(
-    title: &str,
-    layout_class: &str,
-    resources: PageResources,
-    content: Markup,
-) -> Response {
+fn private_page(layout_class: &str, resources: PageResources, content: Markup) -> Response {
     Maud(html! {
-        (DOCTYPE)
-        html lang="en" {
-            (UiState::render_html_head(
-                &format!("{title} — Rostra"), None, None, None, true, resources,
-            ))
+            (DOCTYPE)
+            html lang="en" {
+                (UiState::render_html_head(
+                    "Rostra", None, None, None, true, resources,
+                ))
             (render_html_body(content, layout_class, resources))
         }
     })
@@ -171,7 +159,6 @@ fn private_page(
 /// Render private message administration with the shared Settings navigation.
 fn settings_page(title: &str, content: Markup) -> Response {
     private_page(
-        title,
         "",
         PageResources::Private,
         html! {
@@ -190,7 +177,6 @@ fn settings_page(title: &str, content: Markup) -> Response {
 
 fn error_page(status: StatusCode, message: &str) -> Response {
     let mut response = page(
-        "Private messages",
         html! {},
         html! {
             p role="alert" { (message) }
@@ -377,7 +363,6 @@ pub(super) async fn get_messages(
     let unread = panel_data.unread;
     let panel = render_conversation_panel(&panel_data, next.as_deref(), None);
     Ok(page(
-        "Private messages",
         panel,
         html! {
             div ."m-directMessages__welcome" {
@@ -551,7 +536,6 @@ async fn render_thread(
         ));
     }
     let mut response = page(
-        "Conversation",
         panel,
         html! {
             header ."m-directMessages__threadHeader" {

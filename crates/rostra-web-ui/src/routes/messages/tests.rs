@@ -6,7 +6,7 @@ use rostra_client_db::DbError;
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Metadata, Subscriber};
 
-use super::{error_page, publication_error, sensitive_response, storage_error, take_page};
+use super::{error_page, page, publication_error, sensitive_response, storage_error, take_page};
 
 #[test]
 fn default_identity_names_are_not_shown_as_message_display_names() {
@@ -42,6 +42,17 @@ fn bounded_lookahead_only_offers_pages_with_another_row() {
         assert_eq!(page.len(), count.min(32));
         assert_eq!(more, count > 32);
     }
+}
+
+#[tokio::test]
+async fn message_pages_use_the_shared_rostra_document_title() {
+    let response = page(maud::html! {}, maud::html! {}, false, 0);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body = std::str::from_utf8(&body).unwrap();
+
+    assert!(body.contains("<title>Rostra</title>"));
 }
 
 /// Capture only structured test diagnostics, without a global subscriber.
