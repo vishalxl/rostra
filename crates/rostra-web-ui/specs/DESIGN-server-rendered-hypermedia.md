@@ -20,10 +20,12 @@ HTTP login form. The page treats the generated credential as sensitive.
 Alpine and alpine-ajax are the approved enhancement mechanism. Client code is
 reserved for small browser-local behavior that HTML and HTTP cannot reasonably
 provide, such as clipboard access, focus and keyboard conveniences, or upload
-progress. Custom fetch/XHR, client-rendered markup, duplicated authoritative
-state, and client-side workflow state machines require explicit justification.
-JavaScript is never a security boundary, and a dialog cannot be the only way to
-reach a core action.
+progress and drafts. These conveniences are governed by
+[REQ-ui-functionality-security](REQ-ui-functionality-security.md). Custom
+fetch/XHR, client-rendered markup, duplicated authoritative state, and
+client-side workflow state machines require explicit justification. JavaScript
+is never a security boundary, and a dialog cannot be the only way to reach a
+core action.
 
 Prefer one server-owned step or page to chained overlays and client-managed
 stages. An exception must identify the affected flow, explain why it is needed,

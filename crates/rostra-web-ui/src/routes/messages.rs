@@ -492,7 +492,8 @@ pub(super) struct ThreadQuery {
     before_event: Option<ShortEventId>,
 }
 
-/// Render retained history and an ordinary no-JavaScript composer.
+/// Render retained history and an ordinary HTTP composer with progressive
+/// enhancement.
 pub(super) async fn get_thread(
     session: MessageSession,
     Path(path): Path<RostraPathId>,

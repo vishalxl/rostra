@@ -21,6 +21,8 @@ in place; they must not rely on a redirect to preserve the request body.
 
 ## Private-message HTTP access
 
+The functionality/security balance for these routes is governed by
+[`REQ-ui-functionality-security`](crates/rostra-web-ui/specs/REQ-ui-functionality-security.md).
 Every `/messages` and `/settings/messages` request requires the exact requesting
 session's in-memory identity secret and a matching full active client. A second
 session's activation, a public-only login, or an open database is not authority
@@ -43,6 +45,11 @@ is allowed. No message text enters a URL, log, delivery receipt, or
 decryption-result callback. Local plaintext, including browser-persisted drafts,
 persists independently of ciphertext and epoch-key deletion; this is not
 endpoint or forensic-storage confidentiality.
+
+The named script, CSP, and browser-storage details describe the current
+implementation, not immutable stakeholder choices. Changes may use other
+mechanisms only while preserving the governing requirement and the
+authorization, escaping, response-protection, and leakage boundaries above.
 
 ## User-controlled media responses
 

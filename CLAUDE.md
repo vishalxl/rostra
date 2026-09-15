@@ -11,6 +11,8 @@ user-controlled media. Before driving Rostra through a browser, also use the
 
 This project uses the Linked Specs convention; consult the `linked-specs`
 skill before working with specs or governed code.
+For web UI functionality/security tradeoffs, also read
+[`REQ-ui-functionality-security`](crates/rostra-web-ui/specs/REQ-ui-functionality-security.md).
 
 ## Project Overview
 
@@ -125,6 +127,11 @@ Key web UI files:
   changed workflows must work through ordinary HTTP without JavaScript. Alpine
   is progressive enhancement; `/unlock` Create Account is the documented
   browser-local exception that fills the login form without submitting.
+- Apply
+  [`REQ-ui-functionality-security`](crates/rostra-web-ui/specs/REQ-ui-functionality-security.md):
+  the no-JavaScript baseline is not a ban on required first-party browser
+  conveniences, and implementation mechanisms do not become stakeholder
+  mandates.
 - For keyboard shortcuts that trigger `requestSubmit()`, always use `keyup` (not `keydown`). `keydown` fires repeatedly with key auto-repeat, which can cause duplicate form submissions and race conditions in alpine-ajax.
 - Keep authenticated Settings recovery export server-rendered, session-scoped,
   unavailable to read-only sessions, and protected by the sensitive response
