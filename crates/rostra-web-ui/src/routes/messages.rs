@@ -18,6 +18,7 @@ use self::session::MessageSession;
 pub(super) use self::settings::{get_retirement, get_settings, post_settings};
 use super::url::{RostraPathId, profile_url, redirect_to_canonical};
 use super::{Maud, fragment, recovery};
+use crate::util::extractors::AjaxRequest;
 
 type MessageResult = Result<Response, Response>;
 
@@ -94,7 +95,7 @@ pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
         ),
     );
     response.headers_mut().insert(
@@ -104,8 +105,8 @@ pub(super) fn sensitive_response(body: impl IntoResponse) -> Response {
     response
 }
 
-/// Render a complete private page without scripts, embeds, or remote
-/// resources.
+/// Render a complete private page with only the composer scripts and
+/// same-origin resources.
 fn page(
     title: &str,
     conversation_panel: Markup,
@@ -123,6 +124,9 @@ fn page(
                 meta name="robots" content="noindex";
                 title { (title) " — Rostra" }
                 link rel="stylesheet" href="/assets/style.css";
+                script defer src="/assets/libs/alpinejs-persist@3.14.3.js" {}
+                script defer src="/assets/libs/alpine-ajax@0.12.6.js" {}
+                script defer src="/assets/libs/alpinejs@3.14.3.js" {}
             }
             body ."o-body" {
                 div ."o-pageLayout m-directMessagesLayout" {
@@ -186,7 +190,8 @@ fn page(
                                     }
                                 }
                             }
-                            div ."m-directMessages__thread" ."-open"[thread_open] { (content) }
+                            div id="direct-message-thread"
+                                ."m-directMessages__thread" ."-open"[thread_open] { (content) }
                         }
                     }
                 }
@@ -499,7 +504,7 @@ pub(super) async fn get_thread(
     if let Some(response) = redirect_to_canonical(&uri, thread_url(peer)) {
         return Ok(response);
     }
-    render_thread(client.db(), &session, peer, query, "", None).await
+    render_thread(client.db(), &session, peer, query, "", None, None).await
 }
 
 async fn render_thread(
@@ -509,6 +514,7 @@ async fn render_thread(
     query: ThreadQuery,
     draft: &str,
     error: Option<(StatusCode, &str)>,
+    sent_draft_token: Option<&str>,
 ) -> MessageResult {
     let entries = db
         .dm_history_with_sequences(peer, query.before_time.zip(query.before_event), 33)
@@ -537,6 +543,28 @@ async fn render_thread(
         .map(str::trim)
         .filter(|display_name| !display_name.is_empty());
     let peer_label = peer_display_name.unwrap_or(UNNAMED_PROFILE);
+    let draft_key = format!("direct-message-draft-{}-{peer}", session.user.id());
+    let draft_token_key = format!("direct-message-draft-token-{}-{peer}", session.user.id());
+    let draft_token = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 32]>());
+    let draft_state = format!(
+        "{{ text: $persist({}).as({}), draftToken: $persist({}).as({}) }}",
+        serde_json::to_string(draft).expect("message draft is JSON serializable"),
+        serde_json::to_string(&draft_key).expect("draft key is JSON serializable"),
+        serde_json::to_string(&draft_token).expect("draft token is JSON serializable"),
+        serde_json::to_string(&draft_token_key).expect("draft token key is JSON serializable"),
+    );
+    let clear_draft = sent_draft_token.map(|sent_draft_token| {
+        let next_draft_token = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 32]>());
+        format!(
+            "if (draftToken === {sent} && (() => {{ try {{ return localStorage.getItem({key}) === JSON.stringify({sent}); }} catch {{ return true; }} }})()) {{ text = ''; draftToken = {next}; }}",
+            sent = serde_json::to_string(sent_draft_token)
+                .expect("sent draft token is JSON serializable"),
+            key = serde_json::to_string(&draft_token_key)
+                .expect("draft token key is JSON serializable"),
+            next = serde_json::to_string(&next_draft_token)
+                .expect("next draft token is JSON serializable"),
+        )
+    });
     let conversations = db.dm_conversations(None, 32).await.map_err(storage_error)?;
     let mut panel_data = conversation_panel_data(db, session, &conversations).await?;
     if error.is_none() {
@@ -592,10 +620,18 @@ async fn render_thread(
                     }
                 }
             }
-            form method="post" action=(thread_url(peer)) {
+            form method="post" action=(thread_url(peer))
+                x-data=(draft_state)
+                x-init=[clear_draft]
+                x-target="direct-message-thread"
+                "x-on:keyup.enter.ctrl"="if (!$event.repeat && !$event.isComposing && $event.keyCode !== 229) { $el.requestSubmit(); }"
+            {
                 input type="hidden" name="csrf" value=(csrf);
+                input type="hidden" name="draft_token" x-model="draftToken";
                 textarea id="message-text" name="text" rows="5" required aria-label="Message"
-                    maxlength="16384" autocomplete="off" disabled[unavailable] { (draft) }
+                    maxlength="16384" autocomplete="off" disabled[unavailable]
+                    x-model="text"
+                    "@input"="draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')" { (draft) }
                 (fragment::button("m-directMessages__sendButton", "Send")
                     .disabled(unavailable)
                     .call())
@@ -617,12 +653,16 @@ pub(super) struct SendForm {
     csrf: String,
     /// User text, encoded only after all authorization checks.
     text: String,
+    /// Browser-local draft instance submitted only to clear the sent draft.
+    #[serde(default)]
+    draft_token: String,
 }
 
 /// Send once through an ordinary POST followed by a 303 redirect.
 pub(super) async fn post_message(
     session: MessageSession,
     Path(path): Path<RostraPathId>,
+    AjaxRequest(is_ajax): AjaxRequest,
     Form(form): Form<SendForm>,
 ) -> MessageResult {
     session.check_csrf(&form.csrf).await?;
@@ -648,6 +688,25 @@ pub(super) async fn post_message(
             ThreadQuery::default(),
             &form.text,
             Some(error),
+            None,
+        )
+        .await;
+    }
+    if is_ajax {
+        let sent_draft_token = (form.draft_token.len() == 64
+            && form
+                .draft_token
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(form.draft_token.as_str());
+        return render_thread(
+            client.db(),
+            &session,
+            peer,
+            ThreadQuery::default(),
+            "",
+            None,
+            sent_draft_token,
         )
         .await;
     }

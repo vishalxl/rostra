@@ -21,6 +21,10 @@ per-message forward secrecy, delivery guarantees, or proof of a particular
 person's authorship. Retained plaintext history is outside ciphertext-erasure
 protection, and logical deletion is not forensic erasure.
 
+## Status
+
+Unverified.
+
 ## Assumptions
 
 - The native age X25519 wrapping and authenticated file format provide their

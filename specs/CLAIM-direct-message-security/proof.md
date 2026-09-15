@@ -165,15 +165,23 @@ the sending installation.
    POST handlers validate a separate random session synchronizer token before
    sending, retiring, or re-enrolling. They never use the actual session token
    as an HTML form value. Message text is Maud-escaped plain text, not markup,
-   and private pages have no scripts, embeds, or automatic external links.
-   Response middleware covers successful pages, 303/308 redirects, extractor
-   errors, and missing routes with sensitive headers and a restrictive CSP.
-   The ordinary HTTP integration tests exercise a public-only session while
+   and private pages have no embeds or automatic external links. Conversation
+   pages load only the self-hosted Alpine persistence, AJAX, and core scripts;
+   their CSP permits those same-origin scripts and Alpine's expression evaluator
+   but no inline or remote script source. Browser drafts use distinct
+   account-and-recipient local-storage keys. An AJAX send clears only when the
+   response's submitted draft-instance token still matches the current persisted
+   instance; edits rotate that token, so a delayed response does not clear newer
+   text. The ordinary form remains a POST/303 workflow without JavaScript.
+   Response middleware covers successful pages, AJAX responses, 303/308
+   redirects, extractor errors, and missing routes with sensitive headers and a
+   restrictive CSP. Integration tests exercise a public-only session while
    another session has the same account unlocked, cross-session token rejection,
-   logout, escaped hostile text, failed sends preserving drafts, successful
-   send/receive, and retirement/re-enrollment. Retirement uses an ordinary
-   read-only confirmation page before the explicit POST; typed lifecycle forms
-   reject missing or extraneous action fields before mutation.
+   logout, account/recipient draft scoping, delayed-clear guards, escaped hostile
+   text, failed sends preserving drafts, successful send/receive, and
+   retirement/re-enrollment. Retirement uses an ordinary read-only confirmation
+   page before the explicit POST; typed lifecycle forms reject missing or
+   extraneous action fields before mutation.
 
 Together these steps connect the explicitly assumed primitive/host guarantees
 to account-bound accepted plaintext, qualified outsider envelope confidentiality,
@@ -188,8 +196,10 @@ conditional epoch protection, and session-local HTTP access.
   as itself. Such active insiders are outside recipient-concealment scope.
   Known public device counts, sender-other membership, and spillover reveal
   predicates to insiders; public graph/timing behavior can identify recipients.
-- Retained sent and received text is deliberately plaintext in local history.
-  Database, browser, backup, or endpoint access can reveal it after epoch expiry.
+- Retained sent and received text is deliberately plaintext in local history,
+  and unsent composer drafts persist in browser local storage. Database, browser,
+  backup, or endpoint access can reveal those plaintext copies after epoch
+  expiry.
   Zeroizing application temporaries is best-effort hygiene, not a statement
   about compiler copies, allocator pages, redb pages, swap, or forensic erasure.
 - Sampled ordinary wall time is not trusted elapsed time. Clock jumps can erase

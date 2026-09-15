@@ -29,15 +29,20 @@ session-bound synchronizer token before any mutation; it is not the session
 credential. Full and short identity paths resolve through the ordinary retained
 identity rules before use.
 
-These workflows return ordinary complete HTML pages and 303 redirects, without
-JavaScript. Message text and previews are escaped plain text, never Djot, HTML,
-external embeds, or automatic links. All response classes, including extractor
-errors, missing routes, and redirects, use private/no-store caching,
+These workflows return ordinary complete HTML pages and 303 redirects and remain
+usable without JavaScript. Thread composers use the same self-hosted Alpine
+persistence mechanism as new-post forms for account-and-recipient-scoped browser
+drafts and Ctrl+Enter submission. Message text is escaped plain text, never Djot,
+HTML, external embeds, or automatic links. All response classes, including
+extractor errors, missing routes, and redirects, use private/no-store caching,
 identity/no-compression, no-referrer, nosniff, framing denial, and a restrictive
-CSP that permits only same-origin CSS/images/forms. No message text enters a URL,
-log, delivery receipt, or decryption-result callback. Local plaintext persists
-independently of ciphertext and epoch-key deletion; this is not endpoint or
-forensic-storage confidentiality.
+CSP that permits only the required same-origin scripts, CSS, images, and forms.
+Alpine's AJAX requests have same-origin connect access, and its attribute
+expression evaluator requires `unsafe-eval`; no inline or remote script source
+is allowed. No message text enters a URL, log, delivery receipt, or
+decryption-result callback. Local plaintext, including browser-persisted drafts,
+persists independently of ciphertext and epoch-key deletion; this is not
+endpoint or forensic-storage confidentiality.
 
 ## User-controlled media responses
 

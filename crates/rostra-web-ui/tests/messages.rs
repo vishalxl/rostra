@@ -20,12 +20,12 @@ fn private_headers(response: &Response) {
     assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
     assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "DENY");
     assert_eq!(response.headers()[header::CONTENT_ENCODING], "identity");
-    assert!(
-        response.headers()[header::CONTENT_SECURITY_POLICY]
-            .to_str()
-            .unwrap()
-            .contains("default-src 'none'")
-    );
+    let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("default-src 'none'"));
+    assert!(csp.contains("script-src 'self' 'unsafe-eval'"));
+    assert!(csp.contains("connect-src 'self'"));
 }
 
 fn token(page: &str) -> String {
@@ -157,11 +157,18 @@ async fn private_pages_require_this_sessions_secret_and_protect_all_responses() 
     private_headers(&response);
     let page = response.text().await.unwrap();
     assert!(!page.contains(&secret.to_string()));
-    assert!(
-        Html::parse_document(&page)
-            .select(&Selector::parse("script").unwrap())
-            .next()
-            .is_none()
+    let page = Html::parse_document(&page);
+    let scripts = page
+        .select(&Selector::parse("script[src]").unwrap())
+        .filter_map(|script| script.value().attr("src"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scripts,
+        [
+            "/assets/libs/alpinejs-persist@3.14.3.js",
+            "/assets/libs/alpine-ajax@0.12.6.js",
+            "/assets/libs/alpinejs@3.14.3.js"
+        ]
     );
     let response = writer.get("/messages/invalid").await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -224,6 +231,61 @@ async fn private_pages_require_this_sessions_secret_and_protect_all_responses() 
     let response = writer.get("/messages").await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     private_headers(&response);
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ajax_send_clears_only_the_submitted_draft_instance() {
+    let server = TestServer::start().await;
+    let alice = server.driver();
+    let bob = server.driver();
+    let (alice_id, _) = alice.login_new_identity().await;
+    let (bob_id, _) = bob.login_new_identity().await;
+    replicate_device(&server, bob_id, alice_id).await;
+
+    let path = format!("/messages/{}", bob_id.to_short());
+    let page = alice.get(&path).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let csrf = token(&page.text().await.unwrap());
+    let sent_draft_token = "a".repeat(64);
+    let response = alice
+        .ajax_post_form(
+            &path,
+            &[
+                ("text", "sent with Alpine"),
+                ("csrf", csrf.as_str()),
+                ("draft_token", sent_draft_token.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    private_headers(&response);
+    let page = Html::parse_document(&response.text().await.unwrap());
+    assert!(
+        page.select(&Selector::parse("#direct-message-thread").unwrap())
+            .next()
+            .is_some()
+    );
+    let composer = page
+        .select(&Selector::parse("form[x-init]").unwrap())
+        .next()
+        .expect("successful AJAX response draft clear");
+    let clear = composer.value().attr("x-init").unwrap();
+    assert!(clear.contains(&format!("draftToken === \"{sent_draft_token}\"")));
+    assert!(clear.contains(&format!("direct-message-draft-token-{alice_id}-{bob_id}")));
+    assert!(clear.contains("localStorage.getItem"));
+    assert!(clear.contains("text = ''"));
+    assert!(clear.contains("draftToken = "));
+
+    let page = alice.get(&path).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let page = Html::parse_document(&page.text().await.unwrap());
+    assert!(
+        page.select(&Selector::parse("form[x-init]").unwrap())
+            .next()
+            .is_none(),
+        "ordinary navigation must not clear a draft"
+    );
     server.shutdown().await;
 }
 
@@ -338,6 +400,46 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .attr("aria-label"),
         Some("Message")
     );
+    let composer = document
+        .select(&Selector::parse("form[action^='/messages/']").unwrap())
+        .find(|form| {
+            form.select(&Selector::parse("textarea[name=text]").unwrap())
+                .next()
+                .is_some()
+        })
+        .expect("message composer form");
+    let draft_state = composer
+        .value()
+        .attr("x-data")
+        .expect("persisted draft state");
+    assert!(draft_state.contains(&alice_id.to_string()));
+    assert!(draft_state.contains(&bob_id.to_string()));
+    assert_eq!(
+        composer.value().attr("x-on:keyup.enter.ctrl"),
+        Some(
+            "if (!$event.repeat && !$event.isComposing && $event.keyCode !== 229) { $el.requestSubmit(); }"
+        )
+    );
+    assert_eq!(
+        composer
+            .select(&Selector::parse("textarea[name=text]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("x-model"),
+        Some("text")
+    );
+    assert_eq!(
+        composer
+            .select(&Selector::parse("textarea[name=text]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("@input"),
+        Some(
+            "draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')"
+        )
+    );
     assert!(
         document
             .select(&Selector::parse(".m-directMessages__sendButton").unwrap())
@@ -424,16 +526,30 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     })
     .await
     .unwrap();
-    for (driver, path) in [
-        (&alice, path.clone()),
-        (&bob, format!("/messages/{}", alice_id.to_short())),
-    ] {
+    let bob_path = format!("/messages/{}", alice_id.to_short());
+    let bob_page = bob.get(&bob_path).await;
+    assert_eq!(bob_page.status(), StatusCode::OK);
+    let bob_page = Html::parse_document(&bob_page.text().await.unwrap());
+    let bob_draft_state = bob_page
+        .select(&Selector::parse("form[x-data]").unwrap())
+        .next()
+        .expect("Bob composer")
+        .value()
+        .attr("x-data")
+        .expect("Bob draft state");
+    assert!(bob_draft_state.contains(&bob_id.to_string()));
+    assert!(bob_draft_state.contains(&alice_id.to_string()));
+    assert_ne!(
+        draft_state, bob_draft_state,
+        "draft keys must distinguish the current account"
+    );
+    for (driver, path) in [(&alice, path.clone()), (&bob, bob_path)] {
         let response = driver.get(&path).await;
         private_headers(&response);
         let document = Html::parse_document(&response.text().await.unwrap());
         assert!(
             document
-                .select(&Selector::parse("img, script, iframe").unwrap())
+                .select(&Selector::parse("img, iframe, script:not([src])").unwrap())
                 .next()
                 .is_none()
         );
@@ -705,6 +821,16 @@ async fn conversation_header_uses_unnamed_fallback_and_escapes_profile_names() {
             .attr("href"),
         Some(format!("/profile/{}", charlie_id.to_short()).as_str())
     );
+    let charlie_draft = fallback
+        .select(&Selector::parse("form[x-data]").unwrap())
+        .next()
+        .expect("Charlie composer")
+        .value()
+        .attr("x-data")
+        .expect("Charlie draft key")
+        .to_owned();
+    assert!(charlie_draft.contains(&alice_id.to_string()));
+    assert!(charlie_draft.contains(&charlie_id.to_string()));
 
     let malicious_name = "<img src=x onerror=alert(1)>".to_owned();
     server
@@ -729,6 +855,16 @@ async fn conversation_header_uses_unnamed_fallback_and_escapes_profile_names() {
     let page = page.text().await.unwrap();
     assert!(!page.contains(&malicious_name));
     let document = Html::parse_document(&page);
+    let bob_draft = document
+        .select(&Selector::parse("form[x-data]").unwrap())
+        .next()
+        .expect("Bob composer")
+        .value()
+        .attr("x-data")
+        .expect("Bob draft key");
+    assert!(bob_draft.contains(&alice_id.to_string()));
+    assert!(bob_draft.contains(&bob_id.to_string()));
+    assert_ne!(bob_draft, charlie_draft);
     let header = document
         .select(&Selector::parse(".m-directMessages__threadHeader").unwrap())
         .next()
