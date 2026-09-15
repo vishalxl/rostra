@@ -449,6 +449,15 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .attr("disabled")
             .is_none()
     );
+    assert_eq!(
+        document
+            .select(&Selector::parse(".m-directMessages__sendButton").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("title"),
+        Some("Send message (Ctrl+Enter)")
+    );
     let csrf = token(&page);
     let text = "<img src=\"https://outsider.invalid/pixel\"> **not markup**\nsecond line";
     let response = alice
