@@ -1578,6 +1578,10 @@ emoji-picker {
   background-color: var(--color-timeline-bg);
 }
 
+.o-mainBarTimeline__back {
+  flex: 0 0 auto;
+}
+
 .o-mainBarTimeline__tabIcon {
   display: inline-block;
   flex: 0 0 auto;
