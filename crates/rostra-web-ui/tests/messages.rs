@@ -243,11 +243,25 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
 async fn private_pages_require_this_sessions_secret_and_protect_all_responses() {
     let server = TestServer::start().await;
     let anonymous = server.driver();
-    for path in ["/messages", "/settings/messages", "/messages/not-an-id"] {
+    for (path, location) in [
+        ("/messages", "/unlock?redirect=%2Fmessages"),
+        (
+            "/settings/messages",
+            "/unlock?redirect=%2Fsettings%2Fmessages",
+        ),
+        (
+            "/messages/not-an-id",
+            "/unlock?redirect=%2Fmessages%2Fnot-an-id",
+        ),
+        (
+            "/messages/open?peer=not-an-id",
+            "/unlock?redirect=%2Fmessages%2Fopen%3Fpeer%3Dnot-an-id",
+        ),
+    ] {
         let response = anonymous.get(path).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], location);
         private_headers(&response);
-        assert!(response.text().await.unwrap().contains("<html"));
     }
     let writer = server.driver();
     let (id, secret) = writer.login_new_identity().await;
@@ -355,7 +369,11 @@ async fn private_pages_require_this_sessions_secret_and_protect_all_responses() 
     );
     writer.post_form("/unlock/logout", &[]).await;
     let response = writer.get("/messages").await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        "/unlock?redirect=%2Fmessages"
+    );
     private_headers(&response);
     server.shutdown().await;
 }

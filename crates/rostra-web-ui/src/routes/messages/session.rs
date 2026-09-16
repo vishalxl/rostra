@@ -2,7 +2,7 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, request};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use rostra_core::id::RostraIdSecretKey;
 use tower_sessions::Session;
 
@@ -39,7 +39,7 @@ impl FromRequestParts<SharedState> for MessageSession {
         };
         let user = UserSession::from_request_parts(parts, state)
             .await
-            .map_err(|_| denied())?;
+            .map_err(IntoResponse::into_response)?;
         let secret = state.id_secret(user.session_token()).ok_or_else(denied)?;
         let handle = state.client(user.id()).await.map_err(|_| denied())?;
         handle
