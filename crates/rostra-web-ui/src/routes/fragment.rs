@@ -55,6 +55,55 @@ pub(crate) fn timeline_tab_links(
     }
 }
 
+/// Render the shared mention and emoji autocomplete result list.
+pub(crate) fn text_autocomplete(id: &str, upward: bool) -> Markup {
+    let option_id = format!("'{id}-option-' + index");
+    html! {
+        div id=(id) ."m-textAutocomplete" ."-upward"[upward]
+            role="listbox"
+            x-show="showDropdown"
+            x-cloak
+            "@click.outside"="showDropdown = false"
+        {
+            template x-if="autocompleteType === 'mention'" {
+                div {
+                    template x-for="(result, index) in results" ":key"="result.rostra_id_reference" {
+                        div ."m-textAutocomplete__item"
+                            role="option"
+                            ":id"=(option_id)
+                            ":aria-selected"="index === selectedIndex"
+                            ":class"="{ '-selected': index === selectedIndex }"
+                            "@click"="selectResult(result)"
+                        {
+                            span ."m-textAutocomplete__displayName" x-text="result.display_name" {}
+                            span ."m-textAutocomplete__id" x-text="'@' + result.rostra_id_reference.substring(0, 8)" {}
+                        }
+                    }
+                }
+            }
+            template x-if="autocompleteType === 'emoji'" {
+                div {
+                    template x-for="(result, index) in results" ":key"="index" {
+                        div ."m-textAutocomplete__item"
+                            role="option"
+                            ":id"=(option_id)
+                            ":aria-selected"="index === selectedIndex"
+                            ":class"="{ '-selected': index === selectedIndex }"
+                            "@click"="selectResult(result)"
+                        {
+                            span ."m-textAutocomplete__emoji" x-text="result.emoji" {}
+                            span ."m-textAutocomplete__shortcode" x-text="':' + result.shortcode + ':'" {}
+                        }
+                    }
+                }
+            }
+            div x-show="results.length === 0 && query.length > 0" ."m-textAutocomplete__empty" {
+                "No matches found"
+            }
+        }
+    }
+}
+
 /// Renders a user avatar image.
 pub fn avatar(class: &str, src: impl maud::Render, alt: &str) -> Markup {
     html! {

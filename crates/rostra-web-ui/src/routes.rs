@@ -214,6 +214,10 @@ pub fn route_handler(state: SharedState) -> Router<Arc<UiState>> {
         .route("/messages", get(messages::get_messages))
         .route("/messages/open", get(messages::open_conversation))
         .route(
+            "/messages/profile-search",
+            post(messages::post_profile_search).layer(DefaultBodyLimit::max(4096)),
+        )
+        .route(
             "/settings/messages/retire/{device}",
             get(messages::get_retirement),
         )

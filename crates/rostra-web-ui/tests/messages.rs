@@ -141,6 +141,22 @@ fn assert_conversation_panel_has_no_start_form(document: &Html) {
     );
 }
 
+#[test]
+fn private_message_autocomplete_keeps_queries_out_of_request_urls() {
+    let app = include_str!("../assets/app.js");
+    assert!(app.contains("method: \"POST\""));
+    assert!(app.contains("body: new URLSearchParams({"));
+    assert!(app.contains("q: this.query"));
+    assert!(
+        !app.contains("`${options.profileSearchUrl}?"),
+        "the private profile search URL must not contain composer text"
+    );
+
+    let messages = include_str!("../src/routes/messages.rs");
+    assert!(messages.contains("profileSearchUrl: '/messages/profile-search'"));
+    assert!(messages.contains("profileSearchCsrf:"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
     let server = TestServer::start().await;
@@ -169,6 +185,8 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
         .copied()
         .filter(|src| !src.contains("/prismjs/") && !src.contains("/mathjax-"))
         .collect::<Vec<_>>();
+    let mut expected_private_rich_runtime = expected_runtime.clone();
+    expected_private_rich_runtime.push("/assets/emoji-init.js");
     for path in ["/messages", "/settings/messages", "/messages/not-an-id"] {
         let response = writer.get(path).await;
         private_headers(&response);
@@ -182,7 +200,7 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
             if path == "/settings/messages" {
                 expected_private_runtime.clone()
             } else {
-                expected_runtime.clone()
+                expected_private_rich_runtime.clone()
             },
         );
         assert!(
@@ -274,7 +292,8 @@ async fn private_pages_require_this_sessions_secret_and_protect_all_responses() 
             "/assets/libs/prismjs/prism-sql.min.js",
             "/assets/libs/prismjs/prism-toolbar.min.js",
             "/assets/libs/prismjs/prism-copy-to-clipboard.min.js",
-            "/assets/libs/mathjax-3.2.2/tex-mml-chtml.js"
+            "/assets/libs/mathjax-3.2.2/tex-mml-chtml.js",
+            "/assets/emoji-init.js"
         ]
     );
     let response = writer.get("/messages/invalid").await;
@@ -622,8 +641,74 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
             .value()
             .attr("@input"),
         Some(
-            "draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')"
+            "handleInput($event); draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')"
         )
+    );
+    let textarea_wrapper = composer
+        .select(&Selector::parse(".m-directMessages__textareaWrapper").unwrap())
+        .next()
+        .expect("autocomplete textarea wrapper");
+    let autocomplete_state = textarea_wrapper
+        .value()
+        .attr("x-data")
+        .expect("autocomplete state");
+    assert!(autocomplete_state.starts_with("textAutocomplete({"));
+    assert!(autocomplete_state.contains("profileSearchUrl: '/messages/profile-search'"));
+    assert!(autocomplete_state.contains("profileSearchCsrf:"));
+    assert_eq!(
+        textarea.value().attr("@keydown"),
+        Some("handleKeydown($event)")
+    );
+    assert_eq!(textarea.value().attr("role"), Some("combobox"));
+    assert_eq!(textarea.value().attr("aria-autocomplete"), Some("list"));
+    assert_eq!(
+        textarea.value().attr("aria-controls"),
+        Some("message-text-autocomplete")
+    );
+    assert_eq!(
+        textarea.value().attr(":aria-expanded"),
+        Some("showDropdown")
+    );
+    assert!(
+        textarea
+            .value()
+            .attr(":aria-activedescendant")
+            .is_some_and(|value| value.contains("message-text-autocomplete-option-"))
+    );
+    let autocomplete = textarea_wrapper
+        .select(&Selector::parse("#message-text-autocomplete").unwrap())
+        .next()
+        .expect("autocomplete listbox");
+    assert_eq!(autocomplete.value().attr("role"), Some("listbox"));
+    let option = autocomplete
+        .select(&Selector::parse("[role=option]").unwrap())
+        .next()
+        .expect("autocomplete option template");
+    assert_eq!(
+        option.value().attr(":aria-selected"),
+        Some("index === selectedIndex")
+    );
+    let emoji_button = composer
+        .select(&Selector::parse(".m-directMessages__emojiButton").unwrap())
+        .next()
+        .expect("emoji picker button");
+    assert_eq!(
+        emoji_button.value().attr("aria-label"),
+        Some("Insert emoji")
+    );
+    let emoji_picker = composer
+        .select(&Selector::parse("#message-emoji-picker").unwrap())
+        .next()
+        .expect("emoji picker");
+    assert_eq!(
+        emoji_picker.value().attr("data-textarea-selector"),
+        Some("#message-text")
+    );
+    assert!(
+        emoji_picker
+            .select(&Selector::parse("emoji-picker").unwrap())
+            .next()
+            .is_some()
     );
     assert!(
         document
@@ -644,6 +729,30 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         Some("Send message (Ctrl+Enter)")
     );
     let csrf = token(&page);
+    let response = alice
+        .post_form(
+            "/messages/profile-search",
+            &[("q", "Alice"), ("csrf", "wrong")],
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    private_headers(&response);
+    let response = alice
+        .post_form(
+            "/messages/profile-search",
+            &[("q", "Alice"), ("csrf", csrf.as_str())],
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    private_headers(&response);
+    assert!(
+        response
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .is_some_and(|results| !results.is_empty())
+    );
     let text = "# Rendered message\n\n*important* and $`x^2`\n\n<img src=\"https://outsider.invalid/pixel\">\n<style>body { display: none }</style>\n<span style=\"background: red\">styled</span>\n\n[unsafe](javascript:alert(1))";
     let response = alice
         .post_form(&path, &[("text", text), ("csrf", "wrong")])

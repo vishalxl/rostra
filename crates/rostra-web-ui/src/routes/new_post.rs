@@ -808,6 +808,7 @@ impl UiState {
                             previewForm.requestSubmit();
                         "#);
                         @let textarea_id = format!("inline-reply-content-{id_suffix}");
+                        @let autocomplete_id = format!("inline-reply-autocomplete-{id_suffix}");
                         textarea
                             id=(textarea_id)
                             ."m-inlineReply__content"
@@ -816,48 +817,20 @@ impl UiState {
                             name="content"
                             "@input"=(input_handler)
                             "@keydown"="handleKeydown($event)"
+                            role="combobox"
+                            aria-autocomplete="list"
+                            aria-controls=(autocomplete_id)
+                            ":aria-expanded"="showDropdown"
+                            ":aria-activedescendant"=(format!(
+                                "showDropdown && results.length > 0 ? '{autocomplete_id}-option-' + selectedIndex : null"
+                            ))
                             autocomplete="off"
                             disabled[ro.to_disabled()]
                             "x-on:keyup.enter.ctrl"="$el.form.requestSubmit()"
                             "@paste"=(format!("handleMediaPaste($event, '{attach_form_id}')"))
                             {}
 
-                        // Autocomplete dropdown (mentions and emojis)
-                        div ."m-textAutocomplete"
-                            x-show="showDropdown"
-                            x-cloak
-                            "@click.outside"="showDropdown = false"
-                        {
-                            template x-if="autocompleteType === 'mention'" {
-                                div {
-                                    template x-for="(result, index) in results" ":key"="result.rostra_id_reference" {
-                                        div ."m-textAutocomplete__item"
-                                            ":class"="{ '-selected': index === selectedIndex }"
-                                            "@click"="selectResult(result)"
-                                        {
-                                            span ."m-textAutocomplete__displayName" x-text="result.display_name" {}
-                                            span ."m-textAutocomplete__id" x-text="'@' + result.rostra_id_reference.substring(0, 8)" {}
-                                        }
-                                    }
-                                }
-                            }
-                            template x-if="autocompleteType === 'emoji'" {
-                                div {
-                                    template x-for="(result, index) in results" ":key"="index" {
-                                        div ."m-textAutocomplete__item"
-                                            ":class"="{ '-selected': index === selectedIndex }"
-                                            "@click"="selectResult(result)"
-                                        {
-                                            span ."m-textAutocomplete__emoji" x-text="result.emoji" {}
-                                            span ."m-textAutocomplete__shortcode" x-text="':' + result.shortcode + ':'" {}
-                                        }
-                                    }
-                                }
-                            }
-                            div x-show="results.length === 0 && query.length > 0" ."m-textAutocomplete__empty" {
-                                "No matches found"
-                            }
-                        }
+                        (fragment::text_autocomplete(&autocomplete_id, false))
                     }
 
                     div ."m-inlineReply__footer" {

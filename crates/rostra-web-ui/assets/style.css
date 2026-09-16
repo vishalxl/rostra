@@ -3738,6 +3738,42 @@ body.-keyboard-nav * {
   resize: vertical;
 }
 
+.m-directMessages__textareaWrapper {
+  position: relative;
+}
+
+.m-directMessages__composerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.m-directMessages__emojiButton {
+  padding-inline: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: none;
+}
+
+.m-directMessages__emojiButton:hover {
+  background: var(--color-button-bg-hover);
+  border-radius: var(--border-radius-std);
+}
+
+.m-directMessages__emojiBar {
+  background: var(--color-post-bg);
+  border: 1px solid var(--color-button-border);
+  border-radius: var(--border-radius-std);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.m-directMessages__emojiBar.-hidden {
+  display: none;
+}
+
 .m-directMessages .u-button {
   align-self: flex-start;
 }

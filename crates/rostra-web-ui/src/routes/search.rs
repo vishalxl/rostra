@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
+use rostra_client_db::Database;
 use rostra_core::id::{RostraId, ShortRostraId, ToShort as _};
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -53,7 +54,7 @@ pub struct SearchQuery {
 }
 
 #[derive(Serialize)]
-pub struct ProfileSearchResult {
+pub(crate) struct ProfileSearchResult {
     rostra_id_reference: ProfileSearchIdReference,
     display_name: String,
 }
@@ -102,17 +103,26 @@ pub async fn search_profiles(
     session: UserSession,
     Query(params): Query<SearchQuery>,
 ) -> RequestResult<impl IntoResponse> {
-    let query = params.q.to_lowercase();
     let client = state.client(session.id()).await?;
     let client_ref = client.client_ref()?;
-    let db = client_ref.db();
+    Ok(Json(
+        profile_search_results(client_ref.db(), session.id(), &params.q).await,
+    ))
+}
 
+/// Find mention candidates without prescribing the request transport.
+pub(crate) async fn profile_search_results(
+    db: &Database,
+    self_id: RostraId,
+    query: &str,
+) -> Vec<ProfileSearchResult> {
+    let query = query.to_lowercase();
     // Get extended followers (direct + followers of followers)
-    let (direct, extended) = db.get_followees_extended(session.id()).await;
+    let (direct, extended) = db.get_followees_extended(self_id).await;
 
     // Deduplicate IDs (direct followees can overlap with extended)
     let mut seen = std::collections::HashSet::new();
-    let all_ids: Vec<_> = std::iter::once(session.id())
+    let all_ids: Vec<_> = std::iter::once(self_id)
         .chain(direct.keys().copied())
         .chain(extended)
         .filter(|id| seen.insert(*id))
@@ -150,7 +160,7 @@ pub async fn search_profiles(
         }
     }
 
-    Ok(Json(order_and_limit_results(scored)))
+    order_and_limit_results(scored)
 }
 
 #[cfg(test)]

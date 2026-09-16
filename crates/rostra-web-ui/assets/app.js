@@ -1216,7 +1216,7 @@ document.addEventListener("alpine:init", () => {
   }
 
   // Text autocomplete component for mentions (@) and emojis (:)
-  Alpine.data("textAutocomplete", () => ({
+  Alpine.data("textAutocomplete", (options = {}) => ({
     query: "",
     results: [],
     selectedIndex: 0,
@@ -1291,9 +1291,19 @@ document.addEventListener("alpine:init", () => {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = setTimeout(async () => {
         try {
-          const response = await fetch(
-            `/search/profiles?q=${encodeURIComponent(this.query)}`,
-          );
+          const response = options.profileSearchUrl
+            ? await fetch(options.profileSearchUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({
+                  csrf: options.profileSearchCsrf,
+                  q: this.query,
+                }),
+              })
+            : await fetch(
+                `/search/profiles?q=${encodeURIComponent(this.query)}`,
+              );
+          if (!response.ok) throw new Error("Profile search failed");
           this.results = await response.json();
           this.selectedIndex = 0;
         } catch (error) {

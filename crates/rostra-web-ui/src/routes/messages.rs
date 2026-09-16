@@ -5,10 +5,10 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-use axum::Form;
 use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
+use axum::{Form, Json};
 use maud::{DOCTYPE, Markup, html};
 use rostra_core::ShortEventId;
 use rostra_core::id::{RostraId, ToShort as _};
@@ -17,7 +17,7 @@ use serde::Deserialize;
 use self::session::MessageSession;
 pub(super) use self::settings::{get_retirement, get_settings, post_settings};
 use super::url::{RostraPathId, profile_url, redirect_to_canonical};
-use super::{Maud, fragment, recovery};
+use super::{Maud, fragment, recovery, search};
 use crate::layout::{PageResources, render_html_body, render_top_nav};
 use crate::util::extractors::AjaxRequest;
 use crate::{SharedState, UiState};
@@ -115,26 +115,26 @@ fn page(conversation_panel: Markup, content: Markup, thread_open: bool, unread: 
         "m-directMessagesLayout",
         PageResources::PrivateRich,
         html! {
-            nav ."o-navBar m-directMessages__sidebar" ."-threadOpen"[thread_open]
-                aria-label="Private messages"
-            {
-                (render_top_nav())
-                div id="direct-message-conversations" ."m-directMessages__conversationPanel" {
-                    (conversation_panel)
-                }
-            }
+          nav ."o-navBar m-directMessages__sidebar" ."-threadOpen"[thread_open]
+              aria-label="Private messages"
+          {
+              (render_top_nav())
+              div id="direct-message-conversations" ."m-directMessages__conversationPanel" {
+                  (conversation_panel)
+              }
+          }
             main ."o-mainBar" {
-                div ."o-mainBarTimeline m-directMessages" {
-                    div id="direct-message-tabs" ."o-mainBarTimeline__tabs" {
-                        a ."o-mainBarTimeline__back" href="/" aria-label="Back" title="Back" {
-                            span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
-                        }
-                        (fragment::timeline_tab_links(
-                            "messages",
-                            super::timeline::PendingCounts { messages: unread, ..Default::default() },
-                            false,
-                        ))
-                    }
+              div ."o-mainBarTimeline m-directMessages" {
+                  div id="direct-message-tabs" ."o-mainBarTimeline__tabs" {
+                      a ."o-mainBarTimeline__back" href="/" aria-label="Back" title="Back" {
+                          span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+                      }
+                      (fragment::timeline_tab_links(
+                          "messages",
+                          super::timeline::PendingCounts { messages: unread, ..Default::default() },
+                          false,
+                      ))
+                  }
                     div id="direct-message-thread"
                         ."m-directMessages__thread" ."-open"[thread_open] { (content) }
                 }
@@ -608,6 +608,10 @@ async fn render_thread(
                 .expect("next draft token is JSON serializable"),
         )
     });
+    let autocomplete_state = format!(
+        "textAutocomplete({{ profileSearchUrl: '/messages/profile-search', profileSearchCsrf: {} }})",
+        serde_json::to_string(&csrf).expect("CSRF token is JSON serializable"),
+    );
     let conversations = db.dm_conversations(None, 32).await.map_err(storage_error)?;
     let panel_data = conversation_panel_data(db, session, &conversations).await?;
     let unread_after = panel_data.unread;
@@ -639,18 +643,45 @@ async fn render_thread(
             {
                 input type="hidden" name="csrf" value=(csrf);
                 input type="hidden" name="draft_token" x-model="draftToken";
-                textarea id="message-text" name="text" rows="5" required aria-label="Message"
-                    maxlength="16384" autocomplete="off" disabled[unavailable]
-                    autofocus[query.focus_composer_on_open]
-                    x-init=[query.focus_composer_on_open.then_some(
-                        "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus({ preventScroll: true }); })"
-                    )]
-                    x-model="text"
-                    "@input"="draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')" { (draft) }
-                (fragment::button("m-directMessages__sendButton", "Send")
-                    .title("Send message (Ctrl+Enter)")
-                    .disabled(unavailable)
-                    .call())
+                div ."m-directMessages__textareaWrapper"
+                    x-data=(autocomplete_state)
+                {
+                    textarea id="message-text" name="text" rows="5" required aria-label="Message"
+                        maxlength="16384" autocomplete="off" disabled[unavailable]
+                        autofocus[query.focus_composer_on_open]
+                        x-init=[query.focus_composer_on_open.then_some(
+                            "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus({ preventScroll: true }); })"
+                        )]
+                        x-model="text"
+                        "@input"="handleInput($event); draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')"
+                        "@keydown"="handleKeydown($event)"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-controls="message-text-autocomplete"
+                        ":aria-expanded"="showDropdown"
+                        ":aria-activedescendant"="showDropdown && results.length > 0 ? 'message-text-autocomplete-option-' + selectedIndex : null"
+                    { (draft) }
+                    (fragment::text_autocomplete("message-text-autocomplete", true))
+                }
+                div ."m-directMessages__composerFooter" {
+                    a ."m-directMessages__emojiButton u-requiresJs"
+                        href="#"
+                        title="Insert emoji"
+                        aria-label="Insert emoji"
+                        onclick="toggleEmojiPicker('message-emoji-picker', event)"
+                    { "😀" }
+                    (fragment::button("m-directMessages__sendButton", "Send")
+                        .title("Send message (Ctrl+Enter)")
+                        .disabled(unavailable)
+                        .call())
+                }
+                div id="message-emoji-picker" ."m-directMessages__emojiBar -hidden"
+                    data-textarea-selector="#message-text"
+                {
+                    emoji-picker
+                        data-source="/assets/libs/emoji-picker-element/data.json"
+                    {}
+                }
             }
         },
         true,
@@ -660,6 +691,27 @@ async fn render_thread(
         *response.status_mut() = status;
     }
     Ok(response)
+}
+
+#[derive(Deserialize)]
+pub(super) struct ProfileSearchForm {
+    /// Independent session-bound CSRF token.
+    csrf: String,
+    /// Private composer text fragment to match against known profiles.
+    q: String,
+}
+
+/// Search mention candidates without copying private composer text into a URL.
+pub(super) async fn post_profile_search(
+    session: MessageSession,
+    Form(form): Form<ProfileSearchForm>,
+) -> MessageResult {
+    session.check_csrf(&form.csrf).await?;
+    let client = session.client().ok_or_else(access_error)?;
+    Ok(
+        Json(search::profile_search_results(client.db(), session.user.id(), &form.q).await)
+            .into_response(),
+    )
 }
 
 /// Direct-message send form; never derive Debug for plaintext-bearing input.

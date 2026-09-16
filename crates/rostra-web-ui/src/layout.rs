@@ -124,6 +124,9 @@ impl UiState {
                 script defer src="/assets/libs/prismjs/prism-copy-to-clipboard.min.js" {}
                 script defer src="/assets/libs/mathjax-3.2.2/tex-mml-chtml.js" {}
                 }
+                @if resources == PageResources::PrivateRich {
+                script type="module" src="/assets/emoji-init.js" {}
+                }
             }
         }
     }
