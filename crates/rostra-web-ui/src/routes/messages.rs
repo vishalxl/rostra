@@ -668,7 +668,7 @@ async fn render_thread(
                         href="#"
                         title="Insert emoji"
                         aria-label="Insert emoji"
-                        onclick="toggleEmojiPicker('message-emoji-picker', event)"
+                        "@click"="toggleEmojiPicker('message-emoji-picker', $event)"
                     { "😀" }
                     (fragment::button("m-directMessages__sendButton", "Send")
                         .title("Send message (Ctrl+Enter)")

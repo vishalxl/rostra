@@ -696,6 +696,11 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         emoji_button.value().attr("aria-label"),
         Some("Insert emoji")
     );
+    assert_eq!(
+        emoji_button.value().attr("@click"),
+        Some("toggleEmojiPicker('message-emoji-picker', $event)")
+    );
+    assert_eq!(emoji_button.value().attr("onclick"), None);
     let emoji_picker = composer
         .select(&Selector::parse("#message-emoji-picker").unwrap())
         .next()
