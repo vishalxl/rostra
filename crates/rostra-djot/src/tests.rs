@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use rostra_core::id::{RostraId, ToShort as _};
 
 use crate::links::{
@@ -58,22 +56,16 @@ fn test_contains_mention_no_mentions() {
     // Content with no mentions
     let content = "Hello world! This is a test post.";
     // Use a dummy RostraId - we just need any valid one for testing
-    if let Ok(target_id) =
-        RostraId::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    {
-        assert!(!contains_mention(content, target_id));
-    }
+    let target_id = RostraId::from_bytes([42; 32]);
+    assert!(!contains_mention(content, target_id));
 }
 
 #[test]
 fn test_contains_mention_with_regular_link() {
     // Content with a regular link, not a rostra: mention
     let content = "Check out [this link](https://example.com)!";
-    if let Ok(target_id) =
-        RostraId::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    {
-        assert!(!contains_mention(content, target_id));
-    }
+    let target_id = RostraId::from_bytes([42; 32]);
+    assert!(!contains_mention(content, target_id));
 }
 
 #[test]
