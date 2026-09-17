@@ -6304,6 +6304,7 @@ dependencies = [
  "redb",
  "redb-bincode",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
  "tower-sessions-core",

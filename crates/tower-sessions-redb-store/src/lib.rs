@@ -26,6 +26,9 @@ use time::OffsetDateTime;
 use tower_sessions_core::session::{Id, Record};
 use tower_sessions_core::session_store::{self, SessionStore};
 
+#[cfg(test)]
+mod tests;
+
 /// Session record for storage in redb.
 ///
 /// We store this instead of `Record` directly because we need to serialize
@@ -150,7 +153,39 @@ impl RedbSessionStore {
 #[async_trait]
 impl SessionStore for RedbSessionStore {
     async fn create(&self, record: &mut Record) -> session_store::Result<()> {
-        self.save(record).await
+        let stored = StoredSession::from_record(record)?;
+        let mut id = record.id;
+
+        let db = self.db.clone();
+        let selected_id = tokio::task::spawn_blocking(move || {
+            let write_txn = db
+                .begin_write()
+                .map_err(|e| session_store::Error::Backend(e.to_string()))?;
+            {
+                let mut table = write_txn
+                    .open_table(&SESSIONS_TABLE)
+                    .map_err(|e| session_store::Error::Backend(e.to_string()))?;
+                while table
+                    .get(&id.0)
+                    .map_err(|e| session_store::Error::Backend(e.to_string()))?
+                    .is_some()
+                {
+                    id = Id::default();
+                }
+                table
+                    .insert(&id.0, &stored)
+                    .map_err(|e| session_store::Error::Backend(e.to_string()))?;
+            }
+            write_txn
+                .commit()
+                .map_err(|e| session_store::Error::Backend(e.to_string()))?;
+            Ok(id)
+        })
+        .await
+        .map_err(|e| session_store::Error::Backend(e.to_string()))??;
+
+        record.id = selected_id;
+        Ok(())
     }
 
     async fn save(&self, record: &Record) -> session_store::Result<()> {
