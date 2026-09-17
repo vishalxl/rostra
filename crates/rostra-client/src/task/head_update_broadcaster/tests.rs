@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use futures::FutureExt as _;
 use rostra_client_db::{Database, EventContentState};
 use rostra_core::ShortEventId;
 use rostra_core::event::content_kind::{EventContentKind as _, Follow, PersonaSelector};
@@ -36,6 +37,28 @@ fn build_event(
         .author(id_secret.id())
         .kind(EventKind::NULL)
         .maybe_parent_prev(parent_prev)
+        .content(&content)
+        .build()
+        .signed_by(id_secret);
+    let event =
+        VerifiedEvent::verify_signed(id_secret.id(), signed).expect("self-signed test event");
+    let event_content =
+        VerifiedEventContent::verify(event, content).expect("matching test content");
+    (event, event_content)
+}
+
+fn build_merge_event(
+    id_secret: RostraIdSecretKey,
+    content_byte: u8,
+    parent_prev: ShortEventId,
+    parent_aux: ShortEventId,
+) -> (VerifiedEvent, VerifiedEventContent) {
+    let content = EventContentRaw::new(vec![content_byte]);
+    let signed = Event::builder_raw_content()
+        .author(id_secret.id())
+        .kind(EventKind::NULL)
+        .parent_prev(parent_prev)
+        .parent_aux(parent_aux)
         .content(&content)
         .build()
         .signed_by(id_secret);
@@ -247,6 +270,50 @@ async fn retrying_feed_server(
             .expect("successful feed completion receiver");
     }
     std::future::pending::<()>().await;
+}
+
+async fn stalling_feed_server(
+    endpoint: iroh::Endpoint,
+    attempts_tx: mpsc::UnboundedSender<ShortEventId>,
+) {
+    let incoming = endpoint.accept().await.expect("incoming connection");
+    let connection = incoming
+        .accept()
+        .expect("accept connection")
+        .await
+        .expect("complete handshake");
+
+    let (mut send, mut recv) = connection.accept_bi().await.expect("ping stream");
+    let (rpc_id, request) = Connection::read_request_raw(&mut recv)
+        .await
+        .expect("ping request");
+    assert_eq!(rpc_id, RpcId::PING);
+    let request = PingRequest::decode_whole::<MAX_REQUEST_SIZE>(&request).expect("decode ping");
+    Connection::write_success_return_code(&mut send)
+        .await
+        .expect("ping success");
+    Connection::write_message(&mut send, &PingResponse(request.0))
+        .await
+        .expect("ping response");
+    send.finish().expect("finish ping response");
+
+    loop {
+        let (send, mut recv) = connection.accept_bi().await.expect("feed stream");
+        let (rpc_id, request) = Connection::read_request_raw(&mut recv)
+            .await
+            .expect("feed request");
+        assert_eq!(rpc_id, RpcId::FEED_EVENT);
+        let FeedEventRequest(event) =
+            FeedEventRequest::decode_whole::<MAX_REQUEST_SIZE>(&request).expect("decode feed");
+        attempts_tx
+            .send(event.event.compute_id().to_short())
+            .expect("attempt receiver");
+        tokio::spawn(async move {
+            let _send = send;
+            let _recv = recv;
+            std::future::pending::<()>().await;
+        });
+    }
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
@@ -577,6 +644,273 @@ async fn complete_reconciliation_recovers_startup_siblings_and_deduplicates() {
         worker
             .await
             .expect_err("worker is cancelled")
+            .is_cancelled()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn follower_change_is_serviced_after_unrelated_head_and_content_signals() {
+    let self_secret = RostraIdSecretKey::generate();
+    let unrelated_secret = RostraIdSecretKey::generate();
+    let db = Database::new_in_memory(self_secret.id())
+        .await
+        .expect("in-memory database");
+    let (_, durable_content) = build_event(self_secret, 1, None);
+    let durable_head = durable_content.event.event_id.to_short();
+    db.process_event_with_content(&durable_content).await;
+    let client = Client::builder(self_secret.id())
+        .db(db)
+        .start_request_handler(false)
+        .start_background_tasks(false)
+        .build()
+        .await
+        .expect("client");
+    let db = client.db();
+    let mut broadcaster = HeadUpdateBroadcaster::new(&client);
+    let mut followers = broadcaster.self_followers.clone();
+
+    let (_, unrelated_content) = build_event(unrelated_secret, 2, None);
+    db.process_event_with_content(&unrelated_content).await;
+    db.process_event_with_content(&follow_event(unrelated_secret, self_secret.id()))
+        .await;
+
+    let stale = ShortEventId::ZERO;
+    let mut pending = BTreeSet::from([stale]);
+    let mut retry_at = BTreeMap::from([(
+        stale,
+        BroadcastRetry {
+            retry_count: 4,
+            at: tokio::time::Instant::now(),
+        },
+    )]);
+    assert!(
+        broadcaster
+            .service_pending_notifications(&mut followers, &mut pending, &mut retry_at)
+            .await
+    );
+    assert_eq!(pending, BTreeSet::from([durable_head]));
+    assert!(retry_at.is_empty());
+    assert_eq!(followers.snapshot().len(), 1);
+    assert!(
+        followers.changed().now_or_never().is_none(),
+        "the bounded follower poll acknowledges the observed update"
+    );
+
+    pending = BTreeSet::from([stale]);
+    assert!(
+        broadcaster
+            .service_pending_notifications(&mut followers, &mut pending, &mut retry_at)
+            .await
+    );
+    assert_eq!(
+        pending,
+        BTreeSet::from([stale]),
+        "remaining unrelated head and content signals do not reconcile without another follower change"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pending_notification_sweep_consumes_only_one_content_signal() {
+    let self_secret = RostraIdSecretKey::generate();
+    let unrelated_secret = RostraIdSecretKey::generate();
+    let client = Client::builder(self_secret.id())
+        .db(Database::new_in_memory(self_secret.id())
+            .await
+            .expect("in-memory database"))
+        .start_request_handler(false)
+        .start_background_tasks(false)
+        .build()
+        .await
+        .expect("client");
+    let db = client.db();
+    let mut broadcaster = HeadUpdateBroadcaster::new(&client);
+    let mut followers = broadcaster.self_followers.clone();
+
+    let (_, first_content) = build_event(unrelated_secret, 1, None);
+    let (_, second_content) = build_event(unrelated_secret, 2, None);
+    db.process_event_with_content(&first_content).await;
+    db.process_event_with_content(&second_content).await;
+    let mut pending = BTreeSet::new();
+    let mut retry_at = BTreeMap::new();
+    assert!(
+        broadcaster
+            .service_pending_notifications(&mut followers, &mut pending, &mut retry_at)
+            .await
+    );
+    assert!(
+        broadcaster.new_heads_rx.try_recv().is_ok(),
+        "one bounded sweep consumes only one queued head notification"
+    );
+    assert_eq!(
+        broadcaster
+            .new_content_rx
+            .try_recv()
+            .expect("second content notification")
+            .event_id(),
+        second_content.event_id(),
+        "one bounded sweep consumes exactly the first queued content notification"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn content_lag_recovers_durable_heads_without_head_lag() {
+    let self_secret = RostraIdSecretKey::generate();
+    let unrelated_secret = RostraIdSecretKey::generate();
+    let db = Database::new_in_memory(self_secret.id())
+        .await
+        .expect("in-memory database");
+    let (_, self_content) = build_event(self_secret, 1, None);
+    let durable_head = self_content.event.event_id.to_short();
+    db.process_event_with_content(&self_content).await;
+    let client = Client::builder(self_secret.id())
+        .db(db)
+        .start_request_handler(false)
+        .start_background_tasks(false)
+        .build()
+        .await
+        .expect("client");
+    let db = client.db();
+    let mut broadcaster = HeadUpdateBroadcaster::new(&client);
+    let mut followers = broadcaster.self_followers.clone();
+
+    for sequence in 0..=128 {
+        let (_, content) = build_event(unrelated_secret, sequence as u8, None);
+        db.process_event_with_content(&content).await;
+        broadcaster
+            .new_heads_rx
+            .try_recv()
+            .expect("keep head receiver current");
+    }
+
+    let stale = ShortEventId::ZERO;
+    let mut pending = BTreeSet::from([stale]);
+    let mut retry_at = BTreeMap::from([(
+        stale,
+        BroadcastRetry {
+            retry_count: 1,
+            at: tokio::time::Instant::now(),
+        },
+    )]);
+    assert!(
+        broadcaster
+            .service_pending_notifications(&mut followers, &mut pending, &mut retry_at)
+            .await
+    );
+    assert_eq!(pending, BTreeSet::from([durable_head]));
+    assert!(retry_at.is_empty());
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn superseding_head_is_serviced_while_slow_siblings_keep_retrying() {
+    let id_secret = RostraIdSecretKey::generate();
+    let id = id_secret.id();
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let receiver_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .alpns(vec![ROSTRA_P2P_V0_ALPN.to_vec()])
+        .address_lookup(lookup.clone())
+        .bind()
+        .await
+        .expect("receiver endpoint");
+    let receiver_node_id = receiver_endpoint.id();
+    lookup.add_endpoint_info(receiver_endpoint.addr());
+    let (attempts_tx, mut attempts_rx) = mpsc::unbounded_channel();
+    let server = tokio::spawn(stalling_feed_server(receiver_endpoint, attempts_tx));
+
+    let broadcaster_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .alpns(vec![ROSTRA_P2P_V0_ALPN.to_vec()])
+        .address_lookup(lookup)
+        .bind()
+        .await
+        .expect("broadcaster endpoint");
+    let db = Database::new_in_memory(id)
+        .await
+        .expect("broadcaster database");
+    let (_, first_content) = build_event(id_secret, 1, None);
+    let first = first_content.event.event_id.to_short();
+    let (_, second_content) = build_event(id_secret, 2, None);
+    let second = second_content.event.event_id.to_short();
+    db.process_event_with_content(&first_content).await;
+    db.process_event_with_content(&second_content).await;
+    let broadcaster = Client::builder(id)
+        .db(db)
+        .iroh_endpoint(broadcaster_endpoint)
+        .start_request_handler(false)
+        .start_background_tasks(false)
+        .build()
+        .await
+        .expect("broadcaster client");
+    let db = broadcaster.db();
+    db.insert_id_node(
+        id,
+        IrohNodeId::from_bytes(*receiver_node_id.as_bytes()),
+        rostra_core::Timestamp::now(),
+    )
+    .await;
+    let policy = BroadcastPolicy {
+        peer_deadline: Duration::from_millis(100),
+        retry_initial_delay: Duration::from_millis(20),
+        retry_max_delay: Duration::from_millis(20),
+    };
+    let broadcaster_task = HeadUpdateBroadcaster::new(&broadcaster);
+    let worker = tokio::spawn(async move {
+        broadcaster_task.run_with_policy(policy).await;
+    });
+
+    let mut attempted_siblings = BTreeSet::new();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while attempted_siblings.len() < 2 {
+            let head = attempts_rx.recv().await.expect("attempt");
+            if head == first || head == second {
+                attempted_siblings.insert(head);
+            }
+        }
+    })
+    .await
+    .expect("both retrying siblings are attempted");
+
+    let (_, merged_content) = build_merge_event(id_secret, 3, first, second);
+    let merged = merged_content.event.event_id.to_short();
+    db.process_event_with_content(&merged_content).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let attempted = attempts_rx.recv().await.expect("attempt");
+            assert!(
+                attempted == first || attempted == second || attempted == merged,
+                "only prepared heads are broadcast"
+            );
+            if attempted == merged {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("superseding head is attempted despite continuing stalls");
+
+    for _ in 0..2 {
+        let attempted = tokio::time::timeout(Duration::from_millis(300), attempts_rx.recv())
+            .await
+            .expect("subsequent attempt")
+            .expect("attempt receiver");
+        assert_eq!(
+            attempted, merged,
+            "reconciliation removes superseded sibling retries"
+        );
+    }
+
+    worker.abort();
+    assert!(
+        worker
+            .await
+            .expect_err("worker is cancelled")
+            .is_cancelled()
+    );
+    server.abort();
+    assert!(
+        server
+            .await
+            .expect_err("server is cancelled")
             .is_cancelled()
     );
 }

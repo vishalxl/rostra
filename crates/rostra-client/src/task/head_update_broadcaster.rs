@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt as _;
 use rostra_client_db::{
     CurrentState, Database, EventContentState, EventRecord, IdsFollowersRecord,
 };
@@ -93,6 +94,16 @@ impl HeadUpdateBroadcaster {
         reconcile_pending_heads(&self.db, &mut pending_heads, &mut retry_at).await;
 
         loop {
+            if !self
+                .service_pending_notifications(
+                    &mut self_followers,
+                    &mut pending_heads,
+                    &mut retry_at,
+                )
+                .await
+            {
+                return;
+            }
             let followers = self_followers.snapshot();
             if let Some((head, event, event_content)) =
                 take_one_ready_head(&self.db, &mut pending_heads, &retry_at).await
@@ -229,6 +240,64 @@ impl HeadUpdateBroadcaster {
             }
             trace!(target: LOG_TARGET, "Woke up");
         }
+    }
+
+    async fn service_pending_notifications(
+        &mut self,
+        self_followers: &mut CurrentState<FollowersMap>,
+        pending_heads: &mut BTreeSet<ShortEventId>,
+        retry_at: &mut BTreeMap<ShortEventId, BroadcastRetry>,
+    ) -> bool {
+        let mut should_reconcile = false;
+        let mut closed = false;
+
+        match self.new_heads_rx.try_recv() {
+            Ok((author, head)) if author == self.self_id => {
+                trace!(target: LOG_TARGET, event_id = %head.to_short(), "Received exact self-head signal");
+                should_reconcile = true;
+            }
+            Ok(_) | Err(broadcast::error::TryRecvError::Empty) => {}
+            Err(broadcast::error::TryRecvError::Closed) => closed = true,
+            Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                warn!(
+                    target: LOG_TARGET,
+                    skipped,
+                    "Head broadcast receiver lagged; recovering durable heads"
+                );
+                should_reconcile = true;
+            }
+        }
+
+        match self.new_content_rx.try_recv() {
+            Ok(_) | Err(broadcast::error::TryRecvError::Empty) => {}
+            Err(broadcast::error::TryRecvError::Closed) => closed = true,
+            Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                warn!(
+                    target: LOG_TARGET,
+                    skipped,
+                    "Content broadcast receiver lagged; reconciling durable heads"
+                );
+                should_reconcile = true;
+            }
+        }
+
+        match self_followers.changed().now_or_never() {
+            Some(Ok(_)) => {
+                // New followers did not observe earlier incremental signals.
+                // Recover from the complete durable set.
+                should_reconcile = true;
+            }
+            Some(Err(_)) => closed = true,
+            None => {}
+        }
+
+        if closed {
+            return false;
+        }
+        if should_reconcile {
+            reconcile_pending_heads(&self.db, pending_heads, retry_at).await;
+        }
+        true
     }
 
     async fn broadcast_head(
