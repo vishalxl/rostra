@@ -1,3 +1,8 @@
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeSet;
+
 use axum::Form;
 use axum::extract::{OriginalUri, Path, Query, State};
 use axum::response::IntoResponse;
@@ -128,11 +133,8 @@ pub async fn get_follow_dialog(
     };
 
     // Determine current follow type and selected tags
-    let (follow_type, selected_tags) = match &current_selector {
-        Some(PersonasTagsSelector::Except { ids }) => ("follow_all", ids.clone()),
-        Some(PersonasTagsSelector::Only { ids }) => ("follow_only", ids.clone()),
-        None => ("follow_all", std::collections::BTreeSet::new()),
-    };
+    let (follow_type, selected_tags) =
+        prepare_follow_dialog_personas(current_selector.as_ref(), &mut persona_tags);
     let show_persona_list = follow_type != "unfollow";
 
     let ajax_attrs = fragment::AjaxLoadingAttrs::for_class("o-followDialog__submitButton");
@@ -200,6 +202,19 @@ pub async fn get_follow_dialog(
     .into_response())
 }
 
+fn prepare_follow_dialog_personas(
+    current_selector: Option<&PersonasTagsSelector>,
+    persona_tags: &mut BTreeSet<PersonaTag>,
+) -> (&'static str, BTreeSet<PersonaTag>) {
+    let (follow_type, selected_tags) = match current_selector {
+        Some(PersonasTagsSelector::Except { ids }) => ("follow_all", ids.clone()),
+        Some(PersonasTagsSelector::Only { ids }) => ("follow_only", ids.clone()),
+        None => ("follow_all", BTreeSet::new()),
+    };
+    persona_tags.extend(selected_tags.iter().cloned());
+    (follow_type, selected_tags)
+}
+
 #[derive(Deserialize)]
 pub struct FollowFormData {
     follow_type: String,
@@ -230,20 +245,11 @@ pub async fn post_follow(
             client_ref.unfollow(id_secret, profile_id).await?;
         }
         "follow_all" | "follow_only" => {
-            let ids: std::collections::BTreeSet<PersonaTag> = form
-                .personas
-                .iter()
-                .filter_map(|s| PersonaTag::new(s).ok())
-                .collect();
             client_ref
                 .follow(
                     id_secret,
                     profile_id,
-                    match form.follow_type.as_str() {
-                        "follow_all" => PersonasTagsSelector::Except { ids },
-                        "follow_only" => PersonasTagsSelector::Only { ids },
-                        _ => unreachable!(),
-                    },
+                    follow_form_selector(&form.follow_type, &form.personas),
                 )
                 .await?;
         }
@@ -269,6 +275,18 @@ pub async fn post_follow(
         // Close the follow dialog by replacing with empty non-active version
         div id="follow-dialog-content" {}
     }))
+}
+
+fn follow_form_selector(follow_type: &str, personas: &[String]) -> PersonasTagsSelector {
+    let ids = personas
+        .iter()
+        .filter_map(|tag| PersonaTag::new(tag).ok())
+        .collect();
+    match follow_type {
+        "follow_all" => PersonasTagsSelector::Except { ids },
+        "follow_only" => PersonasTagsSelector::Only { ids },
+        _ => unreachable!(),
+    }
 }
 
 impl UiState {
