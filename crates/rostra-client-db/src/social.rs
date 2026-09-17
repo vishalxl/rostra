@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 
 use bincode::{Decode, Encode};
 use rostra_core::event::{EventExt as _, PersonaId, PersonaTag, SocialPost, content_kind};
@@ -15,6 +15,44 @@ use crate::{
     social_posts_reactions, social_posts_replaced_by, social_posts_replaces, social_posts_replies,
     tables,
 };
+
+pub(crate) type SocialPostIndexStream<'a> =
+    Box<dyn Iterator<Item = DbResult<(Timestamp, ShortEventId)>> + 'a>;
+
+pub(crate) fn paginate_social_post_index_rev<T>(
+    mut streams: Vec<SocialPostIndexStream<'_>>,
+    limit: usize,
+    mut load: impl FnMut(Timestamp, ShortEventId) -> DbResult<Option<T>>,
+) -> DbResult<Vec<T>> {
+    let mut records = Vec::new();
+    if limit == 0 {
+        return Ok(records);
+    }
+
+    let mut newest = BinaryHeap::new();
+    for (stream_index, stream) in streams.iter_mut().enumerate() {
+        if let Some(candidate) = stream.next() {
+            let (ts, event_id) = candidate?;
+            newest.push((ts, event_id, stream_index));
+        }
+    }
+
+    while let Some((ts, event_id, stream_index)) = newest.pop() {
+        if let Some(record) = load(ts, event_id)? {
+            records.push(record);
+            if records.len() == limit {
+                break;
+            }
+        }
+
+        if let Some(candidate) = streams[stream_index].next() {
+            let (ts, event_id) = candidate?;
+            newest.push((ts, event_id, stream_index));
+        }
+    }
+
+    Ok(records)
+}
 
 /// Cursor for paginating events by their author timestamp.
 ///
@@ -728,36 +766,39 @@ impl Database {
                     vec![post_event_id]
                 };
 
-            let mut records = vec![];
+            let mut streams = Vec::<SocialPostIndexStream<'_>>::with_capacity(versions.len());
             for version in versions {
-                for entry in social_post_replies_tbl.range(
-                    &(version, Timestamp::ZERO, ShortEventId::ZERO)
-                        ..=&(version, Timestamp::MAX, ShortEventId::MAX),
-                )? {
-                    let (key, _) = entry?;
-                    let (_, ts, event_id) = key.value();
-                    if cursor.is_some_and(|cursor| (cursor.ts, cursor.event_id) <= (ts, event_id)) {
-                        continue;
-                    }
+                use std::ops::Bound;
 
-                    let Some(record) = Self::social_post_record_by_id_tx(
-                        event_id,
-                        ts,
-                        &events_table,
-                        &social_posts_tbl,
-                        &events_content_state_table,
-                        &content_store_table,
-                        &social_posts_replaces_table,
-                    )?
-                    else {
-                        continue;
-                    };
-                    records.push(record);
-                }
+                let upper = cursor.map_or(
+                    Bound::Included((version, Timestamp::MAX, ShortEventId::MAX)),
+                    |cursor| Bound::Excluded((version, cursor.ts, cursor.event_id)),
+                );
+                let stream = social_post_replies_tbl
+                    .range((
+                        Bound::Included((version, Timestamp::ZERO, ShortEventId::ZERO)),
+                        upper,
+                    ))?
+                    .rev()
+                    .map(|entry| {
+                        let (key, _) = entry?;
+                        let (_, ts, event_id) = key.value();
+                        Ok((ts, event_id))
+                    });
+                streams.push(Box::new(stream));
             }
 
-            records.sort_by_key(|record| std::cmp::Reverse((record.ts, record.event_id)));
-            records.truncate(limit);
+            let records = paginate_social_post_index_rev(streams, limit, |ts, event_id| {
+                Self::social_post_record_by_id_tx(
+                    event_id,
+                    ts,
+                    &events_table,
+                    &social_posts_tbl,
+                    &events_content_state_table,
+                    &content_store_table,
+                    &social_posts_replaces_table,
+                )
+            })?;
             let cursor = records.last().map(|record| EventPaginationCursor {
                 ts: record.ts,
                 event_id: record.event_id,
@@ -797,36 +838,39 @@ impl Database {
                     vec![post_event_id]
                 };
 
-            let mut records = vec![];
+            let mut streams = Vec::<SocialPostIndexStream<'_>>::with_capacity(versions.len());
             for version in versions {
-                for entry in social_post_reactions_tbl.range(
-                    &(version, Timestamp::ZERO, ShortEventId::ZERO)
-                        ..=&(version, Timestamp::MAX, ShortEventId::MAX),
-                )? {
-                    let (key, _) = entry?;
-                    let (_, ts, event_id) = key.value();
-                    if cursor.is_some_and(|cursor| (cursor.ts, cursor.event_id) <= (ts, event_id)) {
-                        continue;
-                    }
+                use std::ops::Bound;
 
-                    let Some(record) = Self::social_post_record_by_id_tx(
-                        event_id,
-                        ts,
-                        &events_table,
-                        &social_posts_tbl,
-                        &events_content_state_table,
-                        &content_store_table,
-                        &social_posts_replaces_table,
-                    )?
-                    else {
-                        continue;
-                    };
-                    records.push(record);
-                }
+                let upper = cursor.map_or(
+                    Bound::Included((version, Timestamp::MAX, ShortEventId::MAX)),
+                    |cursor| Bound::Excluded((version, cursor.ts, cursor.event_id)),
+                );
+                let stream = social_post_reactions_tbl
+                    .range((
+                        Bound::Included((version, Timestamp::ZERO, ShortEventId::ZERO)),
+                        upper,
+                    ))?
+                    .rev()
+                    .map(|entry| {
+                        let (key, _) = entry?;
+                        let (_, ts, event_id) = key.value();
+                        Ok((ts, event_id))
+                    });
+                streams.push(Box::new(stream));
             }
 
-            records.sort_by_key(|record| std::cmp::Reverse((record.ts, record.event_id)));
-            records.truncate(limit);
+            let records = paginate_social_post_index_rev(streams, limit, |ts, event_id| {
+                Self::social_post_record_by_id_tx(
+                    event_id,
+                    ts,
+                    &events_table,
+                    &social_posts_tbl,
+                    &events_content_state_table,
+                    &content_store_table,
+                    &social_posts_replaces_table,
+                )
+            })?;
             let cursor = records.last().map(|record| EventPaginationCursor {
                 ts: record.ts,
                 event_id: record.event_id,

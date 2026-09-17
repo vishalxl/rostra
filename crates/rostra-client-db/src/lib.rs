@@ -2008,6 +2008,8 @@ mod identity_collision_tests;
 #[cfg(test)]
 mod reception_order_tests;
 #[cfg(test)]
+mod social_pagination_tests;
+#[cfg(test)]
 mod social_post_materialization_tests;
 #[cfg(test)]
 mod social_post_projection_tests;
