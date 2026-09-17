@@ -1,11 +1,17 @@
+use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use rostra_core::Timestamp;
 use rostra_core::event::content_kind::{EventContentKind as _, SocialPost};
-use rostra_core::event::{Event, EventExt as _, EventKind, VerifiedEvent, VerifiedEventContent};
+use rostra_core::event::{
+    Event, EventContentRaw, EventExt as _, EventKind, VerifiedEvent, VerifiedEventContent,
+};
 use rostra_core::id::{RostraIdSecretKey, ToShort as _};
 
+use crate::event::ContentStoreRecord;
+use crate::payload_admission::decode_stored_payload_after_length_guard;
 use crate::{
     Database, DbError, PayloadAcquisitionPreparation, PayloadAdmissionConfig,
     PayloadAdmissionLimits, PayloadAdmissionPause, PayloadIngestOutcome, PayloadReservation,
@@ -67,6 +73,66 @@ fn reserved(outcome: PayloadReservationOutcome) -> PayloadReservation {
         PayloadReservationOutcome::Reserved(lease) => lease,
         other => panic!("expected reservation, got {other:?}"),
     }
+}
+
+#[test]
+fn stored_payload_length_guard_borrows_actual_record_encodings() -> anyhow::Result<()> {
+    for len in [0, 1, 250, 251, 65_535, 65_536] {
+        let content = EventContentRaw::new(vec![0x5a; len]);
+        let encoded = bincode::encode_to_vec(
+            ContentStoreRecord(Cow::Borrowed(&content)),
+            redb_bincode::BINCODE_CONFIG,
+        )?;
+        let decoded = decode_stored_payload_after_length_guard(
+            &encoded,
+            len.try_into().unwrap(),
+            |borrowed| {
+                assert_eq!(borrowed, content.as_ref());
+                let encoded_start = encoded.as_ptr() as usize;
+                let encoded_end = encoded_start + encoded.len();
+                let borrowed_start = borrowed.as_ptr() as usize;
+                assert!(borrowed_start >= encoded_start);
+                assert!(borrowed_start <= encoded_end);
+                borrowed.len()
+            },
+        )?;
+        assert_eq!(decoded, len);
+    }
+    Ok(())
+}
+
+#[test]
+fn stored_payload_length_guard_rejects_before_owned_decode() -> anyhow::Result<()> {
+    let content = EventContentRaw::new(vec![0x5a; 251]);
+    let encoded = bincode::encode_to_vec(
+        ContentStoreRecord(Cow::Borrowed(&content)),
+        redb_bincode::BINCODE_CONFIG,
+    )?;
+    let owned_decode_called = Cell::new(false);
+    assert!(matches!(
+        decode_stored_payload_after_length_guard(&encoded, 1, |_| {
+            owned_decode_called.set(true);
+        }),
+        Err(DbError::PayloadAccountingInvariant)
+    ));
+    assert!(!owned_decode_called.get());
+
+    let truncated = &encoded[..encoded.len() - 1];
+    assert!(matches!(
+        decode_stored_payload_after_length_guard(truncated, 251, |_| ()),
+        Err(DbError::StoredDecode { .. })
+    ));
+    let mut trailing = encoded;
+    trailing.push(0);
+    assert!(matches!(
+        decode_stored_payload_after_length_guard(&trailing, 251, |_| ()),
+        Err(DbError::StoredDecode { .. })
+    ));
+    assert!(matches!(
+        decode_stored_payload_after_length_guard(&[251], 251, |_| ()),
+        Err(DbError::StoredDecode { .. })
+    ));
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -647,6 +713,62 @@ async fn admission_hash_reuse_pauses_then_materializes_without_fetch() -> anyhow
             .await?,
         PayloadIngestOutcome::Unchanged
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_shared_store_length_mismatch_fails_before_undercharged_decode()
+-> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let stored_author = RostraIdSecretKey::generate();
+    let stored = content(
+        stored_author,
+        1,
+        "stored payload larger than the false signed declaration",
+    );
+    let stored_len = u64::from(stored.content_len());
+    assert!(stored_len > 2);
+    db.try_process_event_content(&stored).await?;
+    ready(&db).await?;
+    configure(&db, config(stored_len + 2, stored_len + 2, 2, 2)).await?;
+
+    let mismatched = |author: RostraIdSecretKey, timestamp| {
+        let declared = EventContentRaw::new(vec![0]);
+        let mut event = Event::builder_raw_content()
+            .author(author.id())
+            .timestamp(Timestamp::from(timestamp).to_offset_date_time().unwrap())
+            .kind(EventKind::SOCIAL_POST)
+            .content(&declared)
+            .build();
+        event.content_hash = stored.content_hash();
+        VerifiedEvent::verify_signed(author.id(), event.signed_by(author)).unwrap()
+    };
+
+    let direct = mismatched(RostraIdSecretKey::generate(), 2);
+    db.try_process_event(&direct).await?;
+    assert!(matches!(
+        db.try_materialize_stored_payload(direct.event_id.to_short())
+            .await,
+        Err(DbError::PayloadAccountingInvariant)
+    ));
+    assert!(
+        db.is_event_content_missing(direct.event_id.to_short())
+            .await
+    );
+    assert_eq!(db.payload_admission_usage().buffers, 0);
+    assert_eq!(db.payload_admission_usage().acquisitions, 0);
+
+    let prepared = mismatched(RostraIdSecretKey::generate(), 3);
+    assert!(matches!(
+        db.prepare_payload_acquisition_detailed(&prepared).await,
+        Err(DbError::PayloadAccountingInvariant)
+    ));
+    assert!(
+        db.is_event_content_missing(prepared.event_id.to_short())
+            .await
+    );
+    assert_eq!(db.payload_admission_usage().buffers, 0);
+    assert_eq!(db.payload_admission_usage().acquisitions, 0);
     Ok(())
 }
 

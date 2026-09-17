@@ -2,16 +2,49 @@
 
 use std::sync::Arc;
 
+use redb::ReadableTable as _;
 use rostra_core::event::{EventExt as _, VerifiedEvent, VerifiedEventContent};
 use rostra_core::id::ToShort as _;
 use rostra_core::{ShortEventId, Timestamp};
 
+use crate::event::ContentStoreRecord;
 use crate::payload_reservation::{AdmissionState, ReservationOwner, ReservedEvent};
 use crate::{
     Database, DbError, DbResult, EventContentState, PayloadAdmissionPause, PayloadAdmissionUsage,
     PayloadBuffer, PayloadReservation, WriteTransactionCtx, events_content_missing,
     events_content_state,
 };
+
+const CONTENT_HASH_ENCODED_LEN: usize = 32;
+
+pub(crate) fn decode_stored_payload_after_length_guard<T>(
+    encoded: &[u8],
+    expected_len: u32,
+    decode_owned: impl FnOnce(&[u8]) -> T,
+) -> DbResult<T> {
+    let (content, consumed) =
+        bincode::borrow_decode_from_slice::<&[u8], _>(encoded, redb_bincode::BINCODE_CONFIG)?;
+    if consumed != encoded.len() {
+        return Err(
+            bincode::error::DecodeError::Other("Trailing bytes after encoded value").into(),
+        );
+    }
+    if content.len() != expected_len as usize {
+        return Err(DbError::PayloadAccountingInvariant);
+    }
+    Ok(decode_owned(content))
+}
+
+fn encode_content_hash_key(hash: rostra_core::ContentHash) -> [u8; CONTENT_HASH_ENCODED_LEN] {
+    let mut encoded = [0; CONTENT_HASH_ENCODED_LEN];
+    let written = bincode::encode_into_slice(hash, &mut encoded, redb_bincode::BINCODE_CONFIG)
+        .expect("fixed-size content hash must fit its database key buffer");
+    assert_eq!(
+        written, CONTENT_HASH_ENCODED_LEN,
+        "content hash database key encoding must remain fixed-size"
+    );
+    encoded
+}
 
 /// Admission of one logical event, before any payload acquisition is started.
 #[derive(Debug)]
@@ -441,10 +474,28 @@ impl Database {
                     return Ok(PayloadIngestOutcome::Deferred(reason));
                 }
             };
-            let content = tx
-                .open_table(&crate::content_store::TABLE)?
-                .get(&event.content_hash())?
-                .map(|r| r.value().0.into_owned());
+            let content_hash = event.content_hash();
+            let encoded_key = encode_content_hash_key(content_hash);
+            let content = {
+                let content_store = tx.open_table(&crate::content_store::TABLE)?;
+                let raw_content = content_store.as_raw().get(encoded_key.as_slice())?;
+                let Some(raw_content) = raw_content else {
+                    return Ok(PayloadIngestOutcome::Unavailable);
+                };
+                decode_stored_payload_after_length_guard(
+                    raw_content.value(),
+                    event.content_len(),
+                    |_| -> DbResult<Option<_>> {
+                        Ok(content_store
+                            .get(&content_hash)?
+                            .map(|record| -> Result<_, bincode::error::DecodeError> {
+                                let ContentStoreRecord(content) = record.value_try()?;
+                                Ok(content.into_owned())
+                            })
+                            .transpose()?)
+                    },
+                )??
+            };
             let Some(content) = content else {
                 return Ok(PayloadIngestOutcome::Unavailable);
             };
