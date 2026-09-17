@@ -606,7 +606,7 @@ async fn admission_hash_reuse_pauses_then_materializes_without_fetch() -> anyhow
         assert!(
             tx.open_table(&crate::events_content_missing::TABLE)?
                 .get(&(Timestamp::ZERO, two.event_id().to_short()))?
-                .is_none()
+                .is_some()
         );
         Ok(())
     })
@@ -803,34 +803,172 @@ async fn admission_invalid_is_distinct_and_protected_kinds_are_not_exempt() -> a
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn admission_configured_envelopes_schedule_shared_hash_work() -> anyhow::Result<()> {
+async fn envelopes_schedule_shared_hash_work_in_disabled_and_enforce_modes() -> anyhow::Result<()> {
     let author = RostraIdSecretKey::generate();
     let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
-    ready(&db).await?;
     let first = content(author, 1, "already in hash store");
     let second = content(author, 2, "already in hash store");
     let third = content(author, 3, "already in hash store");
-    let n = u64::from(first.content_len());
-    configure(&db, config(3 * n, 3 * n, 4, 4 * n)).await?;
     db.try_process_event_content(&first).await?;
     db.try_process_event(&second.event).await?;
-    let lease = reserved(db.reserve_payload(&third.event).await?);
+    assert!(
+        db.get_social_post(second.event_id().to_short())
+            .await
+            .is_none()
+    );
+    let scheduled = db.peek_next_missing_content().await.unwrap();
+    assert_eq!(scheduled.event_id, second.event_id().to_short());
+    assert_eq!(scheduled.scheduled_time, Timestamp::ZERO);
+    assert_eq!(scheduled.fetch_attempt_count, 0);
+    assert!(matches!(
+        db.prepare_payload_acquisition(&second.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    assert!(
+        db.get_social_post(second.event_id().to_short())
+            .await
+            .is_some()
+    );
+    assert!(db.peek_next_missing_content().await.is_none());
+    assert!(matches!(
+        db.prepare_payload_acquisition(&second.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    ready(&db).await?;
+    let n = u64::from(first.content_len());
+    configure(&db, config(3 * n, 3 * n, 4, 4 * n)).await?;
+    db.try_process_event(&third.event).await?;
     db.read_with(|tx| {
-        let schedule = tx.open_table(&crate::events_content_missing::TABLE)?;
-        for event in [&second, &third] {
-            assert!(
-                schedule
-                    .get(&(Timestamp::ZERO, event.event_id().to_short()))?
-                    .is_some()
-            );
-        }
+        assert!(
+            tx.open_table(&crate::events_content_missing::TABLE)?
+                .get(&(Timestamp::ZERO, third.event_id().to_short()))?
+                .is_some()
+        );
         Ok(())
     })
     .await?;
-    assert_eq!(
-        db.get_payload_usage().await?.unwrap().logical_current_bytes,
-        n
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_parent_envelope_schedules_shared_hash_work() -> anyhow::Result<()> {
+    let author = RostraIdSecretKey::generate();
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let stored = content(author, 1, "shared missing parent");
+    let parent = content(author, 2, "shared missing parent");
+    let child_content = SocialPost::new_text("child".to_owned(), None, Default::default())
+        .serialize_cbor()
+        .unwrap();
+    let child = Event::builder_raw_content()
+        .author(author.id())
+        .timestamp(Timestamp::from(3).to_offset_date_time().unwrap())
+        .kind(EventKind::SOCIAL_POST)
+        .parent_prev(parent.event_id().to_short())
+        .content(&child_content)
+        .build()
+        .signed_by(author);
+    let child = VerifiedEvent::verify_signed(author.id(), child).unwrap();
+    db.try_process_event_content(&stored).await?;
+    db.try_process_event(&child).await?;
+    let (outcome, _) = db.try_process_event(&parent.event).await?;
+    assert!(matches!(
+        outcome,
+        crate::InsertEventOutcome::Inserted {
+            was_missing: true,
+            ..
+        }
+    ));
+    db.read_with(|tx| {
+        let schedule = tx.open_table(&crate::events_content_missing::TABLE)?;
+        assert!(
+            schedule
+                .get(&(Timestamp::ZERO, parent.event_id().to_short()))?
+                .is_some()
+        );
+        Ok(())
+    })
+    .await?;
+    assert!(
+        db.get_social_post(parent.event_id().to_short())
+            .await
+            .is_none()
     );
-    drop(lease);
+    assert!(matches!(
+        db.prepare_payload_acquisition(&parent.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    assert!(
+        db.get_social_post(parent.event_id().to_short())
+            .await
+            .is_some()
+    );
+    assert!(matches!(
+        db.prepare_payload_acquisition(&parent.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    let receipts = db
+        .read_with(|tx| {
+            let table = tx.open_table(&crate::social_posts_by_received_at::TABLE)?;
+            let mut count = 0;
+            for entry in table.range(..)? {
+                let (_, event_id) = entry?;
+                if event_id.value() == parent.event_id().to_short() {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        })
+        .await?;
+    assert_eq!(receipts, 1);
+    db.read_with(|tx| {
+        assert!(
+            tx.open_table(&crate::events_content_missing::TABLE)?
+                .get(&(Timestamp::ZERO, parent.event_id().to_short()))?
+                .is_none()
+        );
+        Ok(())
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn envelope_redelivery_restores_current_retry_schedule() -> anyhow::Result<()> {
+    let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
+    let event = content(RostraIdSecretKey::generate(), 1, "retry metadata");
+    db.try_process_event(&event.event).await?;
+    let attempted_at = Timestamp::from(10);
+    let retry_at = Timestamp::from(20);
+    db.record_failed_content_fetch(
+        event.event_id().to_short(),
+        Timestamp::ZERO,
+        attempted_at,
+        retry_at,
+    )
+    .await;
+    db.write_with(|tx| {
+        tx.open_table(&crate::events_content_missing::TABLE)?
+            .remove(&(retry_at, event.event_id().to_short()))?;
+        Ok(())
+    })
+    .await?;
+    db.try_process_event(&event.event).await?;
+    assert!(matches!(
+        db.get_event_content_state(event.event_id().to_short()).await,
+        Some(crate::EventContentState::Missing {
+            last_fetch_attempt: Some(last),
+            fetch_attempt_count: 1,
+            next_fetch_attempt,
+        }) if last == attempted_at && next_fetch_attempt == retry_at
+    ));
+    db.read_with(|tx| {
+        assert!(
+            tx.open_table(&crate::events_content_missing::TABLE)?
+                .get(&(retry_at, event.event_id().to_short()))?
+                .is_some()
+        );
+        Ok(())
+    })
+    .await?;
     Ok(())
 }

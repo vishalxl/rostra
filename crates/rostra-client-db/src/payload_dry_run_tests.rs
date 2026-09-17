@@ -607,6 +607,11 @@ async fn dry_run_real_prepare_and_ingest_remain_disabled_above_forecast_caps() -
     ));
     db.try_process_event_with_content(&first).await?;
     let shared = post(author, 2, "shared");
+    db.try_process_event(&shared.event).await?;
+    let scheduled = db.peek_next_missing_content().await.unwrap();
+    assert_eq!(scheduled.event_id, shared.event_id().to_short());
+    assert_eq!(scheduled.scheduled_time, Timestamp::ZERO);
+    assert_eq!(scheduled.fetch_attempt_count, 0);
     assert!(matches!(
         db.prepare_payload_acquisition(&shared.event).await?,
         PayloadReservationOutcome::Unneeded

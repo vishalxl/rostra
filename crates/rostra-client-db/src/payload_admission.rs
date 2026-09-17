@@ -347,7 +347,7 @@ impl Database {
                 })
             }
             Err(DbError::PayloadAdmissionPaused { reason }) => {
-                self.ensure_admission_missing_scheduled_tx(tx, content.event_id().to_short())?;
+                self.ensure_missing_scheduled_tx(tx, content.event_id().to_short())?;
                 Ok(PayloadIngestOutcome::Deferred(reason))
             }
             Err(err) => Err(err),
@@ -377,7 +377,7 @@ impl Database {
             let buffer = match self.admit_materialization_tx(tx, &event, None) {
                 Ok(buffer) => buffer,
                 Err(DbError::PayloadAdmissionPaused { reason }) => {
-                    self.ensure_admission_missing_scheduled_tx(tx, id)?;
+                    self.ensure_missing_scheduled_tx(tx, id)?;
                     return Ok(PayloadIngestOutcome::Deferred(reason));
                 }
                 Err(err) => return Err(err),
@@ -387,7 +387,7 @@ impl Database {
             let conversion = match self.reserve_payload_allocation(u64::from(event.content_len())) {
                 Ok(capacity) => capacity,
                 Err(reason) => {
-                    self.ensure_admission_missing_scheduled_tx(tx, id)?;
+                    self.ensure_missing_scheduled_tx(tx, id)?;
                     return Ok(PayloadIngestOutcome::Deferred(reason));
                 }
             };
@@ -406,21 +406,11 @@ impl Database {
         .await
     }
 
-    pub(crate) fn ensure_admission_missing_scheduled_tx(
+    pub(crate) fn ensure_missing_scheduled_tx(
         &self,
         tx: &WriteTransactionCtx,
         id: ShortEventId,
     ) -> DbResult<()> {
-        if self
-            .payload_admission
-            .state
-            .lock()
-            .unwrap()
-            .config
-            .is_none()
-        {
-            return Ok(());
-        }
         if let Some(EventContentState::Missing {
             next_fetch_attempt, ..
         }) = tx

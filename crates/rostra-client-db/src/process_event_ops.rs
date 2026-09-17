@@ -46,7 +46,7 @@ impl Database {
         let before = self.payload_before_tx(tx, event)?;
         let result = self.process_event_inner_tx_with_source(event, now, source, tx)?;
         self.payload_after_tx(tx, before)?;
-        self.ensure_admission_missing_scheduled_tx(tx, event.event_id.to_short())?;
+        self.ensure_missing_scheduled_tx(tx, event.event_id.to_short())?;
         Ok(result)
     }
 
