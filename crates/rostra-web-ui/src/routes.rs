@@ -18,6 +18,8 @@ mod retention;
 mod search;
 mod settings;
 mod shoutbox;
+#[cfg(test)]
+mod tests;
 mod timeline;
 pub(crate) mod unlock;
 mod url;
@@ -28,7 +30,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, FromRequest, Request, State};
-use axum::http::header::{self, CONTENT_TYPE};
+use axum::http::header::{self, CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -112,10 +114,28 @@ pub async fn cache_control(request: Request, next: Next) -> Response {
 
     // Avatars: long cache, busted by ?v= query param on URL changes
     if path.starts_with("/profile/") && path.ends_with("/avatar") {
-        response.headers_mut().insert(
-            "cache-control",
-            HeaderValue::from_static("public, max-age=86400"),
-        );
+        if matches!(
+            response.status(),
+            StatusCode::OK | StatusCode::NOT_MODIFIED | StatusCode::PERMANENT_REDIRECT
+        ) {
+            if !response.headers().contains_key(CACHE_CONTROL) {
+                response.headers_mut().insert(
+                    CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=86400"),
+                );
+            }
+        } else if !response
+            .headers()
+            .get_all(CACHE_CONTROL)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|directive| directive.trim().eq_ignore_ascii_case("no-store"))
+        {
+            response
+                .headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+        }
         return response;
     }
 

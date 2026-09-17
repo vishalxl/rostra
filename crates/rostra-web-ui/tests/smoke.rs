@@ -1578,6 +1578,12 @@ async fn full_event_resource_urls_validate_and_canonicalize() {
             response.headers().get(header::LOCATION).unwrap(),
             &canonical_url
         );
+        if legacy_url.contains("/avatar") {
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "public, max-age=86400"
+            );
+        }
     }
 
     let cases = [
@@ -1971,6 +1977,10 @@ async fn default_avatar_returns_svg_directly() {
         .get(&format!("/profile/{}/avatar", id.to_short()))
         .await;
     assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()[header::CACHE_CONTROL],
+        "public, max-age=86400"
+    );
 
     let content_type = resp
         .headers()
@@ -2017,6 +2027,10 @@ async fn default_avatar_etag_returns_304() {
         .get_if_none_match(&format!("/profile/{}/avatar", id.to_short()), &etag)
         .await;
     assert_eq!(resp.status(), 304);
+    assert_eq!(
+        resp.headers()[header::CACHE_CONTROL],
+        "public, max-age=86400"
+    );
     assert_untrusted_media_headers(&resp, "image/svg+xml");
 }
 
@@ -2188,6 +2202,46 @@ async fn avatar_by_id_has_24h_cache() {
     assert_eq!(
         cache_control, "public, max-age=86400",
         "avatar route should cache for 24h"
+    );
+
+    let resp = driver
+        .head(&format!("/profile/{}/avatar", id.to_short()))
+        .await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()[header::CACHE_CONTROL],
+        "public, max-age=86400"
+    );
+    assert_untrusted_media_headers(&resp, "image/svg+xml");
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn avatar_authentication_and_lookup_failures_are_not_cacheable() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let missing_id = RostraIdSecretKey::generate().id();
+    let path = format!("/profile/{}/avatar", missing_id.to_short());
+
+    let response = driver.get(&path).await;
+    assert_eq!(response.status(), 303);
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        format!(
+            "/unlock?redirect=%2Fprofile%2F{}%2Favatar",
+            missing_id.to_short()
+        )
+    );
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+
+    driver.login_new_identity().await;
+    let response = driver.get(&path).await;
+    assert_eq!(response.status(), 404);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
     );
 }
 
