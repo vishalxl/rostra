@@ -19,7 +19,7 @@ use tracing::Instrument as _;
 use tracing::instrument::WithSubscriber as _;
 
 use super::{
-    BROADCAST_POLICY, BroadcastHeadOutcome, BroadcastHeadReport, BroadcastPolicy,
+    BROADCAST_POLICY, BroadcastHeadOutcome, BroadcastHeadReport, BroadcastPolicy, BroadcastRetry,
     HeadUpdateBroadcaster, broadcast_retry_delay, content_completes_pending, content_is_terminal,
     log_broadcast_pass, reconcile_current_heads, take_one_ready_head,
 };
@@ -95,6 +95,92 @@ async fn ready_head_remains_pending_until_broadcast_succeeds() {
     assert_eq!(pending, BTreeSet::from([head]));
     pending.remove(&head);
     assert!(pending.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn ready_head_is_not_selected_before_retry_deadline() {
+    let id_secret = RostraIdSecretKey::generate();
+    let (db, head) = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("database setup runtime")
+            .block_on(async move {
+                let db = Database::new_in_memory(id_secret.id())
+                    .await
+                    .expect("in-memory database");
+                let (_, event_content) = build_event(id_secret, 1, None);
+                let head = event_content.event.event_id.to_short();
+                db.process_event_with_content(&event_content).await;
+                (db, head)
+            })
+    })
+    .join()
+    .expect("database setup thread");
+
+    let policy = BroadcastPolicy {
+        peer_deadline: Duration::from_secs(1),
+        retry_initial_delay: Duration::from_millis(100),
+        retry_max_delay: Duration::from_millis(100),
+    };
+    let mut pending = BTreeSet::from([head]);
+    let deadline = tokio::time::Instant::now() + broadcast_retry_delay(0, policy);
+    let retry_at = BTreeMap::from([(
+        head,
+        BroadcastRetry {
+            retry_count: 1,
+            at: deadline,
+        },
+    )]);
+
+    assert!(
+        take_one_ready_head(&db, &mut pending, &retry_at)
+            .await
+            .is_none()
+    );
+    assert_eq!(pending, BTreeSet::from([head]));
+
+    tokio::time::advance(Duration::from_millis(99)).await;
+    assert!(
+        take_one_ready_head(&db, &mut pending, &retry_at)
+            .await
+            .is_none()
+    );
+    assert_eq!(pending, BTreeSet::from([head]));
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_eq!(tokio::time::Instant::now(), deadline);
+    assert_eq!(pending, BTreeSet::from([head]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ready_head_is_selected_when_retry_is_due() {
+    let id_secret = RostraIdSecretKey::generate();
+    let db = Database::new_in_memory(id_secret.id())
+        .await
+        .expect("in-memory database");
+    let (_, event_content) = build_event(id_secret, 1, None);
+    let head = event_content.event.event_id.to_short();
+    db.process_event_with_content(&event_content).await;
+
+    let mut pending = BTreeSet::from([head]);
+    let mut retry_at = BTreeMap::from([(
+        head,
+        BroadcastRetry {
+            retry_count: 1,
+            at: tokio::time::Instant::now(),
+        },
+    )]);
+    let ready = take_one_ready_head(&db, &mut pending, &retry_at)
+        .await
+        .expect("head is eligible when its retry is due");
+    assert_eq!(ready.0, head);
+    assert_eq!(pending, BTreeSet::from([head]));
+
+    pending.remove(&head);
+    retry_at.remove(&head);
+    assert!(pending.is_empty());
+    assert!(retry_at.is_empty());
 }
 
 async fn retrying_feed_server(
@@ -277,13 +363,8 @@ async fn hanging_follower_does_not_block_later_follower_and_head_retries() {
     })
     .await
     .expect("later responsive follower receives the head");
+    tokio::time::sleep(Duration::from_millis(150)).await;
     resume_tx.send(()).expect("resume retrying server");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), attempts_rx.recv())
-            .await
-            .is_err(),
-        "retry waits for the configured backoff"
-    );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), attempts_rx.recv())
             .await
