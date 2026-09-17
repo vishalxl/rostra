@@ -131,7 +131,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 reqwest-13 = { package = "reqwest", version = "0.13", default-features = false, features = [
   "rustls",
 ] }
-quick-xml = "0.38.4"
+quick-xml = "0.41.0"
 scraper = "0.20"
 cssparser = "0.31"
 webpki-root-certs = "1.0"
