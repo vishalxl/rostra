@@ -2,12 +2,67 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 
+fn parse_opts(arguments: &[&str]) -> Result<Opts, clap::Error> {
+    Opts::try_parse_from(["rostra-bot"].into_iter().chain(arguments.iter().copied()))
+}
+
 fn starts() -> Arc<Mutex<Vec<tokio::time::Instant>>> {
     Arc::new(Mutex::new(Vec::new()))
 }
 
 fn recorded_starts(starts: &Arc<Mutex<Vec<tokio::time::Instant>>>) -> Vec<tokio::time::Instant> {
     starts.lock().expect("starts mutex").clone()
+}
+
+#[test]
+fn scrape_interval_defaults_to_thirty_minutes() {
+    let opts = parse_opts(&[]).expect("default options parse");
+
+    assert_eq!(opts.scrape_interval_minutes.minutes(), 30);
+    assert_eq!(
+        opts.scrape_interval_minutes.period(),
+        Duration::from_secs(30 * 60)
+    );
+}
+
+#[test]
+fn scrape_interval_accepts_one_minute() {
+    let opts = parse_opts(&["--scrape-interval-minutes", "1"]).expect("one minute parses");
+
+    assert_eq!(opts.scrape_interval_minutes.minutes(), 1);
+    assert_eq!(
+        opts.scrape_interval_minutes.period(),
+        Duration::from_secs(60)
+    );
+}
+
+#[test]
+fn scrape_interval_rejects_zero_with_the_option_name() {
+    let error = parse_opts(&["--scrape-interval-minutes", "0"]).expect_err("zero is rejected");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    assert!(error.to_string().contains("--scrape-interval-minutes"));
+}
+
+#[test]
+fn scrape_interval_arithmetic_ceiling_converts_to_seconds() {
+    let minutes = u64::MAX / SECONDS_PER_MINUTE;
+
+    let interval = ScrapeInterval::from_minutes(minutes).expect("arithmetic ceiling converts");
+
+    assert_eq!(interval.minutes(), minutes);
+    assert_eq!(
+        interval.period(),
+        Duration::from_secs(minutes * SECONDS_PER_MINUTE)
+    );
+}
+
+#[test]
+fn scrape_interval_rejects_minutes_that_overflow_seconds() {
+    let arithmetic_ceiling = u64::MAX / SECONDS_PER_MINUTE;
+
+    assert!(ScrapeInterval::from_minutes(arithmetic_ceiling + 1).is_err());
+    assert!(ScrapeInterval::from_minutes(u64::MAX).is_err());
 }
 
 #[tokio::test(start_paused = true)]

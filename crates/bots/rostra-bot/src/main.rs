@@ -48,6 +48,53 @@ pub enum BotError {
 
 pub type BotResult<T> = std::result::Result<T, BotError>;
 
+const SECONDS_PER_MINUTE: u64 = 60;
+
+/// A validated scrape interval expressed in whole minutes.
+#[derive(Clone, Copy, Debug)]
+pub struct ScrapeInterval {
+    /// The configured interval in minutes.
+    minutes: u64,
+    /// The converted interval used to schedule bot cycles.
+    period: Duration,
+}
+
+impl ScrapeInterval {
+    fn from_minutes(minutes: u64) -> Result<Self, &'static str> {
+        if minutes == 0 {
+            return Err("must be at least one minute");
+        }
+
+        let seconds = minutes
+            .checked_mul(SECONDS_PER_MINUTE)
+            .ok_or("is too large to convert to seconds")?;
+
+        Ok(Self {
+            minutes,
+            period: Duration::from_secs(seconds),
+        })
+    }
+
+    /// Returns the configured interval in minutes.
+    pub fn minutes(self) -> u64 {
+        self.minutes
+    }
+
+    /// Returns the checked interval used to schedule bot cycles.
+    pub fn period(self) -> Duration {
+        self.period
+    }
+}
+
+impl std::str::FromStr for ScrapeInterval {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let minutes = value.parse::<u64>().map_err(|error| error.to_string())?;
+        Self::from_minutes(minutes).map_err(str::to_owned)
+    }
+}
+
 /// Rostra Bot - scrapes news sites and publishes to Rostra
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -61,7 +108,7 @@ pub struct Opts {
 
     /// Interval between scraping runs in minutes
     #[arg(long, default_value = "30")]
-    pub scrape_interval_minutes: u64,
+    pub scrape_interval_minutes: ScrapeInterval,
 
     /// Maximum articles to publish per run
     #[arg(long, default_value = "5")]
@@ -152,7 +199,7 @@ async fn run_bot(opts: Opts, secret_file: PathBuf) -> BotResult<()> {
     info!(
       target: LOG_TARGET,
       sources = %source_desc,
-      scrape_interval = opts.scrape_interval_minutes,
+      scrape_interval = opts.scrape_interval_minutes.minutes(),
       max_articles = opts.max_articles_per_run,
       hn_min_score = opts.hn_min_score,
       lobsters_min_score = opts.lobsters_min_score,
@@ -265,28 +312,25 @@ async fn run_bot_loop(
     scrapers: &[Box<dyn rostra_bot::scraper::Scraper + Send + Sync>],
     publisher: &Publisher,
 ) -> BotResult<()> {
-    run_bot_loop_with(
-        Duration::from_secs(opts.scrape_interval_minutes * 60),
-        || async {
-            run_one_cycle(
-                opts.hn_min_score,
-                opts.lobsters_min_score,
-                opts.max_articles_per_run,
-                db,
-                scrapers,
-                publisher,
-            )
-            .await
-            .map_err(|source| BotError::RunCycle { source })?;
+    run_bot_loop_with(opts.scrape_interval_minutes.period(), || async {
+        run_one_cycle(
+            opts.hn_min_score,
+            opts.lobsters_min_score,
+            opts.max_articles_per_run,
+            db,
+            scrapers,
+            publisher,
+        )
+        .await
+        .map_err(|source| BotError::RunCycle { source })?;
 
-            info!(target: LOG_TARGET,
-                  next_run_in_minutes = opts.scrape_interval_minutes,
-                  "Cycle complete, waiting for next run"
-            );
+        info!(target: LOG_TARGET,
+              next_run_in_minutes = opts.scrape_interval_minutes.minutes(),
+              "Cycle complete, waiting for next run"
+        );
 
-            Ok(())
-        },
-    )
+        Ok(())
+    })
     .await
 }
 
