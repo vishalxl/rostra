@@ -267,7 +267,9 @@ async fn replayed_follower_head_responses_are_rate_limited() {
                 RpcId::WAIT_FOLLOWERS_NEW_HEADS => {
                     WaitFollowersNewHeadsRequest::decode_whole::<MAX_REQUEST_SIZE>(&request)
                         .expect("decode follower-head request");
-                    requests_tx.send(()).expect("request receiver");
+                    requests_tx
+                        .send(tokio::time::Instant::now())
+                        .expect("request receiver");
                     let event = if response_count == 0 {
                         replayed_event
                     } else {
@@ -320,25 +322,17 @@ async fn replayed_follower_head_responses_are_rate_limited() {
         .await
     });
 
-    requests_rx.recv().await.expect("first replay request");
-    let first_request_at = tokio::time::Instant::now();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), requests_rx.recv())
-            .await
-            .is_err(),
-        "a replay must not trigger an immediate poll"
-    );
-
-    tokio::time::timeout(Duration::from_secs(2), requests_rx.recv())
+    let first_request_at = requests_rx.recv().await.expect("first replay request");
+    let second_request_at = tokio::time::timeout(Duration::from_secs(2), requests_rx.recv())
         .await
         .expect("rate-limit interval")
         .expect("second request after replay delay");
     assert!(
-        super::NO_PROGRESS_POLL_DELAY <= first_request_at.elapsed(),
+        second_request_at.duration_since(first_request_at) >= super::NO_PROGRESS_POLL_DELAY,
         "replay delay was shorter than the configured interval"
     );
     let insertion_request_at = tokio::time::Instant::now();
-    tokio::time::timeout(Duration::from_millis(200), requests_rx.recv())
+    let third_request_at = tokio::time::timeout(Duration::from_millis(200), requests_rx.recv())
         .await
         .expect("new insertion must repoll immediately")
         .expect("third request after insertion");
@@ -346,11 +340,13 @@ async fn replayed_follower_head_responses_are_rate_limited() {
         insertion_request_at.elapsed() < Duration::from_millis(200),
         "new insertion did not trigger an immediate poll"
     );
+    let fourth_request_at = tokio::time::timeout(Duration::from_secs(2), requests_rx.recv())
+        .await
+        .expect("rate-limit interval")
+        .expect("fourth request after replay delay");
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), requests_rx.recv())
-            .await
-            .is_err(),
-        "the now-replayed inserted event must rate-limit the fourth request"
+        fourth_request_at.duration_since(third_request_at) >= super::NO_PROGRESS_POLL_DELAY,
+        "replayed inserted event delay was shorter than the configured interval"
     );
 
     polling.abort();
