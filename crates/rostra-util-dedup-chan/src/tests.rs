@@ -95,6 +95,66 @@ async fn can_detect_rx_drop() {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn removes_closed_channel_on_duplicate() {
+    let mut tx = Sender::new();
+    let rx = tx.subscribe(1);
+
+    assert_eq!(tx.send(8), 1);
+    drop(rx);
+
+    assert_eq!(tx.send(8), 0);
+    assert!(tx.channels.lock().expect("Locking failed").is_empty());
+    assert_eq!(tx.send(8), 0);
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn removes_only_closed_channel_on_duplicate() {
+    let mut tx = Sender::new();
+    let mut live_rx = tx.subscribe(1);
+    let dead_rx = tx.subscribe(1);
+
+    assert_eq!(tx.send(8), 2);
+    drop(dead_rx);
+
+    assert_eq!(tx.send(8), 1);
+    assert_eq!(tx.channels.lock().expect("Locking failed").len(), 1);
+    assert_eq!(live_rx.recv().await, Ok(8));
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn receiver_clone_keeps_duplicate_channel_connected() {
+    let mut tx = Sender::new();
+    let rx = tx.subscribe(1);
+    let mut rx_clone = rx.clone();
+
+    assert_eq!(tx.send(8), 1);
+    drop(rx);
+
+    assert_eq!(tx.send(8), 1);
+    assert_eq!(rx_clone.recv().await, Ok(8));
+
+    assert_eq!(tx.send(8), 1);
+    drop(rx_clone);
+
+    assert_eq!(tx.send(8), 0);
+    assert!(tx.channels.lock().expect("Locking failed").is_empty());
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn removes_closed_duplicate_queue() {
+    let mut tx = Sender::new();
+    let rx = tx.subscribe(1);
+    let weak_inner = Arc::downgrade(&rx.inner);
+
+    assert_eq!(tx.send(8), 1);
+    drop(rx);
+    assert!(weak_inner.upgrade().is_some());
+
+    assert_eq!(tx.send(8), 0);
+    assert!(weak_inner.upgrade().is_none());
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn load_balancing_works() {
     let mut tx = Sender::new();
 

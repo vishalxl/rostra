@@ -78,6 +78,9 @@ where
         let mut lock = self.inner.lock().expect("locking failed");
 
         if lock.set.contains(&v) {
+            if self.tx.is_closed() {
+                return Err(SendError::Closed(v));
+            }
             return Ok(());
         }
 
