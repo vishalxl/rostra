@@ -6,7 +6,8 @@ use std::time::Duration;
 use common::TestServer;
 use reqwest::header;
 use rostra_core::event::{
-    Event, EventKind, PersonasTagsSelector, VerifiedEvent, VerifiedEventContent, content_kind,
+    Event, EventKind, PersonaTag, PersonasTagsSelector, VerifiedEvent, VerifiedEventContent,
+    content_kind,
 };
 use rostra_core::id::{RostraId, RostraIdSecretKey, ToShort as _};
 use rostra_core::{EventId, ExternalEventId, ShortEventId};
@@ -654,6 +655,321 @@ async fn ajax_add_followee_returns_form_fragment_after_following() {
             .iter()
             .any(|(followee_id, _)| *followee_id == followee)
     );
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn ordinary_follow_editor_supports_native_navigation_and_custom_tags() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let (viewer, secret) = driver.login_new_identity().await;
+    let target = retain_test_identity(&server, viewer).await;
+    let client = server.client(viewer).await;
+    client
+        .follow(
+            secret,
+            target,
+            PersonasTagsSelector::Except {
+                ids: BTreeSet::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let follow_action = format!("/profile/{}/follow", target.to_short());
+    for path in [
+        format!("/profile/{}", target.to_short()),
+        "/settings/following".to_owned(),
+    ] {
+        let response = driver.get(&path).await;
+        assert_eq!(response.status(), 200);
+        let document = Html::parse_document(&response.text().await.unwrap());
+        let form = document
+            .select(
+                &Selector::parse(&format!(r#"form[action="{follow_action}"][method="get"]"#))
+                    .unwrap(),
+            )
+            .next()
+            .unwrap_or_else(|| panic!("{path} lacks the ordinary follow editor entry"));
+        assert!(
+            form.select(
+                &Selector::parse(r#"input[type="hidden"][name="following"][value="true"]"#)
+                    .unwrap()
+            )
+            .next()
+            .is_some()
+        );
+    }
+
+    let legacy_path = format!("/profile/{target}/follow?following=false");
+    let response = driver.get(&legacy_path).await;
+    assert_eq!(response.status(), 308);
+    let canonical_path = format!("/profile/{}/follow?following=false", target.to_short());
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        canonical_path
+    );
+
+    let response = driver.get(&canonical_path).await;
+    assert_eq!(response.status(), 200);
+    let page = response.text().await.unwrap();
+    assert!(page.contains("<html"));
+    let document = Html::parse_document(&page);
+    let profile_path = format!("/profile/{}", target.to_short());
+    let form_selector =
+        Selector::parse(&format!(r#"form[action="{follow_action}"][method="post"]"#)).unwrap();
+    let form = document.select(&form_selector).next().unwrap();
+    assert_eq!(form.value().attr("x-target"), None);
+    assert_eq!(form.value().attr("@ajax:before"), None);
+    assert_eq!(form.value().attr("@ajax:after"), None);
+    assert!(
+        form.select(&Selector::parse(r#"input[type="text"][name="personas"]"#).unwrap())
+            .next()
+            .is_some()
+    );
+    assert!(
+        document
+            .select(&Selector::parse(&format!(r#"a[href="{profile_path}"]"#)).unwrap())
+            .any(|link| link.text().any(|text| text.trim() == "Back"))
+    );
+    assert!(
+        document
+            .select(&Selector::parse(r#"script[src="/assets/app.js"]"#).unwrap())
+            .next()
+            .is_some()
+    );
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let response = driver
+        .post_form(
+            &format!("/profile/{target}/follow"),
+            &[
+                ("follow_type", "follow_only"),
+                ("personas", "personal"),
+                ("personas", "futuretag"),
+                ("personas", ""),
+            ],
+        )
+        .await;
+    assert_eq!(response.status(), 303);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        profile_path
+    );
+    let followees = client.db().get_followees(viewer).await;
+    assert_eq!(
+        followees
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, selector)| selector),
+        Some(&PersonasTagsSelector::Only {
+            ids: BTreeSet::from([
+                PersonaTag::new("futuretag").unwrap(),
+                PersonaTag::personal(),
+            ]),
+        })
+    );
+
+    let response = driver
+        .get(&format!(
+            "/profile/{}/follow?following=true",
+            target.to_short()
+        ))
+        .await;
+    assert_eq!(response.status(), 200);
+    let document = Html::parse_document(&response.text().await.unwrap());
+    let selected = document
+        .select(
+            &Selector::parse(
+                r#"form input[type="checkbox"][name="personas"][value="futuretag"][checked]"#,
+            )
+            .unwrap(),
+        )
+        .count();
+    assert_eq!(selected, 1);
+    assert_eq!(
+        document
+            .select(&Selector::parse(r#"form input[type="text"][name="personas"]"#).unwrap())
+            .count(),
+        1
+    );
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let response = driver
+        .post_form(
+            &format!("/profile/{}/follow", target.to_short()),
+            &[("follow_type", "follow_only"), ("personas", "")],
+        )
+        .await;
+    assert_eq!(response.status(), 303);
+    let followees = client.db().get_followees(viewer).await;
+    assert_eq!(
+        followees
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, selector)| selector),
+        Some(&PersonasTagsSelector::Only {
+            ids: BTreeSet::new(),
+        })
+    );
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let response = driver
+        .post_form(
+            &format!("/profile/{}/follow", target.to_short()),
+            &[
+                ("follow_type", "follow_all"),
+                ("personas", "professional"),
+                ("personas", ""),
+            ],
+        )
+        .await;
+    assert_eq!(response.status(), 303);
+    let followees = client.db().get_followees(viewer).await;
+    assert_eq!(
+        followees
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, selector)| selector),
+        Some(&PersonasTagsSelector::Except {
+            ids: BTreeSet::from([PersonaTag::professional()]),
+        })
+    );
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let response = driver
+        .post_form(
+            &format!("/profile/{}/follow", target.to_short()),
+            &[("follow_type", "unfollow")],
+        )
+        .await;
+    assert_eq!(response.status(), 303);
+    assert!(
+        !client
+            .db()
+            .get_followees(viewer)
+            .await
+            .iter()
+            .any(|(id, _)| *id == target)
+    );
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn ajax_follow_editor_keeps_dialog_and_fragment_replacements() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let (viewer, secret) = driver.login_new_identity().await;
+    let target = retain_test_identity(&server, viewer).await;
+    let canonical_path = format!("/profile/{}/follow", target.to_short());
+    let client = server.client(viewer).await;
+    client
+        .follow(secret, target, PersonasTagsSelector::default())
+        .await
+        .unwrap();
+
+    let response = driver
+        .ajax_get(&format!("{canonical_path}?following=true"))
+        .await;
+    assert_eq!(response.status(), 200);
+    let fragment = response.text().await.unwrap();
+    assert!(!fragment.contains("<html"));
+    let document = Html::parse_fragment(&fragment);
+    let dialog = document
+        .select(&Selector::parse("#follow-dialog-content.-active").unwrap())
+        .next()
+        .unwrap();
+    let form = dialog
+        .select(&Selector::parse("form[x-target]").unwrap())
+        .next()
+        .unwrap();
+    assert_eq!(
+        form.value().attr("x-target"),
+        Some("profile-summary followee-list follower-list follow-dialog-content")
+    );
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let response = driver
+        .ajax_post_form(
+            &canonical_path,
+            &[("follow_type", "follow_all"), ("personas", "civic")],
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    let fragment = response.text().await.unwrap();
+    for id in [
+        "profile-summary",
+        "followee-list",
+        "follower-list",
+        "follow-dialog-content",
+    ] {
+        assert!(
+            fragment.contains(&format!("id=\"{id}\"")),
+            "missing AJAX replacement {id}"
+        );
+    }
+    let followees = client.db().get_followees(viewer).await;
+    assert_eq!(
+        followees
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, selector)| selector),
+        Some(&PersonasTagsSelector::Except {
+            ids: BTreeSet::from([PersonaTag::civic()]),
+        })
+    );
+
+    let readonly = server.driver();
+    readonly.login_readonly(viewer).await;
+    let response = readonly
+        .post_form(
+            &canonical_path,
+            &[("follow_type", "follow_only"), ("personas", "personal")],
+        )
+        .await;
+    assert!(!response.status().is_success());
+    let followees = client.db().get_followees(viewer).await;
+    assert_eq!(
+        followees
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, selector)| selector),
+        Some(&PersonasTagsSelector::Except {
+            ids: BTreeSet::from([PersonaTag::civic()]),
+        })
+    );
+}
+
+async fn retain_test_identity(server: &TestServer, viewer: RostraId) -> RostraId {
+    let target_secret = RostraIdSecretKey::generate();
+    let target = target_secret.id();
+    let author = server.client(target).await;
+    let post = author
+        .social_post(
+            target_secret,
+            "Retained identity fixture".to_owned(),
+            None,
+            BTreeSet::new(),
+        )
+        .await
+        .unwrap();
+    let content = author.db().get_event_content(post.event_id).await.unwrap();
+    let content = VerifiedEventContent::verify(post, content).unwrap();
+    server
+        .client(viewer)
+        .await
+        .store_event_with_content(content.event_id(), &content)
+        .await
+        .unwrap();
+    target
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]

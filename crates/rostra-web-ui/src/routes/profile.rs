@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use axum::Form;
 use axum::extract::{OriginalUri, Path, Query, State};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Redirect, Response};
 use maud::{Markup, html};
 use rostra_client_db::social::EventPaginationCursor;
 use rostra_core::event::PersonaTag;
@@ -101,10 +101,11 @@ pub struct FollowQueryParams {
 pub async fn get_follow_dialog(
     state: State<SharedState>,
     session: UserSession,
+    AjaxRequest(is_ajax): AjaxRequest,
     OriginalUri(original_uri): OriginalUri,
     Path(profile_id): Path<RostraPathId>,
     Query(params): Query<FollowQueryParams>,
-) -> RequestResult<impl IntoResponse> {
+) -> RequestResult<Response> {
     let client = state.client(session.id()).await?;
     let client_ref = client.client_ref()?;
     let profile_id = profile_id.resolve(client_ref.db()).await.ok_or_else(|| {
@@ -137,8 +138,9 @@ pub async fn get_follow_dialog(
         prepare_follow_dialog_personas(current_selector.as_ref(), &mut persona_tags);
     let show_persona_list = follow_type != "unfollow";
 
-    let ajax_attrs = fragment::AjaxLoadingAttrs::for_class("o-followDialog__submitButton");
-    Ok(Maud(html! {
+    if is_ajax {
+        let ajax_attrs = fragment::AjaxLoadingAttrs::for_class("o-followDialog__submitButton");
+        return Ok(Maud(html! {
         div id="follow-dialog-content" ."o-followDialog -active" {
             (fragment::dialog_escape_handler("follow-dialog-content"))
             div ."o-followDialog__content" {
@@ -198,7 +200,80 @@ pub async fn get_follow_dialog(
             }
             }
         }
-    })
+        })
+        .into_response());
+    }
+
+    let back_url = profile_url(profile_id);
+    let editor = html! {
+        div ."o-mainBarTimeline__item" {
+            div ."o-followDialog__content" {
+                h1 ."o-followDialog__title" {
+                    "Following: "
+                    (profile.display_name)
+                }
+                form ."o-followDialog__form"
+                    action=(profile_follow_url(profile_id))
+                    method="post"
+                {
+                    div ."o-followDialog__optionsContainer" {
+                        div ."o-followDialog__selectContainer" {
+                            select
+                                name="follow_type"
+                                id="follow-type-select"
+                                ."o-followDialog__followTypeSelect"
+                                onchange="togglePersonaList()"
+                            {
+                                option value="unfollow" { "Unfollow" }
+                                option
+                                    value="follow_all"
+                                    selected[follow_type == "follow_all"]
+                                { "Follow All (except selected)" }
+                                option
+                                    value="follow_only"
+                                    selected[follow_type == "follow_only"]
+                                { "Follow Only (selected)" }
+                            }
+                        }
+
+                        div ."o-followDialog__personaList" ."-visible"[show_persona_list] {
+                            @for tag in &persona_tags {
+                                label ."o-followDialog__personaOption" {
+                                    input
+                                        type="checkbox"
+                                        name="personas"
+                                        value=(tag.as_str())
+                                        checked[selected_tags.contains(tag)]
+                                    {}
+                                    span ."o-followDialog__personaLabel" { (tag.as_str()) }
+                                }
+                            }
+                            label ."o-followDialog__personaOption" {
+                                span ."o-followDialog__personaLabel" { "Custom tag (optional)" }
+                                input
+                                    type="text"
+                                    name="personas"
+                                    maxlength="32"
+                                    autocomplete="off"
+                                {}
+                            }
+                        }
+                    }
+
+                    div ."o-followDialog__actions" {
+                        a ."o-followDialog__cancelButton u-button" href=(back_url) { "Back" }
+                        (fragment::button("o-followDialog__submitButton", "Submit").call())
+                    }
+                }
+            }
+        }
+    };
+
+    Ok(Maud(
+        state
+            .render_nojs_full_page(&session, "Edit Follow", editor)
+            .await?,
+    )
     .into_response())
 }
 
@@ -225,9 +300,10 @@ pub struct FollowFormData {
 pub async fn post_follow(
     state: State<SharedState>,
     session: UserSession,
+    AjaxRequest(is_ajax): AjaxRequest,
     Path(profile_id): Path<RostraPathId>,
     axum_extra::extract::Form(form): axum_extra::extract::Form<FollowFormData>,
-) -> RequestResult<impl IntoResponse> {
+) -> RequestResult<Response> {
     let id_secret = state
         .id_secret(session.session_token())
         .ok_or_else(|| ReadOnlyModeSnafu.build())?;
@@ -256,6 +332,10 @@ pub async fn post_follow(
         _ => {}
     }
 
+    if !is_ajax {
+        return Ok(Redirect::to(&profile_url(profile_id)).into_response());
+    }
+
     // Get updated lists for settings pages
     let followees = client_ref.db().get_followees(session.id()).await;
     let followers = client_ref.db().get_followers(session.id()).await;
@@ -274,7 +354,8 @@ pub async fn post_follow(
 
         // Close the follow dialog by replacing with empty non-active version
         div id="follow-dialog-content" {}
-    }))
+    })
+    .into_response())
 }
 
 fn follow_form_selector(follow_type: &str, personas: &[String]) -> PersonasTagsSelector {
