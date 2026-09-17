@@ -2,10 +2,491 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
-use tokio::sync::{OnceCell, oneshot};
+use rostra_client_db::Database;
+use rostra_core::event::{Event, EventContentRaw, EventKind, IrohNodeId, SignedEvent};
+use rostra_core::id::{RostraIdSecretKey, ToShort as _};
+use rostra_p2p::connection::{
+    Connection, GetEventContentRequest, GetEventContentResponse, GetEventRequest, GetEventResponse,
+    MAX_REQUEST_SIZE, PingRequest, PingResponse, RpcId, RpcMessage as _,
+};
+use rostra_p2p_api::ROSTRA_P2P_V0_ALPN;
+use tokio::sync::{Notify, OnceCell, oneshot};
 
 use super::{CLEANUP_INTERVAL, ConnectionCache};
+use crate::Client;
+
+const TEST_PEER_DEADLINE: Duration = Duration::from_secs(1);
+
+#[derive(Clone)]
+enum PeerBehavior {
+    HangPing,
+    HangEvent,
+    Missing,
+    Event(SignedEvent),
+}
+
+struct TestPeer {
+    endpoint: iroh::Endpoint,
+    behavior: PeerBehavior,
+    event_request_received: Arc<Notify>,
+    content_request_received: Arc<Notify>,
+}
+
+async fn handle_test_peer_rpc(
+    mut send: iroh::endpoint::SendStream,
+    mut recv: iroh::endpoint::RecvStream,
+    behavior: PeerBehavior,
+    event_request_received: Arc<Notify>,
+    content_request_received: Arc<Notify>,
+) {
+    let (rpc_id, request) = Connection::read_request_raw(&mut recv)
+        .await
+        .expect("RPC request");
+    match rpc_id {
+        RpcId::GET_EVENT => {
+            GetEventRequest::decode_whole::<MAX_REQUEST_SIZE>(&request).expect("decode GET_EVENT");
+            event_request_received.notify_one();
+            match behavior {
+                PeerBehavior::HangEvent => std::future::pending::<()>().await,
+                PeerBehavior::Missing | PeerBehavior::HangPing => {
+                    Connection::write_success_return_code(&mut send)
+                        .await
+                        .expect("GET_EVENT success");
+                    Connection::write_message(&mut send, &GetEventResponse(None))
+                        .await
+                        .expect("missing response");
+                    send.finish().expect("finish missing response");
+                }
+                PeerBehavior::Event(event) => {
+                    Connection::write_success_return_code(&mut send)
+                        .await
+                        .expect("GET_EVENT success");
+                    Connection::write_message(&mut send, &GetEventResponse(Some(event)))
+                        .await
+                        .expect("event response");
+                    send.finish().expect("finish event response");
+                }
+            }
+        }
+        RpcId::GET_EVENT_CONTENT => {
+            GetEventContentRequest::decode_whole::<MAX_REQUEST_SIZE>(&request)
+                .expect("decode GET_EVENT_CONTENT");
+            content_request_received.notify_one();
+            Connection::write_success_return_code(&mut send)
+                .await
+                .expect("GET_EVENT_CONTENT success");
+            Connection::write_message(&mut send, &GetEventContentResponse(false))
+                .await
+                .expect("missing content response");
+            send.finish().expect("finish missing content response");
+        }
+        _ => panic!("unexpected RPC {rpc_id}"),
+    }
+}
+
+async fn run_test_peer(peer: TestPeer) {
+    let incoming = peer.endpoint.accept().await.expect("incoming connection");
+    let connection = incoming
+        .accept()
+        .expect("accept connection")
+        .await
+        .expect("complete handshake");
+
+    let (mut send, mut recv) = connection.accept_bi().await.expect("ping stream");
+    let (rpc_id, request) = Connection::read_request_raw(&mut recv)
+        .await
+        .expect("ping request");
+    assert_eq!(rpc_id, RpcId::PING);
+    let request = PingRequest::decode_whole::<MAX_REQUEST_SIZE>(&request).expect("decode ping");
+    if matches!(peer.behavior, PeerBehavior::HangPing) {
+        peer.event_request_received.notify_one();
+        std::future::pending::<()>().await;
+    }
+    Connection::write_success_return_code(&mut send)
+        .await
+        .expect("ping success");
+    Connection::write_message(&mut send, &PingResponse(request.0))
+        .await
+        .expect("ping response");
+    send.finish().expect("finish ping response");
+
+    while let Ok((send, recv)) = connection.accept_bi().await {
+        tokio::spawn(handle_test_peer_rpc(
+            send,
+            recv,
+            peer.behavior.clone(),
+            Arc::clone(&peer.event_request_received),
+            Arc::clone(&peer.content_request_received),
+        ));
+    }
+}
+
+fn test_event(secret: RostraIdSecretKey, marker: u8) -> rostra_core::event::VerifiedEvent {
+    let content = EventContentRaw::new(vec![marker]);
+    let signed = Event::builder_raw_content()
+        .author(secret.id())
+        .kind(EventKind::NULL)
+        .content(&content)
+        .build()
+        .signed_by(secret);
+    rostra_core::event::VerifiedEvent::verify_signed(secret.id(), signed)
+        .expect("self-signed event")
+}
+
+async fn make_test_network(
+    behaviors: Vec<PeerBehavior>,
+) -> (
+    Arc<Client>,
+    Vec<rostra_core::id::RostraId>,
+    Vec<Arc<Notify>>,
+    Vec<Arc<Notify>>,
+    Vec<tokio::task::JoinHandle<()>>,
+) {
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let mut peers = Vec::with_capacity(behaviors.len());
+    let mut node_ids = Vec::with_capacity(behaviors.len());
+    let mut event_notifications = Vec::with_capacity(behaviors.len());
+    let mut content_notifications = Vec::with_capacity(behaviors.len());
+    let mut servers = Vec::with_capacity(behaviors.len());
+
+    for behavior in behaviors {
+        let id = RostraIdSecretKey::generate().id();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ROSTRA_P2P_V0_ALPN.to_vec()])
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .expect("peer endpoint");
+        lookup.add_endpoint_info(endpoint.addr());
+        node_ids.push(IrohNodeId::from_bytes(*endpoint.id().as_bytes()));
+        let event_request_received = Arc::new(Notify::new());
+        let content_request_received = Arc::new(Notify::new());
+        servers.push(tokio::spawn(run_test_peer(TestPeer {
+            endpoint,
+            behavior,
+            event_request_received: Arc::clone(&event_request_received),
+            content_request_received: Arc::clone(&content_request_received),
+        })));
+        peers.push(id);
+        event_notifications.push(event_request_received);
+        content_notifications.push(content_request_received);
+    }
+
+    let local_secret = RostraIdSecretKey::generate();
+    let local_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .alpns(vec![ROSTRA_P2P_V0_ALPN.to_vec()])
+        .address_lookup(lookup)
+        .bind()
+        .await
+        .expect("local endpoint");
+    let local = Client::builder(local_secret.id())
+        .db(Database::new_in_memory(local_secret.id())
+            .await
+            .expect("database"))
+        .iroh_endpoint(local_endpoint)
+        .start_request_handler(false)
+        .start_background_tasks(false)
+        .build()
+        .await
+        .expect("local client");
+
+    for (peer_id, node_id) in peers.iter().copied().zip(node_ids) {
+        local
+            .db()
+            .insert_id_node(peer_id, node_id, rostra_core::Timestamp::now())
+            .await;
+    }
+
+    (
+        local,
+        peers,
+        event_notifications,
+        content_notifications,
+        servers,
+    )
+}
+
+async fn abort_servers(servers: Vec<tokio::task::JoinHandle<()>>) {
+    for server in &servers {
+        server.abort();
+    }
+    for server in servers {
+        let result = server.await;
+        assert!(
+            result.is_ok() || result.unwrap_err().is_cancelled(),
+            "test peer failed"
+        );
+    }
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn expired_first_batch_allows_fifth_peer_to_supply_event() {
+    let author_secret = RostraIdSecretKey::generate();
+    let expected = test_event(author_secret, 1);
+    let expected_id = expected.event_id.to_short();
+    let (local, peers, event_notifications, _content_notifications, servers) =
+        make_test_network(vec![
+            PeerBehavior::HangEvent,
+            PeerBehavior::HangEvent,
+            PeerBehavior::HangEvent,
+            PeerBehavior::HangEvent,
+            PeerBehavior::Event(expected.into()),
+        ])
+        .await;
+
+    let race_local = Arc::clone(&local);
+    let race_peers = peers.clone();
+    let race = tokio::spawn(async move {
+        ConnectionCache::with_peer_operation_deadline(TEST_PEER_DEADLINE)
+            .get_event_from_peers(
+                &race_local.networking,
+                &race_peers,
+                author_secret.id(),
+                expected_id,
+            )
+            .await
+    });
+    for notification in &event_notifications[..4] {
+        tokio::time::timeout(Duration::from_secs(5), notification.notified())
+            .await
+            .expect("one of the first four peers received GET_EVENT");
+    }
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            event_notifications[4].notified()
+        )
+        .await
+        .is_err(),
+        "the fifth candidate must wait while four attempts occupy the race"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(5), race)
+        .await
+        .expect("race completes after first batch expires")
+        .expect("race task succeeds")
+        .expect("fifth peer supplies event");
+
+    assert_eq!(result.event_id.to_short(), expected_id);
+    tokio::time::timeout(Duration::from_secs(1), event_notifications[4].notified())
+        .await
+        .expect("fifth peer received GET_EVENT");
+    abort_servers(servers).await;
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn stalled_peer_and_negative_responses_complete_with_none() {
+    let author_secret = RostraIdSecretKey::generate();
+    let requested = test_event(author_secret, 2);
+    let (local, peers, _event_notifications, _content_notifications, servers) =
+        make_test_network(vec![
+            PeerBehavior::HangEvent,
+            PeerBehavior::Missing,
+            PeerBehavior::Missing,
+            PeerBehavior::Missing,
+            PeerBehavior::Missing,
+        ])
+        .await;
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        ConnectionCache::with_peer_operation_deadline(TEST_PEER_DEADLINE).get_event_from_peers(
+            &local.networking,
+            &peers,
+            author_secret.id(),
+            requested.event_id.to_short(),
+        ),
+    )
+    .await
+    .expect("negative race completes after stalled attempt expires");
+
+    assert!(result.is_none());
+    abort_servers(servers).await;
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn responsive_peer_result_is_preserved_with_hanging_candidate() {
+    let author_secret = RostraIdSecretKey::generate();
+    let expected = test_event(author_secret, 3);
+    let expected_id = expected.event_id.to_short();
+    let (local, peers, _event_notifications, _content_notifications, servers) =
+        make_test_network(vec![
+            PeerBehavior::HangEvent,
+            PeerBehavior::Event(expected.into()),
+        ])
+        .await;
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        ConnectionCache::with_peer_operation_deadline(TEST_PEER_DEADLINE).get_event_from_peers(
+            &local.networking,
+            &peers,
+            author_secret.id(),
+            expected_id,
+        ),
+    )
+    .await
+    .expect("responsive peer wins without waiting for the hanging peer")
+    .expect("responsive peer supplies event");
+
+    assert_eq!(result.event_id.to_short(), expected_id);
+    abort_servers(servers).await;
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn preliminary_ping_stalls_share_the_complete_attempt_deadline() {
+    let author_secret = RostraIdSecretKey::generate();
+    let expected = test_event(author_secret, 4);
+    let expected_id = expected.event_id.to_short();
+    let (local, peers, event_notifications, _content_notifications, servers) =
+        make_test_network(vec![
+            PeerBehavior::HangPing,
+            PeerBehavior::HangPing,
+            PeerBehavior::HangPing,
+            PeerBehavior::HangPing,
+            PeerBehavior::Event(expected.into()),
+        ])
+        .await;
+
+    let race_local = Arc::clone(&local);
+    let race_peers = peers.clone();
+    let race = tokio::spawn(async move {
+        ConnectionCache::with_peer_operation_deadline(TEST_PEER_DEADLINE)
+            .get_event_from_peers(
+                &race_local.networking,
+                &race_peers,
+                author_secret.id(),
+                expected_id,
+            )
+            .await
+    });
+    for notification in &event_notifications[..4] {
+        tokio::time::timeout(Duration::from_secs(5), notification.notified())
+            .await
+            .expect("one of the first four peers received PING");
+    }
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            event_notifications[4].notified()
+        )
+        .await
+        .is_err(),
+        "the fifth candidate must wait while four pings occupy the race"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(5), race)
+        .await
+        .expect("connection-stage stalls expire")
+        .expect("race task succeeds")
+        .expect("later peer supplies event");
+
+    assert_eq!(result.event_id.to_short(), expected_id);
+    tokio::time::timeout(Duration::from_secs(1), event_notifications[4].notified())
+        .await
+        .expect("later peer received GET_EVENT");
+    abort_servers(servers).await;
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn wrong_author_and_event_responses_remain_rejected() {
+    let author_secret = RostraIdSecretKey::generate();
+    let requested = test_event(author_secret, 5);
+    let requested_id = requested.event_id.to_short();
+    let wrong_author = test_event(RostraIdSecretKey::generate(), 5);
+    let wrong_event = test_event(author_secret, 6);
+    for invalid in [wrong_author, wrong_event] {
+        let (local, peers, _event_notifications, _content_notifications, servers) =
+            make_test_network(vec![PeerBehavior::Event(invalid.into())]).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            ConnectionCache::with_peer_operation_deadline(TEST_PEER_DEADLINE).get_event_from_peers(
+                &local.networking,
+                &peers,
+                author_secret.id(),
+                requested_id,
+            ),
+        )
+        .await
+        .expect("invalid response is rejected without stalling");
+        assert!(result.is_none());
+        abort_servers(servers).await;
+    }
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn missing_parent_timeout_allows_child_payload_and_later_work_to_progress() {
+    let author_secret = RostraIdSecretKey::generate();
+    let parent = test_event(author_secret, 7);
+    let child_content = EventContentRaw::new(vec![8]);
+    let child_signed = Event::builder_raw_content()
+        .author(author_secret.id())
+        .kind(EventKind::NULL)
+        .parent_prev(parent.event_id.to_short())
+        .content(&child_content)
+        .build()
+        .signed_by(author_secret);
+    let child = rostra_core::event::VerifiedEvent::verify_signed(author_secret.id(), child_signed)
+        .expect("self-signed child");
+    let later = test_event(author_secret, 9);
+    let (local, peers, event_notifications, content_notifications, servers) =
+        make_test_network(vec![PeerBehavior::HangEvent, PeerBehavior::Missing]).await;
+    local
+        .db()
+        .try_process_event(&child)
+        .await
+        .expect("store retained child envelope");
+    local
+        .db()
+        .try_process_event(&later)
+        .await
+        .expect("store later retained envelope");
+    let cache = ConnectionCache::with_peer_operation_deadline(TEST_PEER_DEADLINE);
+
+    let downloaded = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::util::rpc::download_events_from_child(
+            author_secret.id(),
+            child.event_id.to_short(),
+            &local.networking,
+            &cache,
+            &peers,
+            local.db(),
+        ),
+    )
+    .await
+    .expect("missing-parent traversal completes after peer timeout")
+    .expect("traversal has no database failure");
+    assert!(!downloaded);
+    tokio::time::timeout(Duration::from_secs(1), event_notifications[0].notified())
+        .await
+        .expect("stalled peer received the missing-parent GET_EVENT");
+    tokio::time::timeout(Duration::from_secs(1), content_notifications[1].notified())
+        .await
+        .expect("traversal progressed to the retained child's payload");
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::util::rpc::download_events_from_child(
+            author_secret.id(),
+            later.event_id.to_short(),
+            &local.networking,
+            &cache,
+            &peers,
+            local.db(),
+        ),
+    )
+    .await
+    .expect("later due work is not stranded")
+    .expect("later traversal has no database failure");
+    tokio::time::timeout(Duration::from_secs(1), content_notifications[1].notified())
+        .await
+        .expect("later retained payload was attempted");
+
+    abort_servers(servers).await;
+}
 
 #[tokio::test]
 async fn pending_cell_survives_cleanup_and_coalesces_initialization() {

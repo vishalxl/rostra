@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use futures::stream::{self, StreamExt as _};
 use rostra_core::ShortEventId;
@@ -23,6 +24,7 @@ type LazySharedConnection = Arc<OnceCell<Connection>>;
 pub struct ConnectionCache {
     connections: Arc<Mutex<HashMap<RostraId, LazySharedConnection>>>,
     access_count: Arc<AtomicU64>,
+    peer_operation_deadline: Duration,
 }
 
 impl Default for ConnectionCache {
@@ -36,6 +38,15 @@ impl ConnectionCache {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             access_count: Arc::new(AtomicU64::new(0)),
+            peer_operation_deadline: crate::task::outbound_deadline::PEER_OPERATION_DEADLINE,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_peer_operation_deadline(peer_operation_deadline: Duration) -> Self {
+        Self {
+            peer_operation_deadline,
+            ..Self::new()
         }
     }
 
@@ -155,28 +166,36 @@ impl ConnectionCache {
                 .map(|peer_id| {
                     let cache = self.clone();
                     async move {
-                        let conn = cache.get_or_connect(networking, peer_id).await.ok()?;
-                        match conn.get_event(author_id, event_id).await {
-                            Ok(Some(event)) => Some(event),
-                            Ok(None) => {
-                                debug!(
-                                    target: LOG_TARGET,
-                                    peer_id = %peer_id.to_short(),
-                                    event_id = %event_id.to_short(),
-                                    "Event not found on peer"
-                                );
-                                None
-                            }
-                            Err(_err) => {
-                                debug!(
-                                    target: LOG_TARGET,
-                                    peer_id = %peer_id.to_short(),
-                                    event_id = %event_id.to_short(),
-                                    "Failed to fetch event from peer"
-                                );
-                                None
-                            }
-                        }
+                        crate::task::outbound_deadline::within(
+                            cache.peer_operation_deadline,
+                            async move {
+                                let conn = cache.get_or_connect(networking, peer_id).await.ok()?;
+                                match conn.get_event(author_id, event_id).await {
+                                    Ok(Some(event)) => Some(event),
+                                    Ok(None) => {
+                                        debug!(
+                                            target: LOG_TARGET,
+                                            peer_id = %peer_id.to_short(),
+                                            event_id = %event_id.to_short(),
+                                            "Event not found on peer"
+                                        );
+                                        None
+                                    }
+                                    Err(_err) => {
+                                        debug!(
+                                            target: LOG_TARGET,
+                                            peer_id = %peer_id.to_short(),
+                                            event_id = %event_id.to_short(),
+                                            "Failed to fetch event from peer"
+                                        );
+                                        None
+                                    }
+                                }
+                            },
+                        )
+                        .await
+                        .ok()
+                        .flatten()
                     }
                 })
                 .buffer_unordered(4),
