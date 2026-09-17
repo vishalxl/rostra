@@ -546,37 +546,37 @@ async fn render_thread(
         ));
     }
     let history = html! {
-        div id="direct-message-history-page"
-            x-init=[before.is_some().then_some(
-                "$nextTick(() => Promise.resolve(typeof MathJax !== 'undefined' ? MathJax.typesetPromise() : undefined).then(() => { if (typeof Prism !== 'undefined') { Prism.highlightAll(); } requestAnimationFrame(() => document.body.scrollTo(0, document.body.scrollHeight)); }))"
-            )]
-        {
+        div id="direct-message-history-pagination" x-merge="replace" {
             @if let Some(next) = next {
                 a ."m-directMessages__older"
                     href=(next)
-                    x-target="direct-message-history-page"
-                    x-init="$nextTick(() => requestAnimationFrame(() => { const root = document.body; const margin = Math.round(root.clientHeight * 2.5); new IntersectionObserver((entries, observer) => { if (entries[0].isIntersecting) { observer.disconnect(); $ajax($el.href, { targets: ['direct-message-history-page'] }); } }, { root, rootMargin: `${margin}px 0px 0px 0px` }).observe($el); }))"
+                    x-target="direct-message-history-pagination direct-message-history"
+                    "@click.prevent"="loadOlder($el, $ajax)"
+                    x-init="$nextTick(() => requestAnimationFrame(() => { const start = () => { if (loadingOlder) { requestAnimationFrame(start); return; } const root = document.body; const margin = Math.round(root.clientHeight * 2.5); new IntersectionObserver((entries, observer) => { if (entries[0].isIntersecting) { observer.disconnect(); loadOlder($el, $ajax); } }, { root, rootMargin: `${margin}px 0px 0px 0px` }).observe($el); }; start(); }))"
                 { "Older messages" }
             }
-            @if entries.is_empty() { p { "No messages on this installation yet." } }
-            ol ."m-directMessages__history" {
-                @for (entry, rendered_text) in rendered_entries {
-                    li ."m-directMessages__message" ."-outgoing"[entry.entry.sender == session.user.id()] {
-                        p {
-                            strong {
-                                @if entry.entry.sender == session.user.id() {
-                                    (self_label)
-                                } @else {
-                                    (peer_label)
-                                }
+        }
+        @if entries.is_empty() { p { "No messages on this installation yet." } }
+        ol id="direct-message-history" ."m-directMessages__history" x-merge="prepend" {
+            @for (entry, rendered_text) in rendered_entries {
+                li id=(format!("direct-message-{}", entry.entry.event_id))
+                    ."m-directMessages__message"
+                    ."-outgoing"[entry.entry.sender == session.user.id()]
+                {
+                    p {
+                        strong {
+                            @if entry.entry.sender == session.user.id() {
+                                (self_label)
+                            } @else {
+                                (peer_label)
                             }
-                            " · "
-                            (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.entry.timestamp)))
                         }
-                        div ."m-directMessages__text m-postView__content" { (rendered_text) }
-                        @if entry.entry.conflicted {
-                            p role="status" { "A conflicting authenticated message reused this message ID. The first saved text is shown." }
-                        }
+                        " · "
+                        (crate::util::time::format_timestamp(rostra_core::Timestamp::from(entry.entry.timestamp)))
+                    }
+                    div ."m-directMessages__text m-postView__content" { (rendered_text) }
+                    @if entry.entry.conflicted {
+                        p role="status" { "A conflicting authenticated message reused this message ID. The first saved text is shown." }
                     }
                 }
             }
@@ -632,7 +632,15 @@ async fn render_thread(
                     "Sending is unavailable: this installation may be retired, or no eligible recipient device is known. No message will be queued."
                 }
             }
-            (history)
+            div
+                x-data="directMessageHistory"
+                "@ajax:merge"="beforeOlderMerge($event)"
+                x-init=[before.is_some().then_some(
+                    "$nextTick(() => Promise.resolve(typeof MathJax !== 'undefined' ? MathJax.typesetPromise() : undefined).then(() => { if (typeof Prism !== 'undefined') { Prism.highlightAll(); } requestAnimationFrame(() => document.body.scrollTo(0, document.body.scrollHeight)); }))"
+                )]
+            {
+                (history)
+            }
             form method="post" action=(thread_url(peer))
                 x-data=(draft_state)
                 x-init=[clear_draft]

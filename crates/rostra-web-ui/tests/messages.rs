@@ -1118,6 +1118,14 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     }
     let response = alice.get(&path).await;
     let document = Html::parse_document(&response.text().await.unwrap());
+    let history_controller = document
+        .select(&Selector::parse("[x-data=directMessageHistory]").unwrap())
+        .next()
+        .expect("incremental history controller");
+    assert_eq!(
+        history_controller.value().attr("@ajax:merge"),
+        Some("beforeOlderMerge($event)")
+    );
     assert_eq!(
         document
             .select(&Selector::parse(".m-directMessages__message").unwrap())
@@ -1147,7 +1155,11 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .expect("older-history link");
     assert_eq!(
         older_link.value().attr("x-target"),
-        Some("direct-message-history-page")
+        Some("direct-message-history-pagination direct-message-history")
+    );
+    assert_eq!(
+        older_link.value().attr("@click.prevent"),
+        Some("loadOlder($el, $ajax)")
     );
     let intersection = older_link
         .value()
@@ -1164,33 +1176,43 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     assert_eq!(response.status(), StatusCode::OK);
     private_headers(&response);
     let fragment = Html::parse_fragment(&response.text().await.unwrap());
-    let history_page = fragment
-        .select(&Selector::parse("#direct-message-history-page").unwrap())
+    let pagination = fragment
+        .select(&Selector::parse("#direct-message-history-pagination").unwrap())
         .next()
-        .expect("older-history fragment");
-    let position = history_page
-        .value()
-        .attr("x-init")
-        .expect("older-history positioning");
-    assert!(position.contains("MathJax.typesetPromise()"));
-    assert!(position.contains("Prism.highlightAll()"));
-    assert!(position.contains("requestAnimationFrame"));
+        .expect("older-history pagination fragment");
+    assert_eq!(pagination.value().attr("x-merge"), Some("replace"));
     assert!(
-        position.find("typesetPromise").unwrap() < position.find("scrollTo").unwrap(),
-        "rich-content layout must finish before final positioning"
+        pagination
+            .select(&Selector::parse("a").unwrap())
+            .next()
+            .is_none(),
+        "terminal pagination fragments remove the older sentinel"
     );
+    let history = fragment
+        .select(&Selector::parse("#direct-message-history").unwrap())
+        .next()
+        .expect("older-history row fragment");
+    assert_eq!(history.value().attr("x-merge"), Some("prepend"));
     assert_eq!(
-        history_page
+        history
             .select(&Selector::parse(".m-directMessages__message").unwrap())
             .count(),
         1
+    );
+    assert!(
+        history
+            .select(&Selector::parse(".m-directMessages__message[id]").unwrap())
+            .all(|message| message
+                .value()
+                .attr("id")
+                .is_some_and(|id| id.starts_with("direct-message-")))
     );
     assert!(
         fragment
             .select(&Selector::parse("#direct-message-thread").unwrap())
             .next()
             .is_none(),
-        "pagination fragments must replace only the bounded history page"
+        "pagination fragments must contain only bounded history targets"
     );
     assert!(
         fragment
@@ -1220,6 +1242,56 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .expect("older-history composer");
     assert_eq!(textarea.value().attr("autofocus"), None);
     assert_eq!(textarea.value().attr("x-init"), None);
+
+    for index in 101..201 {
+        alice_client
+            .send_direct_message(alice_secret, bob_id, format!("page {index}"))
+            .await
+            .unwrap();
+    }
+    let response = alice.get(&path).await;
+    let latest = Html::parse_document(&response.text().await.unwrap());
+    let first_older = latest
+        .select(&Selector::parse(".m-directMessages__older").unwrap())
+        .next()
+        .expect("first older-history link")
+        .value()
+        .attr("href")
+        .unwrap()
+        .to_owned();
+    let response = alice.ajax_get(&first_older).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    private_headers(&response);
+    let first_older = Html::parse_fragment(&response.text().await.unwrap());
+    let second_older = first_older
+        .select(&Selector::parse(".m-directMessages__older").unwrap())
+        .next()
+        .expect("second older-history link")
+        .value()
+        .attr("href")
+        .unwrap()
+        .to_owned();
+    let response = alice.ajax_get(&second_older).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    private_headers(&response);
+    let second_older = Html::parse_fragment(&response.text().await.unwrap());
+    let message_selector = Selector::parse(".m-directMessages__message").unwrap();
+    assert_eq!(latest.select(&message_selector).count(), 100);
+    assert_eq!(first_older.select(&message_selector).count(), 100);
+    assert_eq!(second_older.select(&message_selector).count(), 1);
+    assert!(
+        second_older
+            .select(&Selector::parse(".m-directMessages__older").unwrap())
+            .next()
+            .is_none()
+    );
+    let ids = latest
+        .select(&message_selector)
+        .chain(first_older.select(&message_selector))
+        .chain(second_older.select(&message_selector))
+        .map(|message| message.value().attr("id").unwrap())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(ids.len(), 201);
 
     for invalid_cursor in [
         format!("{path}?before_time=1"),

@@ -983,6 +983,67 @@ window.addEventListener("ajax:missing", (event) => {
 // =============================================================================
 
 document.addEventListener("alpine:init", () => {
+  Alpine.data("directMessageHistory", () => ({
+    loadingOlder: false,
+    anchor: null,
+    anchorDocumentTop: 0,
+    previousOverflowAnchor: "",
+
+    beforeOlderMerge(event) {
+      if (event.target.id !== "direct-message-history") return;
+
+      this.anchor =
+        Array.from(
+          document.querySelectorAll(
+            "#direct-message-history .m-directMessages__message",
+          ),
+        ).find((message) => message.getBoundingClientRect().bottom > 0) ?? null;
+      this.anchorDocumentTop = this.anchor
+        ? document.body.scrollTop + this.anchor.getBoundingClientRect().top
+        : 0;
+    },
+
+    async loadOlder(link, request) {
+      if (this.loadingOlder) return;
+
+      this.loadingOlder = true;
+      this.previousOverflowAnchor = document.body.style.overflowAnchor;
+      document.body.style.overflowAnchor = "none";
+
+      try {
+        await request(link.href, {
+          targets: [
+            "direct-message-history-pagination",
+            "direct-message-history",
+          ],
+        });
+        if (!link.isConnected) {
+          if (typeof MathJax !== "undefined") {
+            await MathJax.typesetPromise();
+          }
+          if (typeof Prism !== "undefined") {
+            Prism.highlightAll();
+          }
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          if (this.anchor?.isConnected) {
+            document.body.scrollBy(
+              0,
+              document.body.scrollTop +
+                this.anchor.getBoundingClientRect().top -
+                this.anchorDocumentTop,
+            );
+          }
+        }
+      } catch (_) {
+        // The shared AJAX error handler reports the failure; keep the link retryable.
+      } finally {
+        document.body.style.overflowAnchor = this.previousOverflowAnchor;
+        this.loadingOlder = false;
+        this.anchor = null;
+      }
+    },
+  }));
+
   // Notifications component for the body element
   Alpine.data("notifications", () => ({
     notifications: [],
