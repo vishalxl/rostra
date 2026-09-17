@@ -35,7 +35,7 @@ impl Event {
         sig: EventSignature,
         id: RostraId,
     ) -> Result<(), SignatureError> {
-        VerifyingKey::from(id).verify_strict(bytes, &sig.into())
+        VerifyingKey::try_from(id.as_slice())?.verify_strict(bytes, &sig.into())
     }
 }
 
@@ -50,3 +50,6 @@ impl From<EventSignature> for ed25519_dalek::Signature {
         ed25519_dalek::Signature::from_bytes(&value.0)
     }
 }
+
+#[cfg(test)]
+mod tests;
