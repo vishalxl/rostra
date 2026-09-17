@@ -188,10 +188,9 @@ impl CookiesExt for Cookies {
     ) {
         let self_id = self_id.into();
         let tag_strings: Vec<&str> = tags.iter().map(|t| t.as_str()).collect();
-        let mut cookie = Cookie::new(
-            format!("{self_id}-{PERSONA_TAGS_COOKIE_NAME}"),
-            serde_json::to_string(&tag_strings).expect("can't fail"),
-        );
+        let value = urlencoding::encode(&serde_json::to_string(&tag_strings).expect("can't fail"))
+            .into_owned();
+        let mut cookie = Cookie::new(format!("{self_id}-{PERSONA_TAGS_COOKIE_NAME}"), value);
         cookie.set_path("/");
         cookie.set_max_age(time::Duration::weeks(50));
         self.add(cookie);

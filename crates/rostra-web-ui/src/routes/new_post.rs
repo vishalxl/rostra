@@ -346,14 +346,7 @@ pub async fn post_post_preview_dialog(
 
     let mut persona_tags_for_id = client_ref.db().get_persona_tags_for_id(self_id).await;
     persona_tags_for_id.extend(PersonaTag::defaults());
-    let saved_persona_tags = {
-        let tags = cookies.get_persona_tags(self_id);
-        if tags.is_empty() {
-            BTreeSet::from([PersonaTag::personal()])
-        } else {
-            tags
-        }
-    };
+    let saved_persona_tags = selected_persona_tags(&cookies, self_id);
 
     let preview_content = state
         .render_post_context(&client.client_ref()?, self_id)
@@ -492,6 +485,18 @@ pub async fn post_post_preview_dialog(
             .render_nojs_full_page(&session, "Post Preview", body)
             .await?,
     ))
+}
+
+fn selected_persona_tags(
+    cookies: &Cookies,
+    self_id: impl Into<rostra_core::id::ShortRostraId>,
+) -> BTreeSet<PersonaTag> {
+    let tags = cookies.get_persona_tags(self_id);
+    if tags.is_empty() {
+        BTreeSet::from([PersonaTag::personal()])
+    } else {
+        tags
+    }
 }
 
 pub async fn get_new_post_preview(
