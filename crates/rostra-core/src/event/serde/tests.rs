@@ -1,19 +1,24 @@
 use tracing::info;
 
-use crate::event::{Event, EventContentRaw, EventKind, SignedEvent};
-use crate::id::RostraIdSecretKey;
+use crate::event::{Event, EventAuxKey, EventKind, EventSignature, SignedEvent};
+use crate::id::RostraId;
+use crate::{MsgLen, ShortEventId, TimestampFixed};
 
 #[test_log::test]
 fn event_size() {
-    let id_secret = RostraIdSecretKey::generate();
-
-    let event = Event::builder_raw_content()
-        .author(id_secret.id())
-        .kind(EventKind::RAW)
-        .content(&EventContentRaw::new(b"test".to_vec()))
-        .build();
-
-    let event_signed = event.signed_by(id_secret);
+    let event = Event {
+        version: 0,
+        flags: 0,
+        kind: EventKind::RAW,
+        content_len: MsgLen(4),
+        timestamp: TimestampFixed::from(1_735_000_000),
+        key_aux: EventAuxKey::ZERO,
+        author: RostraId::from_bytes([1; 32]),
+        parent_prev: ShortEventId::from_bytes([2; 16]).into(),
+        parent_aux: ShortEventId::from_bytes([3; 16]).into(),
+        content_hash: blake3::hash(b"test").into(),
+    };
+    let event_signed = SignedEvent::unverified(event, EventSignature::from_bytes([4; 64]));
 
     let event_signed_serialized = serde_json::to_string(&event_signed).expect("Can't fail");
 
