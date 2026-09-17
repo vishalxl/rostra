@@ -1,6 +1,7 @@
 use axum::Form;
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Redirect, Response};
 use maud::{Markup, PreEscaped, html};
 use rostra_client::ClientRef;
 use rostra_client_db::social::{ReceivedAtPaginationCursor, ShoutboxPostRecord};
@@ -317,8 +318,9 @@ pub async fn get_shoutbox(
 pub async fn post_shoutbox(
     state: State<SharedState>,
     session: UserSession,
+    AjaxRequest(is_ajax): AjaxRequest,
     Form(form): Form<ShoutboxPostInput>,
-) -> RequestResult<impl IntoResponse> {
+) -> RequestResult<Response> {
     let id_secret = state
         .id_secret(session.session_token())
         .ok_or_else(|| ReadOnlyModeSnafu.build())?;
@@ -329,6 +331,23 @@ pub async fn post_shoutbox(
     // Validate content
     let content = form.content.trim();
     if content.is_empty() || 1000 < content.len() {
+        if !is_ajax {
+            let page = state
+                .render_nojs_full_page(
+                    &session,
+                    "Shoutbox",
+                    html! {
+                        h1 { "Unable to publish shout" }
+                        p { "Shouts must be between 1 and 1000 bytes." }
+                        p {
+                            a href="/shoutbox" { "Return to Shoutbox" }
+                        }
+                    },
+                )
+                .await?;
+            return Ok((StatusCode::BAD_REQUEST, Maud(page)).into_response());
+        }
+
         return Ok(Maud(html! {
             div id="shoutbox-posts" x-merge="append" {}
             div id="shoutbox-preview" {}
@@ -341,7 +360,8 @@ pub async fn post_shoutbox(
                     "#))
                 }
             }
-        }));
+        })
+        .into_response());
     }
 
     // Post the shoutbox message
@@ -349,6 +369,10 @@ pub async fn post_shoutbox(
     let _event = client_ref
         .post_shoutbox(id_secret, content.to_string())
         .await?;
+
+    if !is_ajax {
+        return Ok(Redirect::to("/shoutbox").into_response());
+    }
 
     // Just clear the input - the post will appear via WebSocket
     Ok(Maud(html! {
@@ -364,7 +388,8 @@ pub async fn post_shoutbox(
                 "#))
             }
         }
-    }))
+    })
+    .into_response())
 }
 
 pub async fn post_shoutbox_preview(
