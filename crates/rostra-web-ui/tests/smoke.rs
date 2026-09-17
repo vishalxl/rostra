@@ -478,6 +478,62 @@ async fn login_then_access_followees() {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn ordinary_add_followee_redirects_to_following_settings() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let (id, _) = driver.login_new_identity().await;
+    let followee = RostraIdSecretKey::generate().id();
+    let followee_id = followee.to_string();
+
+    let response = driver
+        .post_form("/followee", &[("rostra_id", &followee_id)])
+        .await;
+    assert_eq!(response.status(), 303);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/settings/following"
+    );
+
+    let response = driver.get("/settings/following").await;
+    assert_eq!(response.status(), 200);
+    let page = response.text().await.unwrap();
+    assert!(page.contains("<html"));
+    assert!(page.contains(&followee_id));
+
+    let followees = server.client(id).await.db().get_followees(id).await;
+    assert!(
+        followees
+            .iter()
+            .any(|(followee_id, _)| *followee_id == followee)
+    );
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn ajax_add_followee_returns_form_fragment_after_following() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let (id, _) = driver.login_new_identity().await;
+    let followee = RostraIdSecretKey::generate().id();
+    let followee_id = followee.to_string();
+
+    let response = driver
+        .ajax_post_form("/followee", &[("rostra_id", &followee_id)])
+        .await;
+    assert_eq!(response.status(), 200);
+    let fragment = response.text().await.unwrap();
+    assert!(fragment.contains("id=\"add-followee-form\""));
+    assert!(fragment.contains("Followed!"));
+    assert!(!fragment.contains("<html"));
+
+    let followees = server.client(id).await.db().get_followees(id).await;
+    assert!(
+        followees
+            .iter()
+            .any(|(followee_id, _)| *followee_id == followee)
+    );
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn timelines_support_head_and_followees_query_pagination() {
     let server = TestServer::start().await;
     let driver = server.driver();
@@ -1881,7 +1937,7 @@ async fn profile_search_emits_short_ids_for_shared_mention_autocomplete() {
     let resp = driver
         .post_form("/followee", &[("rostra_id", &unretained_followee_full)])
         .await;
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 303);
 
     let resp = driver
         .get(&format!("/search/profiles?q={unretained_followee_full}"))

@@ -1,6 +1,6 @@
 use axum::Form;
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Redirect, Response};
 use maud::{Markup, html};
 use rostra_core::event::PersonasTagsSelector;
 use rostra_core::id::RostraId;
@@ -9,6 +9,7 @@ use serde::Deserialize;
 use super::unlock::session::UserSession;
 use super::{Maud, fragment};
 use crate::error::{ReadOnlyModeSnafu, RequestResult};
+use crate::util::extractors::AjaxRequest;
 use crate::{SharedState, UiState};
 
 #[derive(Deserialize)]
@@ -19,8 +20,9 @@ pub struct Input {
 pub async fn add_followee(
     state: State<SharedState>,
     session: UserSession,
+    AjaxRequest(is_ajax): AjaxRequest,
     Form(form): Form<Input>,
-) -> RequestResult<impl IntoResponse> {
+) -> RequestResult<Response> {
     let id_secret = state
         .id_secret(session.session_token())
         .ok_or_else(|| ReadOnlyModeSnafu.build())?;
@@ -30,9 +32,15 @@ pub async fn add_followee(
         .client_ref()?
         .follow(id_secret, form.rostra_id, PersonasTagsSelector::default())
         .await?;
-    Ok(Maud(state.render_add_followee_form(html! {
-        span { "Followed!" }
-    })))
+
+    if is_ajax {
+        return Ok(Maud(state.render_add_followee_form(html! {
+            span { "Followed!" }
+        }))
+        .into_response());
+    }
+
+    Ok(Redirect::to("/settings/following").into_response())
 }
 
 impl UiState {
