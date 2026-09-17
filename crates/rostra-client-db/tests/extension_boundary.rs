@@ -140,7 +140,7 @@ async fn extension_decode_rejects_trailing_key_and_value_bytes() -> anyhow::Resu
             table
                 .range::<u64>(..)
                 .expect("range opens")
-                .map(|entry| entry.expect("storage remains readable").1.value())
+                .map(|entry| entry.expect("storage remains readable"))
                 .collect::<Vec<_>>()
         }));
         assert!(malformed_iteration.is_err());
