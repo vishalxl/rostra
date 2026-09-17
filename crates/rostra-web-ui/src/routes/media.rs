@@ -6,7 +6,7 @@ use axum_dpc_static_assets::handle_etag;
 use maud::{PreEscaped, html};
 use rostra_core::ShortEventId;
 use rostra_core::event::{EventExt as _, content_kind};
-use rostra_core::id::ToShort as _;
+use rostra_core::id::{RostraId, ToShort as _};
 use serde::Deserialize;
 use snafu::ResultExt as _;
 
@@ -208,7 +208,11 @@ pub async fn list(
         }
     }
 
-    Ok(Maud(html! {
+    Ok(render_media_list(author, &target_selector, &media_items).into_response())
+}
+
+fn render_media_list(author: RostraId, target_selector: &str, media_items: &[MediaInfo]) -> Maud {
+    Maud(html! {
         div id="media-list" ."o-mediaList -active" data-target=(target_selector) {
             (fragment::dialog_escape_handler("media-list"))
             div ."o-mediaList__content" {
@@ -219,9 +223,9 @@ pub async fn list(
                             "No media files uploaded yet."
                         }
                     } @else {
-                        @for media in &media_items {
+                        @for media in media_items {
                             div ."o-mediaList__item"
-                                onclick=(format!("insertMediaSyntax('{}', '{}'); document.getElementById('media-list').classList.remove('-active')", media.event_id, target_selector))
+                                onclick=(format!("insertMediaSyntax('{}'); document.getElementById('media-list').classList.remove('-active')", media.event_id))
                             {
                                 @if media.is_image {
                                     img
@@ -282,5 +286,7 @@ pub async fn list(
             }
         }
     })
-    .into_response())
 }
+
+#[cfg(test)]
+mod tests;

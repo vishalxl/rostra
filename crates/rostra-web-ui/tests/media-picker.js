@@ -1,0 +1,104 @@
+// Run with `node --test crates/rostra-web-ui/tests/media-picker.js`.
+// Exercise media insertion with an inert synthetic DOM and no network access.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import vm from "node:vm";
+
+const source = readFileSync(
+  process.env.ROSTRA_APP_JS ?? new URL("../assets/app.js", import.meta.url),
+  "utf8",
+);
+
+function harness(targetSelector, initialValue = "") {
+  const picker = {
+    classList: {
+      removed: [],
+      remove(name) {
+        this.removed.push(name);
+      },
+    },
+    dataset: { target: targetSelector },
+    style: {},
+  };
+  const textarea = {
+    value: initialValue,
+    selectionStart: initialValue.length,
+    selectionEnd: initialValue.length,
+    focused: false,
+    inputEvents: 0,
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+    },
+    focus() {
+      this.focused = true;
+    },
+    dispatchEvent() {
+      this.inputEvents++;
+    },
+  };
+  const document = {
+    addEventListener() {},
+    getElementById(id) {
+      return id === "media-list" ? picker : null;
+    },
+    querySelector(selector) {
+      if (selector === targetSelector) return textarea;
+      if (selector === ".o-mediaList") return picker;
+      return null;
+    },
+  };
+  const context = vm.createContext({
+    document,
+    Event: class Event {},
+    history: { state: null },
+    navigator: {},
+    setTimeout,
+    clearTimeout,
+    URLSearchParams,
+    console,
+    executionSentinel: 0,
+  });
+  context.window = context;
+  context.addEventListener = () => {};
+  vm.runInContext(source, context);
+
+  return { context, picker, textarea, window: context };
+}
+
+test("hostile target data never becomes click handler program text", () => {
+  const hostile =
+    "');globalThis.executionSentinel++;function insertMediaSyntax(){}//";
+  const app = harness(hostile);
+  const handler =
+    "insertMediaSyntax('EVENT'); document.getElementById('media-list').classList.remove('-active')";
+
+  vm.runInContext(handler, app.context);
+
+  assert.equal(app.context.executionSentinel, 0);
+  assert.equal(app.textarea.value, "![media](rostra-media:EVENT)");
+  assert.deepEqual(app.picker.classList.removed, ["-active"]);
+  assert.equal(app.picker.style.display, "none");
+});
+
+test("omitted targets preserve composer and upload insertion behavior", () => {
+  for (const target of [
+    "#new-post-content",
+    "#inline-reply-content-42",
+    "#shoutbox-input",
+  ]) {
+    const app = harness(target, "before ");
+
+    app.window.insertMediaSyntax("EVENT");
+
+    assert.equal(
+      app.textarea.value,
+      "before ![media](rostra-media:EVENT)",
+      target,
+    );
+    assert.equal(app.textarea.focused, true, target);
+    assert.equal(app.textarea.inputEvents, 1, target);
+    assert.equal(app.picker.style.display, "none", target);
+  }
+});
