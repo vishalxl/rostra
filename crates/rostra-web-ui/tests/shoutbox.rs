@@ -34,6 +34,18 @@ fn assert_complete_shoutbox_page(page: &str) {
     );
 }
 
+#[test]
+fn shoutbox_composer_routes_enter_through_press_state() {
+    let source = include_str!("../src/routes/shoutbox.rs");
+    assert!(source.contains(r#"x-data="shoutboxComposer""#));
+    assert!(source.contains(
+        r#"@keydown"="handleSendKeydown($event, showDropdown); if (!($event.key === 'Enter' && ($event.shiftKey || $event.isComposing || $event.keyCode === 229))) { handleKeydown($event); }""#
+    ));
+    assert!(source.contains(r#"@keyup.enter"="handleSendKeyup($event, $el.form)""#));
+    assert!(source.contains(r#"@blur"="resetSendEligibility()""#));
+    assert!(!source.contains("@keydown.enter.prevent"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn ordinary_shoutbox_post_redirects_to_a_complete_landing_page() {
     let server = TestServer::start().await;

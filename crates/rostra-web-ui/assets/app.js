@@ -1240,6 +1240,34 @@ document.addEventListener("alpine:init", () => {
     },
   }));
 
+  Alpine.data("shoutboxComposer", () => ({
+    sendEligible: false,
+
+    handleSendKeydown(event, autocompleteOpen) {
+      if (event.key !== "Enter") return;
+
+      if (event.shiftKey || event.isComposing || event.keyCode === 229) {
+        if (!event.repeat) this.sendEligible = false;
+        return;
+      }
+
+      event.preventDefault();
+      if (!event.repeat) this.sendEligible = !autocompleteOpen;
+    },
+
+    handleSendKeyup(event, form) {
+      const shouldSubmit = this.sendEligible;
+      this.sendEligible = false;
+      if (shouldSubmit && !event.isComposing && event.keyCode !== 229) {
+        form.requestSubmit();
+      }
+    },
+
+    resetSendEligibility() {
+      this.sendEligible = false;
+    },
+  }));
+
   // Subsequence fuzzy match: each query char must appear in order in text.
   // Returns score > 0 on match, 0 on no match. Rewards consecutive matches
   // and matches at word boundaries (after _, -, space, or at start).

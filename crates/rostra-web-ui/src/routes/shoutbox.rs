@@ -202,6 +202,7 @@ pub async fn get_shoutbox(
             form ."o-shoutbox__form"
                 action="/shoutbox/post"
                 method="post"
+                x-data="shoutboxComposer"
                 "x-target.nofocus"="shoutbox-posts shoutbox-preview ajax-scripts"
                 "@ajax:before"=(form_ajax.before)
                 "@ajax:after"=(form_ajax.after)
@@ -220,8 +221,9 @@ pub async fn get_shoutbox(
                         dir="auto"
                         disabled[ro_mode.to_disabled()]
                         rows="1"
-                        "@keydown.enter.prevent"="if (!$event.shiftKey && !showDropdown) { $el.form.requestSubmit(); }"
-                        "@keydown"="handleKeydown($event)"
+                        "@keydown"="handleSendKeydown($event, showDropdown); if (!($event.key === 'Enter' && ($event.shiftKey || $event.isComposing || $event.keyCode === 229))) { handleKeydown($event); }"
+                        "@keyup.enter"="handleSendKeyup($event, $el.form)"
+                        "@blur"="resetSendEligibility()"
                         "@paste"="handleMediaPaste($event, 'shoutbox-media-attach-form')"
                         "@input"="handleInput($event); const pf = document.getElementById('shoutbox-preview-form'); pf.querySelector('input[name=content]').value = $el.value; pf.requestSubmit();"
                         autocomplete="off"
