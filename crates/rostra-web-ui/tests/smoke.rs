@@ -353,6 +353,129 @@ async fn publish_social_post(
         .to_owned()
 }
 
+fn json_ld(document: &Html) -> serde_json::Value {
+    let selector = Selector::parse("script[type='application/ld+json']").unwrap();
+    let mut scripts = document.select(&selector);
+    let payload = scripts
+        .next()
+        .expect("page should contain JSON-LD")
+        .text()
+        .collect::<String>();
+
+    assert!(
+        scripts.next().is_none(),
+        "page should contain one JSON-LD script"
+    );
+    assert!(
+        !payload.contains('<'),
+        "serialized JSON-LD must not contain HTML script-data delimiters"
+    );
+    serde_json::from_str(&payload).expect("JSON-LD should remain valid JSON")
+}
+
+fn assert_json_ld_did_not_create_markup(document: &Html) {
+    assert_eq!(
+        document
+            .select(
+                &Selector::parse(
+                    "script:not([src]):not(.mathjax):not([type='application/ld+json'])",
+                )
+                .unwrap(),
+            )
+            .count(),
+        0,
+        "JSON-LD content must not create another script element"
+    );
+    assert_eq!(
+        document
+            .select(&Selector::parse("script[src='/assets/app.js']").unwrap())
+            .count(),
+        1,
+        "resources after JSON-LD should remain in the parsed head"
+    );
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn profile_and_post_json_ld_keep_hostile_profile_text_as_data() {
+    let server = TestServer::start().await;
+    let driver = server.driver();
+    let (author, secret) = driver.login_new_identity().await;
+    let display_name = "</script><ScRiPt>alert(1)</sCrIpT><!-- <script";
+    let bio = "quotes: \" backslash: \\ ampersand: & unicode: 世界 literal: \\u003c";
+
+    let response = driver
+        .api_post_json(
+            &format!("/api/{author}/update-social-profile-managed"),
+            Some(&secret.to_string()),
+            &json!({
+                "display_name": display_name,
+                "bio": bio,
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    let profile_update: serde_json::Value = response.json().await.unwrap();
+    let profile_head = profile_update["event_id"].as_str().unwrap();
+
+    let profile_path = format!("/profile/{}", author.to_short());
+    let response = driver.get(&profile_path).await;
+    assert_eq!(response.status(), 200);
+    let profile_page = Html::parse_document(&response.text().await.unwrap());
+    let profile_json_ld = json_ld(&profile_page);
+    assert_eq!(profile_json_ld["name"], display_name);
+    assert_eq!(profile_json_ld["description"], bio);
+    assert_eq!(profile_json_ld["mainEntity"]["name"], display_name);
+    assert_eq!(profile_json_ld["mainEntity"]["description"], bio);
+    assert_json_ld_did_not_create_markup(&profile_page);
+
+    let response = driver.ajax_get(&profile_path).await;
+    assert_eq!(response.status(), 200);
+    assert!(
+        !response
+            .text()
+            .await
+            .unwrap()
+            .contains("application/ld+json"),
+        "AJAX profile fragments should not include document metadata"
+    );
+
+    let post_id = publish_social_post(
+        &driver,
+        author,
+        &secret,
+        profile_head,
+        "# Structured heading\n\nPost body",
+        None,
+    )
+    .await;
+    let post_path = format!("/post/{}/{post_id}", author.to_short());
+    let response = driver.get(&post_path).await;
+    assert_eq!(response.status(), 200);
+    let post_page = Html::parse_document(&response.text().await.unwrap());
+    let post_json_ld = json_ld(&post_page);
+    assert_eq!(post_json_ld["headline"], "Structured heading");
+    assert_eq!(post_json_ld["author"]["name"], display_name);
+    assert_json_ld_did_not_create_markup(&post_page);
+
+    let raw_post_path = format!("{post_path}?raw=true");
+    for path in [&post_path, &raw_post_path] {
+        let response = if path.ends_with("raw=true") {
+            driver.get(path).await
+        } else {
+            driver.ajax_get(path).await
+        };
+        assert_eq!(response.status(), 200);
+        assert!(
+            !response
+                .text()
+                .await
+                .unwrap()
+                .contains("application/ld+json"),
+            "post fragments should not include document metadata"
+        );
+    }
+}
+
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn unauthenticated_landing_page_returns_200() {
     let server = TestServer::start().await;

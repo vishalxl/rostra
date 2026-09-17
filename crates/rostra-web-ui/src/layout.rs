@@ -5,6 +5,9 @@ use crate::UiState;
 use crate::error::RequestResult;
 use crate::routes::unlock::session::UserSession;
 
+#[cfg(test)]
+mod tests;
+
 /// Resource sets control rich-content assets and the public-page footer
 /// independently.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -93,7 +96,9 @@ impl UiState {
                 }
                 // JSON-LD structured data
                 @if let Some(json_ld) = json_ld {
-                    script type="application/ld+json" { (maud::PreEscaped(json_ld)) }
+                    script type="application/ld+json" {
+                        (maud::PreEscaped(json_ld.replace('<', "\\u003c")))
+                    }
                 }
                 noscript { link rel="stylesheet" href="/assets/nojs.css"; }
                 // Load Alpine.js right away so it's immediately available, use defer to make it
