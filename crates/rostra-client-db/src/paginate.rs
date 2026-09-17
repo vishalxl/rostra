@@ -128,7 +128,7 @@ impl Database {
         } else {
             prefix_end
         };
-        for event in table.range(&prefix_start..&end)?.rev() {
+        for event in table.range(&prefix_start..=&end)?.rev() {
             let (k, v) = event?;
 
             let k = k.value();
