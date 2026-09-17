@@ -210,9 +210,9 @@ fn pressure_protection_and_no_age_expiry() {
     assert!(blocked.unmet_global);
     assert!(!blocked.evicted.contains(&candidates[3].event));
     // Exactly high-water never triggers low-water cleanup.
+    candidates[0].protected = false;
     let exact = Budget::new(1024, 0).unwrap();
     assert!(run(&candidates[..1], exact, exact).evicted.is_empty());
-    candidates[0].protected = false;
     let indivisible = Budget::new(1023, 512).unwrap();
     assert_eq!(
         run(&candidates[..1], generous, indivisible).retained_bytes,
