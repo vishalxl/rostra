@@ -1,16 +1,167 @@
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rostra_client::Client;
 use rostra_client_db::Database;
 use rostra_core::event::content_kind::IrohNodeId;
 use rostra_core::event::{
-    Event, EventKind, PersonasTagsSelector, VerifiedEvent, VerifiedEventContent,
+    Event, EventExt as _, EventKind, PersonasTagsSelector, VerifiedEvent, VerifiedEventContent,
 };
-use rostra_core::id::{RostraIdSecretKey, ToShort as _};
+use rostra_core::id::{RostraId, RostraIdSecretKey, ToShort as _};
 use rostra_core::{ShortEventId, Timestamp};
+use rostra_p2p::connection::{
+    Connection, GetEventContentRequest, GetEventContentResponse, GetEventRequest, GetEventResponse,
+    MAX_REQUEST_SIZE, PingRequest, PingResponse, RpcId, RpcMessage as _,
+};
 use rostra_p2p_api::ROSTRA_P2P_V0_ALPN;
 use rostra_util_error::BoxedErrorResult;
 use snafu::ResultExt as _;
+
+#[derive(Clone, Debug, Default)]
+struct RecordedRequests {
+    events: Arc<Mutex<Vec<ShortEventId>>>,
+    contents: Arc<Mutex<Vec<ShortEventId>>>,
+}
+
+impl RecordedRequests {
+    fn events(&self) -> Vec<ShortEventId> {
+        self.events.lock().expect("event request lock").clone()
+    }
+
+    fn contents(&self) -> Vec<ShortEventId> {
+        self.contents.lock().expect("content request lock").clone()
+    }
+}
+
+struct RecordedPeer {
+    endpoint_id: iroh::PublicKey,
+    requests: RecordedRequests,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl RecordedPeer {
+    async fn start(
+        lookup: iroh::address_lookup::memory::MemoryLookup,
+        contents: impl IntoIterator<Item = VerifiedEventContent>,
+    ) -> Self {
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ROSTRA_P2P_V0_ALPN.to_vec()])
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .expect("recording peer endpoint");
+        let endpoint_id = endpoint.id();
+        lookup.add_endpoint_info(endpoint.addr());
+        let contents: Arc<HashMap<_, _>> = Arc::new(
+            contents
+                .into_iter()
+                .map(|content| (content.event_id().to_short(), content))
+                .collect(),
+        );
+        let requests = RecordedRequests::default();
+        let task_requests = requests.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Some(incoming) = endpoint.accept().await else {
+                    return;
+                };
+                let connection = incoming
+                    .accept()
+                    .expect("accept recording peer")
+                    .await
+                    .expect("recording peer connection");
+                let contents = contents.clone();
+                let requests = task_requests.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                            return;
+                        };
+                        let (rpc_id, request) = Connection::read_request_raw(&mut recv)
+                            .await
+                            .expect("recording peer request");
+                        Connection::write_success_return_code(&mut send)
+                            .await
+                            .expect("recording peer return code");
+                        match rpc_id {
+                            RpcId::PING => {
+                                let request =
+                                    PingRequest::decode_whole::<MAX_REQUEST_SIZE>(&request)
+                                        .expect("decode ping");
+                                Connection::write_message(&mut send, &PingResponse(request.0))
+                                    .await
+                                    .expect("write ping response");
+                            }
+                            RpcId::GET_EVENT => {
+                                let event_id =
+                                    GetEventRequest::decode_whole::<MAX_REQUEST_SIZE>(&request)
+                                        .expect("decode event request")
+                                        .0;
+                                requests
+                                    .events
+                                    .lock()
+                                    .expect("event request lock")
+                                    .push(event_id);
+                                let event = contents.get(&event_id).map(|content| {
+                                    rostra_core::event::SignedEvent::from(content.event)
+                                });
+                                Connection::write_message(&mut send, &GetEventResponse(event))
+                                    .await
+                                    .expect("write event response");
+                            }
+                            RpcId::GET_EVENT_CONTENT => {
+                                let event_id = GetEventContentRequest::decode_whole::<
+                                    MAX_REQUEST_SIZE,
+                                >(&request)
+                                .expect("decode content request")
+                                .0;
+                                requests
+                                    .contents
+                                    .lock()
+                                    .expect("content request lock")
+                                    .push(event_id);
+                                let content = contents
+                                    .get(&event_id)
+                                    .and_then(|content| content.content.as_ref());
+                                Connection::write_message(
+                                    &mut send,
+                                    &GetEventContentResponse(content.is_some()),
+                                )
+                                .await
+                                .expect("write content response");
+                                if let Some(content) = content {
+                                    let event =
+                                        &contents.get(&event_id).expect("matching event").event;
+                                    Connection::write_bao_content(
+                                        &mut send,
+                                        content.as_ref(),
+                                        event.content_hash(),
+                                    )
+                                    .await
+                                    .expect("write event content");
+                                }
+                            }
+                            _ => panic!("unexpected RPC {rpc_id}"),
+                        }
+                    }
+                });
+            }
+        });
+        Self {
+            endpoint_id,
+            requests,
+            task,
+        }
+    }
+}
+
+impl Drop for RecordedPeer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 
 fn build_test_event(
     id_secret: RostraIdSecretKey,
@@ -24,6 +175,15 @@ fn build_test_event_with_text(
     parent_prev: impl Into<Option<ShortEventId>>,
     text: &str,
 ) -> (VerifiedEvent, VerifiedEventContent) {
+    build_test_event_with_parents(id_secret, parent_prev, None, text)
+}
+
+fn build_test_event_with_parents(
+    id_secret: RostraIdSecretKey,
+    parent_prev: impl Into<Option<ShortEventId>>,
+    parent_aux: impl Into<Option<ShortEventId>>,
+    text: &str,
+) -> (VerifiedEvent, VerifiedEventContent) {
     use rostra_core::event::content_kind;
     use rostra_core::event::content_kind::EventContentKind as _;
 
@@ -35,6 +195,7 @@ fn build_test_event_with_text(
         .author(author)
         .kind(EventKind::SOCIAL_POST)
         .maybe_parent_prev(parent)
+        .maybe_parent_aux(parent_aux.into())
         .content(&content)
         .build();
 
@@ -43,6 +204,38 @@ fn build_test_event_with_text(
     let verified_content =
         VerifiedEventContent::verify(verified_event, content).expect("Valid content");
     (verified_event, verified_content)
+}
+
+async fn build_recorded_client(
+    client_id: RostraId,
+    lookup: iroh::address_lookup::memory::MemoryLookup,
+    peer_id: RostraId,
+    peer_endpoint_id: iroh::PublicKey,
+) -> Arc<Client> {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .alpns(vec![ROSTRA_P2P_V0_ALPN.to_vec()])
+        .address_lookup(lookup)
+        .bind()
+        .await
+        .expect("recorded client endpoint");
+    let db = Database::new_in_memory(client_id)
+        .await
+        .expect("recorded client database");
+    db.insert_id_node(
+        peer_id,
+        IrohNodeId::from_bytes(*peer_endpoint_id.as_bytes()),
+        Timestamp::now(),
+    )
+    .await;
+    Client::builder(client_id)
+        .db(db)
+        .iroh_endpoint(endpoint)
+        .start_request_handler(false)
+        .start_background_tasks(false)
+        .build()
+        .await
+        .expect("recorded client")
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
@@ -210,6 +403,301 @@ async fn test_download_events_from_child() -> BoxedErrorResult<()> {
             .sync_event_from_peers(id_a, fresh_id, &peers)
             .await?
     );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn cross_author_local_parents_do_not_leave_requested_graph() -> BoxedErrorResult<()> {
+    let secret_a = RostraIdSecretKey::generate();
+    let id_a = secret_a.id();
+    let secret_b = RostraIdSecretKey::generate();
+    let id_b = secret_b.id();
+    let client_id = RostraIdSecretKey::generate().id();
+
+    let (prev_ancestor, prev_ancestor_content) =
+        build_test_event_with_text(secret_b, None, "previous ancestor");
+    let (aux_ancestor, aux_ancestor_content) =
+        build_test_event_with_text(secret_b, None, "auxiliary ancestor");
+    let (cross_prev, cross_prev_content) = build_test_event_with_text(
+        secret_b,
+        prev_ancestor.event_id.to_short(),
+        "cross-author previous parent",
+    );
+    let (cross_aux, cross_aux_content) = build_test_event_with_text(
+        secret_b,
+        aux_ancestor.event_id.to_short(),
+        "cross-author auxiliary parent",
+    );
+    let (head, head_content) = build_test_event_with_parents(
+        secret_a,
+        cross_prev.event_id.to_short(),
+        cross_aux.event_id.to_short(),
+        "requested-author head",
+    );
+
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let peer = RecordedPeer::start(
+        lookup.clone(),
+        [
+            head_content,
+            cross_prev_content,
+            cross_aux_content,
+            prev_ancestor_content,
+            aux_ancestor_content,
+        ],
+    )
+    .await;
+    let client = build_recorded_client(client_id, lookup, id_a, peer.endpoint_id).await;
+    client.db().try_process_event(&head).await?;
+    client.db().try_process_event(&cross_prev).await?;
+    client.db().try_process_event(&cross_aux).await?;
+    let missing_before = client.db().get_missing_events_for_id(id_a).await;
+    let b_heads_before = client.db().get_heads(id_b).await;
+    let cross_prev_state_before = client
+        .db()
+        .get_event_content_state(cross_prev.event_id.to_short())
+        .await;
+    let cross_aux_state_before = client
+        .db()
+        .get_event_content_state(cross_aux.event_id.to_short())
+        .await;
+
+    assert!(
+        client
+            .sync_event_from_peers(id_a, head.event_id.to_short(), &[id_a])
+            .await?
+    );
+
+    assert!(
+        client
+            .db()
+            .get_event_content(head.event_id.to_short())
+            .await
+            .is_some()
+    );
+    assert!(
+        client
+            .db()
+            .get_event_content(cross_prev.event_id.to_short())
+            .await
+            .is_none()
+    );
+    assert!(
+        client
+            .db()
+            .get_event_content(cross_aux.event_id.to_short())
+            .await
+            .is_none()
+    );
+    assert!(
+        !client
+            .db()
+            .has_event(prev_ancestor.event_id.to_short())
+            .await
+    );
+    assert!(
+        !client
+            .db()
+            .has_event(aux_ancestor.event_id.to_short())
+            .await
+    );
+
+    let event_requests = peer.requests.events();
+    assert!(event_requests.contains(&cross_prev.event_id.to_short()));
+    assert!(event_requests.contains(&cross_aux.event_id.to_short()));
+    assert!(!event_requests.contains(&prev_ancestor.event_id.to_short()));
+    assert!(!event_requests.contains(&aux_ancestor.event_id.to_short()));
+    assert_eq!(
+        client.db().get_missing_events_for_id(id_a).await,
+        missing_before,
+        "cross-author local rows must not resolve requested-author parents"
+    );
+    assert_eq!(
+        client.db().get_heads(id_b).await,
+        b_heads_before,
+        "requested-author traversal must not change the other author's graph"
+    );
+    assert_eq!(
+        client
+            .db()
+            .get_event_content_state(cross_prev.event_id.to_short())
+            .await,
+        cross_prev_state_before
+    );
+    assert_eq!(
+        client
+            .db()
+            .get_event_content_state(cross_aux.event_id.to_short())
+            .await,
+        cross_aux_state_before
+    );
+    assert_eq!(
+        peer.requests.contents(),
+        vec![head.event_id.to_short()],
+        "only the requested author's eligible head may fetch payload"
+    );
+    assert_eq!(
+        client
+            .db()
+            .get_event(cross_prev.event_id.to_short())
+            .await
+            .expect("cross-author previous row remains")
+            .author(),
+        id_b
+    );
+    assert_eq!(
+        client
+            .db()
+            .get_event(cross_aux.event_id.to_short())
+            .await
+            .expect("cross-author auxiliary row remains")
+            .author(),
+        id_b
+    );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn mismatched_local_starting_head_uses_verified_remote_fallback() -> BoxedErrorResult<()> {
+    let id_a = RostraIdSecretKey::generate().id();
+    let secret_b = RostraIdSecretKey::generate();
+    let client_id = RostraIdSecretKey::generate().id();
+    let (ancestor_b, ancestor_content_b) =
+        build_test_event_with_text(secret_b, None, "wrong-author ancestor");
+    let (event_b, content_b) = build_test_event_with_text(
+        secret_b,
+        ancestor_b.event_id.to_short(),
+        "wrong-author head",
+    );
+    let event_id = event_b.event_id.to_short();
+    let ancestor_id = ancestor_b.event_id.to_short();
+
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let peer = RecordedPeer::start(lookup.clone(), [content_b, ancestor_content_b]).await;
+    let client = build_recorded_client(client_id, lookup, id_a, peer.endpoint_id).await;
+    client.db().try_process_event(&event_b).await?;
+
+    assert!(
+        !client
+            .sync_event_from_peers(id_a, event_id, &[id_a])
+            .await?
+    );
+    assert_eq!(peer.requests.events(), vec![event_id]);
+    assert!(peer.requests.contents().is_empty());
+    assert!(client.db().get_event_content(event_id).await.is_none());
+    assert!(!client.db().has_event(ancestor_id).await);
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn content_fetch_rejects_missing_and_satisfied_cross_author_local_rows()
+-> BoxedErrorResult<()> {
+    let id_a = RostraIdSecretKey::generate().id();
+    let secret_b = RostraIdSecretKey::generate();
+    let client_id = RostraIdSecretKey::generate().id();
+    let (missing_event, missing_content) =
+        build_test_event_with_text(secret_b, None, "missing cross-author content");
+    let (satisfied_event, satisfied_content) =
+        build_test_event_with_text(secret_b, None, "satisfied cross-author content");
+    let missing_id = missing_event.event_id.to_short();
+    let satisfied_id = satisfied_event.event_id.to_short();
+
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let peer = RecordedPeer::start(
+        lookup.clone(),
+        [missing_content.clone(), satisfied_content.clone()],
+    )
+    .await;
+    let client = build_recorded_client(client_id, lookup, id_a, peer.endpoint_id).await;
+    client.db().try_process_event(&missing_event).await?;
+    client
+        .db()
+        .try_process_event_with_content(&satisfied_content)
+        .await?;
+    let mut followers = BTreeMap::new();
+
+    assert!(
+        !client
+            .fetch_event_content(id_a, missing_id, &mut followers)
+            .await?
+    );
+    assert!(
+        !client
+            .fetch_event_content(id_a, satisfied_id, &mut followers)
+            .await?
+    );
+    assert_eq!(peer.requests.events(), vec![missing_id, satisfied_id]);
+    assert!(peer.requests.contents().is_empty());
+    assert!(client.db().get_event_content(missing_id).await.is_none());
+    assert!(client.db().get_event_content(satisfied_id).await.is_some());
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn content_fetch_keeps_same_author_local_and_remote_paths() -> BoxedErrorResult<()> {
+    let secret_a = RostraIdSecretKey::generate();
+    let id_a = secret_a.id();
+    let client_id = RostraIdSecretKey::generate().id();
+    let (local_event, local_content) =
+        build_test_event_with_text(secret_a, None, "same-author local envelope");
+    let (remote_event, remote_content) =
+        build_test_event_with_text(secret_a, None, "same-author remote envelope");
+    let local_id = local_event.event_id.to_short();
+    let remote_id = remote_event.event_id.to_short();
+
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let peer = RecordedPeer::start(lookup.clone(), [local_content, remote_content]).await;
+    let client = build_recorded_client(client_id, lookup, id_a, peer.endpoint_id).await;
+    client.db().try_process_event(&local_event).await?;
+    let mut followers = BTreeMap::new();
+
+    assert!(
+        client
+            .fetch_event_content(id_a, local_id, &mut followers)
+            .await?
+    );
+    assert!(
+        client
+            .fetch_event_content(id_a, remote_id, &mut followers)
+            .await?
+    );
+    assert_eq!(peer.requests.events(), vec![remote_id]);
+    assert_eq!(peer.requests.contents(), vec![local_id, remote_id]);
+    assert!(client.db().get_event_content(local_id).await.is_some());
+    assert!(client.db().get_event_content(remote_id).await.is_some());
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn retained_same_author_head_still_traverses_remote_parent() -> BoxedErrorResult<()> {
+    let secret_a = RostraIdSecretKey::generate();
+    let id_a = secret_a.id();
+    let client_id = RostraIdSecretKey::generate().id();
+    let (parent, parent_content) =
+        build_test_event_with_text(secret_a, None, "same-author remote parent");
+    let (head, head_content) = build_test_event_with_text(
+        secret_a,
+        parent.event_id.to_short(),
+        "same-author retained head",
+    );
+    let parent_id = parent.event_id.to_short();
+    let head_id = head.event_id.to_short();
+
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let peer = RecordedPeer::start(lookup.clone(), [head_content, parent_content]).await;
+    let client = build_recorded_client(client_id, lookup, id_a, peer.endpoint_id).await;
+    client.db().try_process_event(&head).await?;
+
+    assert!(client.sync_event_from_peers(id_a, head_id, &[id_a]).await?);
+    assert_eq!(peer.requests.events(), vec![parent_id]);
+    assert_eq!(peer.requests.contents(), vec![parent_id, head_id]);
+    assert!(client.db().get_event_content(head_id).await.is_some());
+    assert!(client.db().get_event_content(parent_id).await.is_some());
 
     Ok(())
 }

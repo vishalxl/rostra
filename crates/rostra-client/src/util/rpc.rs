@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rostra_client_db::{DbResult, InsertEventOutcome, ProcessEventState};
 use rostra_core::ShortEventId;
-use rostra_core::event::VerifiedEvent;
+use rostra_core::event::{EventExt as _, VerifiedEvent};
 use rostra_core::id::{RostraId, ToShort as _};
 use rostra_util_fmt::AsFmtOption as _;
 use tracing::debug;
@@ -39,7 +39,11 @@ pub(crate) async fn get_event_content_from_followers(
         "Fetching event content from followers"
     );
 
-    let event = if let Some(event_record) = db.get_event(event_id).await {
+    let event = if let Some(event_record) = db
+        .get_event(event_id)
+        .await
+        .filter(|event| event.author() == author_id)
+    {
         VerifiedEvent::assume_verified_from_signed(event_record.signed)
     } else {
         debug!(
@@ -92,8 +96,6 @@ pub(crate) async fn download_events_from_child(
     peers: &[RostraId],
     storage: &rostra_client_db::Database,
 ) -> DbResult<bool> {
-    use rostra_core::event::EventExt as _;
-
     struct QueueItemData {
         process_state: Option<ProcessEventState>,
         child_timestamp: u64,
@@ -185,48 +187,51 @@ pub(crate) async fn download_events_from_child(
 
         assert!(q_item_ts_and_depth.is_none());
         // Fetch the event if we don't have it
-        let (event, process_state, insert_outcome) =
-            if let Some(local_event) = storage.get_event(q_item_event_id).await {
-                debug!(
-                    target: LOG_TARGET,
-                    depth = %q_item_depth,
-                    event_id = %q_item_event_id,
-                    "Event already exists locally"
-                );
-                let event = VerifiedEvent::assume_verified_from_signed(local_event.signed);
-                (
-                    event,
-                    ProcessEventState::Existing,
-                    InsertEventOutcome::AlreadyPresent,
-                )
-            } else {
-                debug!(
-                    target: LOG_TARGET,
-                    depth = %q_item_depth,
-                    event_id = %q_item_event_id,
-                    "Querying peers for event"
-                );
+        let (event, process_state, insert_outcome) = if let Some(local_event) = storage
+            .get_event(q_item_event_id)
+            .await
+            .filter(|event| event.author() == rostra_id)
+        {
+            debug!(
+                target: LOG_TARGET,
+                depth = %q_item_depth,
+                event_id = %q_item_event_id,
+                "Event already exists locally"
+            );
+            let event = VerifiedEvent::assume_verified_from_signed(local_event.signed);
+            (
+                event,
+                ProcessEventState::Existing,
+                InsertEventOutcome::AlreadyPresent,
+            )
+        } else {
+            debug!(
+                target: LOG_TARGET,
+                depth = %q_item_depth,
+                event_id = %q_item_event_id,
+                "Querying peers for event"
+            );
 
-                event_fetch_attempts += 1;
-                let Some(new_event) = connections
-                    .get_event_from_peers(networking, peers, rostra_id, q_item_event_id)
-                    .await
-                else {
-                    debug!(
-                        target: LOG_TARGET,
-                        depth = %q_item_depth,
-                        event_id = %q_item_event_id,
-                        "Failed to fetch event from any peer, skipping"
-                    );
-                    continue;
-                };
-                let (insert_outcome, process_state) = storage.try_process_event(&new_event).await?;
-                if matches!(insert_outcome, InsertEventOutcome::Inserted { .. }) {
-                    downloaded_anything = true;
-                    new_events += 1;
-                }
-                (new_event, process_state, insert_outcome)
+            event_fetch_attempts += 1;
+            let Some(new_event) = connections
+                .get_event_from_peers(networking, peers, rostra_id, q_item_event_id)
+                .await
+            else {
+                debug!(
+                    target: LOG_TARGET,
+                    depth = %q_item_depth,
+                    event_id = %q_item_event_id,
+                    "Failed to fetch event from any peer, skipping"
+                );
+                continue;
             };
+            let (insert_outcome, process_state) = storage.try_process_event(&new_event).await?;
+            if matches!(insert_outcome, InsertEventOutcome::Inserted { .. }) {
+                downloaded_anything = true;
+                new_events += 1;
+            }
+            (new_event, process_state, insert_outcome)
+        };
 
         let q_item_ts = q_item_data.child_timestamp.min(event.timestamp().as_u64());
 
