@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -39,22 +40,52 @@ impl ConnectionCache {
     }
 
     fn maybe_cleanup_closed(&self, connections: &mut HashMap<RostraId, LazySharedConnection>) {
-        let access_count = self.access_count.fetch_add(1, Ordering::Relaxed);
-        if !access_count.is_multiple_of(CLEANUP_INTERVAL) {
-            return;
-        }
-
-        let before = connections.len();
-        connections.retain(|_, conn| conn.get().is_some_and(|conn| !conn.is_closed()));
-        let removed = before.saturating_sub(connections.len());
+        let removed = self.maybe_cleanup_cells(connections, |connection| !connection.is_closed());
         if 0 < removed {
             trace!(
                 target: LOG_TARGET,
                 removed,
                 remaining = connections.len(),
-                "Removed closed or empty connections from cache"
+                "Removed closed or abandoned connections from cache"
             );
         }
+    }
+
+    fn maybe_cleanup_cells<K, T>(
+        &self,
+        cells: &mut HashMap<K, Arc<OnceCell<T>>>,
+        is_open: impl Fn(&T) -> bool,
+    ) -> usize
+    where
+        K: Eq + Hash,
+    {
+        self.maybe_cleanup_cells_after_shared(cells, is_open, |_| {})
+    }
+
+    fn maybe_cleanup_cells_after_shared<K, T>(
+        &self,
+        cells: &mut HashMap<K, Arc<OnceCell<T>>>,
+        is_open: impl Fn(&T) -> bool,
+        mut after_shared_detected: impl FnMut(&K),
+    ) -> usize
+    where
+        K: Eq + Hash,
+    {
+        let access_count = self.access_count.fetch_add(1, Ordering::Relaxed);
+        if !access_count.is_multiple_of(CLEANUP_INTERVAL) {
+            return 0;
+        }
+
+        let before = cells.len();
+        cells.retain(|key, cell| {
+            if let Some(cell) = Arc::get_mut(cell) {
+                cell.get().is_some_and(&is_open)
+            } else {
+                after_shared_detected(key);
+                cell.get().is_none_or(&is_open)
+            }
+        });
+        before.saturating_sub(cells.len())
     }
 
     pub async fn get_or_connect(
@@ -267,3 +298,6 @@ impl ConnectionCache {
         Ok(false)
     }
 }
+
+#[cfg(test)]
+mod tests;
