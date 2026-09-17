@@ -710,6 +710,7 @@ async fn retained_deleted_edit_lineage_survives_reopen_gc_and_total_replay() -> 
 async fn total_replay_removes_legacy_exact_limit_deleted_edit_lineage() -> BoxedErrorResult<()> {
     let chain = ReplacementChain::exact_limit_edit();
     let [original_id, intermediate_id, _] = chain.ids();
+    let author = chain.events[0].author();
     let db_dir = tempfile::tempdir()?;
     let db_path = db_dir.path().join("db.redb");
 
@@ -738,12 +739,25 @@ async fn total_replay_removes_legacy_exact_limit_deleted_edit_lineage() -> Boxed
 
         db.write_with(|tx| {
             tx.open_table(&social_posts_replaced_by::TABLE)?
-                .insert(&(chain.self_id, original_id, intermediate_id), &())?;
+                .insert(&(author, original_id, intermediate_id), &())?;
             tx.open_table(&social_posts_replaces::TABLE)?
-                .insert(&(chain.self_id, intermediate_id, original_id), &())?;
+                .insert(&(author, intermediate_id, original_id), &())?;
             Ok(())
         })
         .await?;
+        let seeded = semantic_snapshot(&db, &chain).await?;
+        assert!(
+            seeded
+                .tables
+                .replaced_by
+                .contains(&(original_id, intermediate_id))
+        );
+        assert!(
+            seeded
+                .tables
+                .replaces
+                .contains(&(intermediate_id, original_id))
+        );
         expected
     };
 
