@@ -7,8 +7,9 @@ use rostra_core::event::{Event, EventExt as _, EventKind, VerifiedEvent, Verifie
 use rostra_core::id::{RostraIdSecretKey, ToShort as _};
 
 use crate::{
-    Database, DbError, PayloadAdmissionConfig, PayloadAdmissionLimits, PayloadAdmissionPause,
-    PayloadIngestOutcome, PayloadReservation, PayloadReservationOutcome,
+    Database, DbError, PayloadAcquisitionPreparation, PayloadAdmissionConfig,
+    PayloadAdmissionLimits, PayloadAdmissionPause, PayloadIngestOutcome, PayloadReservation,
+    PayloadReservationOutcome,
 };
 
 fn content(author: RostraIdSecretKey, time: u64, text: &str) -> VerifiedEventContent {
@@ -308,8 +309,9 @@ async fn admission_acquisition_reuses_store_and_stops_terminal_fetches() -> anyh
     let second = content(author, 2, "same bytes");
     db.try_process_event_with_content(&first).await?;
     assert!(matches!(
-        db.prepare_payload_acquisition(&second.event).await?,
-        PayloadReservationOutcome::Unneeded
+        db.prepare_payload_acquisition_detailed(&second.event)
+            .await?,
+        PayloadAcquisitionPreparation::Materialized
     ));
     assert!(
         !db.is_event_content_missing(second.event_id().to_short())
@@ -803,6 +805,50 @@ async fn admission_invalid_is_distinct_and_protected_kinds_are_not_exempt() -> a
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn detailed_preparation_does_not_count_shared_invalid_content() -> anyhow::Result<()> {
+    let author = RostraIdSecretKey::generate();
+    let db = Database::new_in_memory(author.id()).await?;
+    let bytes = rostra_core::event::EventContentRaw::new(vec![0xff; 20]);
+    let build = |kind, timestamp| {
+        let signed = Event::builder_raw_content()
+            .author(author.id())
+            .timestamp(Timestamp::from(timestamp).to_offset_date_time().unwrap())
+            .kind(kind)
+            .content(&bytes)
+            .build()
+            .signed_by(author);
+        VerifiedEventContent::verify(
+            VerifiedEvent::verify_signed(author.id(), signed).unwrap(),
+            bytes.clone(),
+        )
+        .unwrap()
+    };
+    let stored = build(EventKind::from(65535), 1);
+    let invalid = build(EventKind::SOCIAL_POST, 2);
+    db.try_process_event_content(&stored).await?;
+
+    assert!(matches!(
+        db.prepare_payload_acquisition_detailed(&invalid.event)
+            .await?,
+        PayloadAcquisitionPreparation::Satisfied
+    ));
+    assert!(
+        db.get_event_content(invalid.event_id().to_short())
+            .await
+            .is_none()
+    );
+    assert!(
+        !db.is_event_content_missing(invalid.event_id().to_short())
+            .await
+    );
+    assert!(matches!(
+        db.prepare_payload_acquisition(&invalid.event).await?,
+        PayloadReservationOutcome::Unneeded
+    ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn envelopes_schedule_shared_hash_work_in_disabled_and_enforce_modes() -> anyhow::Result<()> {
     let author = RostraIdSecretKey::generate();
     let db = Database::new_in_memory(RostraIdSecretKey::generate().id()).await?;
@@ -821,8 +867,9 @@ async fn envelopes_schedule_shared_hash_work_in_disabled_and_enforce_modes() -> 
     assert_eq!(scheduled.scheduled_time, Timestamp::ZERO);
     assert_eq!(scheduled.fetch_attempt_count, 0);
     assert!(matches!(
-        db.prepare_payload_acquisition(&second.event).await?,
-        PayloadReservationOutcome::Unneeded
+        db.prepare_payload_acquisition_detailed(&second.event)
+            .await?,
+        PayloadAcquisitionPreparation::Materialized
     ));
     assert!(
         db.get_social_post(second.event_id().to_short())
@@ -831,8 +878,9 @@ async fn envelopes_schedule_shared_hash_work_in_disabled_and_enforce_modes() -> 
     );
     assert!(db.peek_next_missing_content().await.is_none());
     assert!(matches!(
-        db.prepare_payload_acquisition(&second.event).await?,
-        PayloadReservationOutcome::Unneeded
+        db.prepare_payload_acquisition_detailed(&second.event)
+            .await?,
+        PayloadAcquisitionPreparation::Satisfied
     ));
     ready(&db).await?;
     let n = u64::from(first.content_len());

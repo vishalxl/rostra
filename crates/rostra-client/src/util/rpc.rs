@@ -169,10 +169,12 @@ pub(crate) async fn download_events_from_child(
 
                 content_fetch_attempts += 1;
                 if connections
-                    .fetch_event_content_from_peers(networking, peers, event, storage)
+                    .fetch_event_content_from_peers_detailed(networking, peers, event, storage)
                     .await?
+                    .materialized
                 {
                     new_contents += 1;
+                    downloaded_anything = true;
                 }
             }
             continue;
@@ -218,9 +220,11 @@ pub(crate) async fn download_events_from_child(
                     );
                     continue;
                 };
-                downloaded_anything = true;
-                new_events += 1;
                 let (insert_outcome, process_state) = storage.try_process_event(&new_event).await?;
+                if matches!(insert_outcome, InsertEventOutcome::Inserted { .. }) {
+                    downloaded_anything = true;
+                    new_events += 1;
+                }
                 (new_event, process_state, insert_outcome)
             };
 

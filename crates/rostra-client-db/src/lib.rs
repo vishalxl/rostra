@@ -95,7 +95,9 @@ pub use self::extension::{
 };
 pub use self::payload_account::{PayloadAccount, PayloadAccountAttachError};
 pub use self::payload_accounting::{PAYLOAD_MAINTENANCE_MAX, PayloadMaintenance, PayloadUsage};
-pub use self::payload_admission::{PayloadIngestOutcome, PayloadReservationOutcome};
+pub use self::payload_admission::{
+    PayloadAcquisitionPreparation, PayloadIngestOutcome, PayloadReservationOutcome,
+};
 pub use self::payload_admission_config::{PayloadAdmissionConfig, PayloadAdmissionLimits};
 pub use self::payload_allocation::PayloadAllocation;
 pub use self::payload_dry_run::{

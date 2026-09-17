@@ -32,6 +32,8 @@
 pub mod error;
 
 mod acquired_payload;
+#[cfg(test)]
+mod acquired_payload_tests;
 mod connection_cache;
 mod encoded_payload;
 mod payload_holder_order;

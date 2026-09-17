@@ -23,6 +23,11 @@ impl AcquiredPayload {
 
     /// Apply ordinary validation while preserving temporary capacity refusals.
     pub(crate) async fn ingest(self, db: &Database) -> DbResult<()> {
+        self.ingest_with_outcome(db).await.map(|_| ())
+    }
+
+    /// Apply ordinary validation and preserve its transactional outcome.
+    pub(crate) async fn ingest_with_outcome(self, db: &Database) -> DbResult<PayloadIngestOutcome> {
         match db
             .try_process_admitted_event_content(&self.content, self.buffer.as_ref())
             .await?
@@ -30,7 +35,7 @@ impl AcquiredPayload {
             PayloadIngestOutcome::Deferred(reason) => {
                 Err(DbError::PayloadAdmissionPaused { reason })
             }
-            _ => Ok(()),
+            outcome => Ok(outcome),
         }
     }
 }

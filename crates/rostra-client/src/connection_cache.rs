@@ -20,6 +20,39 @@ const CLEANUP_INTERVAL: u64 = 64;
 
 type LazySharedConnection = Arc<OnceCell<Connection>>;
 
+/// Detailed content acquisition result for storage-progress accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContentFetchOutcome {
+    /// No further acquisition is needed or downloaded ingestion succeeded.
+    pub(crate) acquisition_satisfied: bool,
+    /// This invocation transactionally materialized the event content.
+    pub(crate) materialized: bool,
+}
+
+impl ContentFetchOutcome {
+    fn from_ingest(outcome: rostra_client_db::PayloadIngestOutcome) -> Self {
+        use rostra_client_db::PayloadIngestOutcome;
+
+        match outcome {
+            PayloadIngestOutcome::Processed => Self {
+                acquisition_satisfied: true,
+                materialized: true,
+            },
+            PayloadIngestOutcome::Invalid | PayloadIngestOutcome::Unchanged => Self {
+                acquisition_satisfied: true,
+                materialized: false,
+            },
+            PayloadIngestOutcome::Unavailable => Self {
+                acquisition_satisfied: false,
+                materialized: false,
+            },
+            PayloadIngestOutcome::Deferred(_) => {
+                unreachable!("AcquiredPayload converts deferred ingestion into an error")
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ConnectionCache {
     connections: Arc<Mutex<HashMap<RostraId, LazySharedConnection>>>,
@@ -227,13 +260,37 @@ impl ConnectionCache {
         event: VerifiedEvent,
         db: &rostra_client_db::Database,
     ) -> rostra_client_db::DbResult<bool> {
-        use rostra_client_db::{DbError, PayloadReservationOutcome};
+        self.fetch_event_content_from_peers_detailed(networking, peers, event, db)
+            .await
+            .map(|outcome| outcome.acquisition_satisfied)
+    }
 
-        let reservation = match db.prepare_payload_acquisition(&event).await? {
-            PayloadReservationOutcome::Disabled => None,
-            PayloadReservationOutcome::Reserved(reservation) => Some(reservation),
-            PayloadReservationOutcome::Unneeded => return Ok(true),
-            PayloadReservationOutcome::Deferred(reason) => {
+    /// Try peers while preserving whether this invocation stored content.
+    pub(crate) async fn fetch_event_content_from_peers_detailed(
+        &self,
+        networking: &ClientNetworking,
+        peers: &[RostraId],
+        event: VerifiedEvent,
+        db: &rostra_client_db::Database,
+    ) -> rostra_client_db::DbResult<ContentFetchOutcome> {
+        use rostra_client_db::{DbError, PayloadAcquisitionPreparation};
+
+        let reservation = match db.prepare_payload_acquisition_detailed(&event).await? {
+            PayloadAcquisitionPreparation::Disabled => None,
+            PayloadAcquisitionPreparation::Reserved(reservation) => Some(reservation),
+            PayloadAcquisitionPreparation::Materialized => {
+                return Ok(ContentFetchOutcome {
+                    acquisition_satisfied: true,
+                    materialized: true,
+                });
+            }
+            PayloadAcquisitionPreparation::Satisfied => {
+                return Ok(ContentFetchOutcome {
+                    acquisition_satisfied: true,
+                    materialized: false,
+                });
+            }
+            PayloadAcquisitionPreparation::Deferred(reason) => {
                 return Err(DbError::PayloadAdmissionPaused { reason });
             }
         };
@@ -303,8 +360,8 @@ impl ConnectionCache {
         .map_err(|reason| DbError::PayloadAdmissionPaused { reason })?;
 
         if let Some(payload) = result {
-            payload.ingest(db).await?;
-            return Ok(true);
+            let outcome = payload.ingest_with_outcome(db).await?;
+            return Ok(ContentFetchOutcome::from_ingest(outcome));
         }
         {
             debug!(
@@ -314,7 +371,10 @@ impl ConnectionCache {
             );
         }
 
-        Ok(false)
+        Ok(ContentFetchOutcome {
+            acquisition_satisfied: false,
+            materialized: false,
+        })
     }
 }
 

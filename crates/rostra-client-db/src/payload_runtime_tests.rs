@@ -10,8 +10,8 @@ use rostra_core::retention::RetentionPolicy;
 
 use crate::payload_runtime::{PayloadRuntime, RuntimeCursor, RuntimeLimits, RuntimeTurn};
 use crate::{
-    Database, PayloadAdmissionConfig, PayloadAdmissionLimits, PayloadIngestOutcome,
-    PayloadReservationOutcome,
+    Database, PayloadAcquisitionPreparation, PayloadAdmissionConfig, PayloadAdmissionLimits,
+    PayloadIngestOutcome, PayloadReservationOutcome,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -242,6 +242,20 @@ async fn prepare_with_worker(
     Ok(tokio::time::timeout(Duration::from_secs(5), async {
         tokio::select! {
             result = db.prepare_payload_acquisition(event) => result,
+            result = runtime.run(db) => panic!("worker stopped: {result:?}"),
+        }
+    })
+    .await??)
+}
+
+async fn prepare_detailed_with_worker(
+    db: &Database,
+    event: &VerifiedEvent,
+) -> anyhow::Result<PayloadAcquisitionPreparation> {
+    let runtime = db.payload_runtime.as_ref().unwrap();
+    Ok(tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            result = db.prepare_payload_acquisition_detailed(event) => result,
             result = runtime.run(db) => panic!("worker stopped: {result:?}"),
         }
     })
@@ -665,7 +679,11 @@ async fn runtime_shared_store_reuse_waits_without_retaining_a_copy() -> anyhow::
         assert_eq!(db.payload_admission_usage().buffers, 0);
     }
     assert!(matches!(
-        prepare_with_worker(&db, &incoming.event).await?,
+        prepare_detailed_with_worker(&db, &incoming.event).await?,
+        PayloadAcquisitionPreparation::Materialized,
+    ));
+    assert!(matches!(
+        db.prepare_payload_acquisition(&incoming.event).await?,
         PayloadReservationOutcome::Unneeded,
     ));
     assert!(

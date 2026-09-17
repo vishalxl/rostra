@@ -27,6 +27,33 @@ pub enum PayloadReservationOutcome {
     Unneeded,
 }
 
+/// Detailed preparation result for callers that account actual materialization.
+#[derive(Debug)]
+pub enum PayloadAcquisitionPreparation {
+    /// Ordinary behavior: startup configuration leaves admission disabled.
+    Disabled,
+    /// This Missing event owns logical room; buffers must be reserved
+    /// separately.
+    Reserved(PayloadReservation),
+    /// Temporary pause, not a download failure or a quota-pruned event.
+    Deferred(PayloadAdmissionPause),
+    /// Shared-store reuse materialized this event's payload.
+    Materialized,
+    /// Already materialized, empty, invalid, or terminal; do not download.
+    Satisfied,
+}
+
+impl PayloadAcquisitionPreparation {
+    fn into_legacy(self) -> PayloadReservationOutcome {
+        match self {
+            Self::Disabled => PayloadReservationOutcome::Disabled,
+            Self::Reserved(reservation) => PayloadReservationOutcome::Reserved(reservation),
+            Self::Deferred(reason) => PayloadReservationOutcome::Deferred(reason),
+            Self::Materialized | Self::Satisfied => PayloadReservationOutcome::Unneeded,
+        }
+    }
+}
+
 /// Explicit content ingestion result for admission-aware callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadIngestOutcome {
@@ -56,30 +83,53 @@ impl Database {
         &self,
         event: &VerifiedEvent,
     ) -> DbResult<PayloadReservationOutcome> {
+        self.prepare_payload_acquisition_detailed(event)
+            .await
+            .map(PayloadAcquisitionPreparation::into_legacy)
+    }
+
+    /// Retain the header and report whether shared-store reuse materialized it.
+    ///
+    /// This preserves the reservation behavior of
+    /// [`Self::prepare_payload_acquisition`] while distinguishing actual
+    /// materialization from already-satisfied and terminal states.
+    pub async fn prepare_payload_acquisition_detailed(
+        &self,
+        event: &VerifiedEvent,
+    ) -> DbResult<PayloadAcquisitionPreparation> {
         if let Some(runtime) = &self.payload_runtime {
             return runtime.prepare(self, event).await;
         }
-        self.prepare_payload_acquisition_once(event).await
+        self.prepare_payload_acquisition_once_detailed(event).await
     }
 
-    /// One allocation-free-on-return preparation attempt; all shared-store
-    /// scratch ownership is dropped before returning a pause.
-    pub(crate) async fn prepare_payload_acquisition_once(
+    /// One detailed allocation-free-on-return preparation attempt.
+    pub(crate) async fn prepare_payload_acquisition_once_detailed(
         &self,
         event: &VerifiedEvent,
-    ) -> DbResult<PayloadReservationOutcome> {
+    ) -> DbResult<PayloadAcquisitionPreparation> {
         self.try_process_event(event).await?;
         match self
             .try_materialize_stored_payload(event.event_id.to_short())
             .await?
         {
-            PayloadIngestOutcome::Unavailable => self.reserve_payload(event).await,
+            PayloadIngestOutcome::Unavailable => Ok(match self.reserve_payload(event).await? {
+                PayloadReservationOutcome::Disabled => PayloadAcquisitionPreparation::Disabled,
+                PayloadReservationOutcome::Reserved(reservation) => {
+                    PayloadAcquisitionPreparation::Reserved(reservation)
+                }
+                PayloadReservationOutcome::Deferred(reason) => {
+                    PayloadAcquisitionPreparation::Deferred(reason)
+                }
+                PayloadReservationOutcome::Unneeded => PayloadAcquisitionPreparation::Satisfied,
+            }),
             PayloadIngestOutcome::Deferred(reason) => {
-                Ok(PayloadReservationOutcome::Deferred(reason))
+                Ok(PayloadAcquisitionPreparation::Deferred(reason))
             }
-            PayloadIngestOutcome::Processed
-            | PayloadIngestOutcome::Invalid
-            | PayloadIngestOutcome::Unchanged => Ok(PayloadReservationOutcome::Unneeded),
+            PayloadIngestOutcome::Processed => Ok(PayloadAcquisitionPreparation::Materialized),
+            PayloadIngestOutcome::Invalid | PayloadIngestOutcome::Unchanged => {
+                Ok(PayloadAcquisitionPreparation::Satisfied)
+            }
         }
     }
 

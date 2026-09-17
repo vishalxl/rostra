@@ -13,7 +13,7 @@ use crate::payload_demand::{DemandRegistration, DemandStep, PayloadDemand};
 use crate::payload_demand_request::DemandRequest;
 use crate::payload_pressure::{PressureCursor, PressureRequest, PressureStep, PressureWorker};
 use crate::{
-    Database, DbError, DbResult, PayloadReservationOutcome, RetentionClock, RetentionGeneration,
+    Database, DbError, DbResult, PayloadAcquisitionPreparation, RetentionClock, RetentionGeneration,
 };
 
 /// Explicit turn bounds, independent of acquisition and logical byte budgets.
@@ -222,10 +222,10 @@ impl PayloadRuntime {
         &self,
         db: &Database,
         event: &VerifiedEvent,
-    ) -> DbResult<PayloadReservationOutcome> {
+    ) -> DbResult<PayloadAcquisitionPreparation> {
         if self.dry_run.is_some() {
             self.check_config(db)?;
-            return db.prepare_payload_acquisition_once(event).await;
+            return db.prepare_payload_acquisition_once_detailed(event).await;
         }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut demand: Option<PayloadDemand> = None;
@@ -234,8 +234,8 @@ impl PayloadRuntime {
             let notified = db.payload_admission_changed();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let outcome = db.prepare_payload_acquisition_once(event).await?;
-            let PayloadReservationOutcome::Deferred(_) = outcome else {
+            let outcome = db.prepare_payload_acquisition_once_detailed(event).await?;
+            let PayloadAcquisitionPreparation::Deferred(_) = outcome else {
                 return Ok(outcome);
             };
             if tokio::time::Instant::now() >= deadline

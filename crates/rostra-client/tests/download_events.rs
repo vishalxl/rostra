@@ -16,11 +16,19 @@ fn build_test_event(
     id_secret: RostraIdSecretKey,
     parent_prev: impl Into<Option<ShortEventId>>,
 ) -> (VerifiedEvent, VerifiedEventContent) {
+    build_test_event_with_text(id_secret, parent_prev, "test content")
+}
+
+fn build_test_event_with_text(
+    id_secret: RostraIdSecretKey,
+    parent_prev: impl Into<Option<ShortEventId>>,
+    text: &str,
+) -> (VerifiedEvent, VerifiedEventContent) {
     use rostra_core::event::content_kind;
     use rostra_core::event::content_kind::EventContentKind as _;
 
     let parent = parent_prev.into();
-    let post = content_kind::SocialPost::new("test content".to_string(), None, Default::default());
+    let post = content_kind::SocialPost::new(text.to_string(), None, Default::default());
     let content = post.serialize_cbor().expect("valid cbor");
     let author = id_secret.id();
     let event = Event::builder_raw_content()
@@ -154,6 +162,54 @@ async fn test_download_events_from_child() -> BoxedErrorResult<()> {
             "Event content for {eid} should exist in B"
         );
     }
+
+    // An envelope retained before explicit synchronization still reports the
+    // later content-only materialization as progress.
+    let (content_only_event, content_only) =
+        build_test_event_with_text(secret_a, None, "content only");
+    db_a.process_event_with_content(&content_only).await;
+    db_b.try_process_event(&content_only_event).await?;
+    let content_only_id = content_only_event.event_id.to_short();
+    assert!(db_b.get_event_content(content_only_id).await.is_none());
+    assert!(
+        client_b
+            .sync_event_from_peers(id_a, content_only_id, &peers)
+            .await?
+    );
+    assert!(db_b.get_event_content(content_only_id).await.is_some());
+    assert!(
+        !client_b
+            .sync_event_from_peers(id_a, content_only_id, &peers)
+            .await?
+    );
+
+    // A retained envelope whose payload is unavailable makes no storage
+    // progress.
+    let (unavailable_event, _) = build_test_event_with_text(secret_a, None, "unavailable payload");
+    db_a.try_process_event(&unavailable_event).await?;
+    db_b.try_process_event(&unavailable_event).await?;
+    assert!(
+        !client_b
+            .sync_event_from_peers(id_a, unavailable_event.event_id.to_short(), &peers)
+            .await?
+    );
+
+    // A fresh envelope remains progress even when its payload is unavailable.
+    let (fresh_envelope, _) = build_test_event_with_text(secret_a, None, "fresh envelope");
+    db_a.try_process_event(&fresh_envelope).await?;
+    let fresh_id = fresh_envelope.event_id.to_short();
+    assert!(
+        client_b
+            .sync_event_from_peers(id_a, fresh_id, &peers)
+            .await?
+    );
+    assert!(db_b.has_event(fresh_id).await);
+    assert!(db_b.get_event_content(fresh_id).await.is_none());
+    assert!(
+        !client_b
+            .sync_event_from_peers(id_a, fresh_id, &peers)
+            .await?
+    );
 
     Ok(())
 }
