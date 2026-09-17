@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rostra_core::ShortEventId;
 use rostra_core::event::{Event, EventContentRaw, EventKind, VerifiedEvent, VerifiedEventContent};
-use rostra_core::id::{RostraIdSecretKey, ToShort as _};
+use rostra_core::id::{RostraId, RostraIdSecretKey, ToShort as _};
 use rostra_p2p::connection::{
     Connection, GetEventRequest, GetEventResponse, MAX_REQUEST_SIZE, RpcId, RpcMessage as _,
     WaitHeadUpdateRequest, WaitHeadUpdateResponse,
@@ -13,6 +13,20 @@ use rostra_p2p_api::ROSTRA_P2P_V0_ALPN;
 use tokio::sync::{RwLock, mpsc, oneshot};
 
 use super::{ActiveFolloweePoll, FolloweePollState, PollFolloweeHeadUpdates, RemoteProgress};
+
+fn id(n: u8) -> RostraId {
+    let mut bytes = [0; 32];
+    bytes[31] = n;
+    RostraId::from_bytes(bytes)
+}
+
+fn epoch(n: u8) -> ShortEventId {
+    ShortEventId::from_bytes([n; 16])
+}
+
+fn pending(count: u8) -> BTreeMap<RostraId, ShortEventId> {
+    (0..count).map(|n| (id(n), epoch(n))).collect()
+}
 
 fn build_event(
     id_secret: RostraIdSecretKey,
@@ -276,4 +290,118 @@ fn coalesced_unfollow_readd_cancels_active_epoch_and_prunes_stale_state() {
     );
     assert!(states.is_empty());
     assert!(pending.is_empty());
+}
+
+#[test]
+fn completed_slots_schedule_waiting_followees_before_reinserted_peers() {
+    let mut pending = pending(35);
+    let mut cursor = None;
+    let mut active = BTreeSet::new();
+
+    for _ in 0..super::MAX_ACTIVE_POLLS {
+        let (peer_id, _) =
+            PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor).unwrap();
+        assert!(active.insert(peer_id));
+    }
+    assert_eq!(active.len(), super::MAX_ACTIVE_POLLS);
+
+    for (completed, expected) in [(id(0), id(32)), (id(5), id(33)), (id(31), id(34))] {
+        assert!(active.remove(&completed));
+        pending.insert(completed, epoch(completed.to_bytes()[31]));
+        let (scheduled, _) =
+            PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor).unwrap();
+        assert_eq!(scheduled, expected);
+        assert!(active.insert(scheduled));
+        assert_eq!(active.len(), super::MAX_ACTIVE_POLLS);
+    }
+}
+
+#[test]
+fn scheduling_wraps_across_more_than_two_slot_sets_without_duplicates() {
+    let mut pending = pending(65);
+    let mut cursor = None;
+    let mut active = BTreeSet::new();
+    let mut started = BTreeSet::new();
+
+    for _ in 0..super::MAX_ACTIVE_POLLS {
+        let (peer_id, _) =
+            PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor).unwrap();
+        assert!(active.insert(peer_id));
+        started.insert(peer_id);
+    }
+
+    for completion in 0..130 {
+        let completed = *active.iter().nth(completion % active.len()).unwrap();
+        assert!(active.remove(&completed));
+        pending.insert(completed, epoch(completed.to_bytes()[31]));
+        let (scheduled, _) =
+            PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor).unwrap();
+        assert!(active.insert(scheduled));
+        started.insert(scheduled);
+        assert_eq!(active.len(), super::MAX_ACTIVE_POLLS);
+    }
+
+    assert_eq!(started.len(), 65);
+}
+
+#[test]
+fn scheduling_cursor_survives_removal_empty_and_single_peer_sets() {
+    let mut pending = BTreeMap::from([(id(1), epoch(1)), (id(3), epoch(3))]);
+    let mut cursor = Some(id(2));
+
+    assert_eq!(
+        PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor),
+        Some((id(3), epoch(3)))
+    );
+    assert!(pending.remove(&id(1)).is_some());
+    assert_eq!(
+        PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor),
+        None
+    );
+    assert_eq!(cursor, Some(id(3)));
+
+    pending.insert(id(2), epoch(2));
+    assert_eq!(
+        PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor),
+        Some((id(2), epoch(2)))
+    );
+    assert_eq!(cursor, Some(id(2)));
+    assert_eq!(
+        PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor),
+        None
+    );
+}
+
+#[test_log::test(tokio::test(start_paused = true))]
+async fn slot_timeout_rotates_to_a_waiting_followee() {
+    let mut pending = pending(33);
+    let mut cursor = None;
+    let mut active = BTreeSet::new();
+
+    for _ in 0..super::MAX_ACTIVE_POLLS {
+        let (peer_id, _) =
+            PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor).unwrap();
+        assert!(active.insert(peer_id));
+    }
+    let completed = id(0);
+    let (started_tx, started_rx) = oneshot::channel();
+    let timed_slot = tokio::spawn(PollFolloweeHeadUpdates::poll_until_slot_timeout(
+        async move {
+            let _ = started_tx.send(());
+            std::future::pending().await
+        },
+    ));
+    started_rx.await.unwrap();
+    tokio::time::advance(super::POLL_SLOT_TIMEOUT - std::time::Duration::from_millis(1)).await;
+    assert!(!timed_slot.is_finished());
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    assert!(timed_slot.await.unwrap().is_ok());
+
+    assert!(active.remove(&completed));
+    pending.insert(completed, epoch(0));
+    let (scheduled, _) =
+        PollFolloweeHeadUpdates::take_next_pending(&mut pending, &mut cursor).unwrap();
+    assert_eq!(scheduled, id(32));
+    assert!(active.insert(scheduled));
+    assert_eq!(active.len(), super::MAX_ACTIVE_POLLS);
 }

@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -111,6 +112,7 @@ impl FolloweePollState {
 type FolloweeState = Arc<RwLock<FolloweePollState>>;
 type FolloweeStates = HashMap<RostraId, FolloweeState>;
 type FollowEpoch = rostra_core::ShortEventId;
+type PendingFollowees = BTreeMap<RostraId, FollowEpoch>;
 
 struct ActiveFolloweePoll {
     epoch: FollowEpoch,
@@ -155,10 +157,11 @@ impl PollFolloweeHeadUpdates {
     #[instrument(name = "poll-followee-head-updates", skip(self), fields(self_id = %self.self_id.fmt_short()), ret)]
     pub async fn run(mut self) {
         let mut desired_peers = HashMap::new();
-        let mut pending_peers = std::collections::BTreeMap::new();
+        let mut pending_peers = PendingFollowees::new();
         let mut active_peers = HashMap::new();
         let mut poll_futures = FuturesUnordered::new();
         let mut followee_states = HashMap::new();
+        let mut last_scheduled_peer = None;
 
         Self::update_desired_followees(
             &self.self_followees,
@@ -172,6 +175,7 @@ impl PollFolloweeHeadUpdates {
             &mut active_peers,
             &mut poll_futures,
             &mut followee_states,
+            &mut last_scheduled_peer,
         );
 
         loop {
@@ -215,6 +219,7 @@ impl PollFolloweeHeadUpdates {
                 &mut active_peers,
                 &mut poll_futures,
                 &mut followee_states,
+                &mut last_scheduled_peer,
             );
 
             if self.client.app_ref_opt().is_none() {
@@ -227,7 +232,7 @@ impl PollFolloweeHeadUpdates {
     fn update_desired_followees(
         self_followees: &CurrentState<Arc<HashMap<RostraId, IdsFolloweesRecord>>>,
         desired_peers: &mut HashMap<RostraId, FollowEpoch>,
-        pending_peers: &mut std::collections::BTreeMap<RostraId, FollowEpoch>,
+        pending_peers: &mut PendingFollowees,
         active_peers: &mut HashMap<RostraId, ActiveFolloweePoll>,
         followee_states: &mut FolloweeStates,
     ) {
@@ -248,7 +253,7 @@ impl PollFolloweeHeadUpdates {
     fn reconcile_followee_epochs(
         new_desired: HashMap<RostraId, FollowEpoch>,
         desired_peers: &mut HashMap<RostraId, FollowEpoch>,
-        pending_peers: &mut std::collections::BTreeMap<RostraId, FollowEpoch>,
+        pending_peers: &mut PendingFollowees,
         active_peers: &mut HashMap<RostraId, ActiveFolloweePoll>,
         followee_states: &mut FolloweeStates,
     ) {
@@ -275,15 +280,18 @@ impl PollFolloweeHeadUpdates {
 
     fn schedule_pending(
         &self,
-        pending_peers: &mut std::collections::BTreeMap<RostraId, FollowEpoch>,
+        pending_peers: &mut PendingFollowees,
         active_peers: &mut HashMap<RostraId, ActiveFolloweePoll>,
         poll_futures: &mut FuturesUnordered<
             BoxFuture<'static, (RostraId, FollowEpoch, DbResult<()>)>,
         >,
         followee_states: &mut FolloweeStates,
+        last_scheduled_peer: &mut Option<RostraId>,
     ) {
         while active_peers.len() < MAX_ACTIVE_POLLS {
-            let Some((peer_id, epoch)) = pending_peers.pop_first() else {
+            let Some((peer_id, epoch)) =
+                Self::take_next_pending(pending_peers, last_scheduled_peer)
+            else {
                 break;
             };
             if active_peers.contains_key(&peer_id) {
@@ -306,6 +314,23 @@ impl PollFolloweeHeadUpdates {
         }
     }
 
+    fn take_next_pending(
+        pending_peers: &mut PendingFollowees,
+        last_scheduled_peer: &mut Option<RostraId>,
+    ) -> Option<(RostraId, FollowEpoch)> {
+        let peer_id = last_scheduled_peer
+            .and_then(|last| {
+                pending_peers
+                    .range((Excluded(last), Unbounded))
+                    .next()
+                    .map(|(peer_id, _)| *peer_id)
+            })
+            .or_else(|| pending_peers.first_key_value().map(|(peer_id, _)| *peer_id))?;
+        let pending = pending_peers.remove_entry(&peer_id);
+        *last_scheduled_peer = Some(peer_id);
+        pending
+    }
+
     async fn poll_slot(
         networking: Arc<ClientNetworking>,
         connections: ConnectionCache,
@@ -313,12 +338,20 @@ impl PollFolloweeHeadUpdates {
         followee_id: RostraId,
         followee_state: FolloweeState,
     ) -> DbResult<()> {
-        tokio::time::timeout(
-            POLL_SLOT_TIMEOUT,
-            Self::poll_followee(networking, connections, db, followee_id, followee_state),
-        )
+        Self::poll_until_slot_timeout(Self::poll_followee(
+            networking,
+            connections,
+            db,
+            followee_id,
+            followee_state,
+        ))
         .await
-        .unwrap_or(Ok(()))
+    }
+
+    async fn poll_until_slot_timeout(poll: impl Future<Output = DbResult<()>>) -> DbResult<()> {
+        tokio::time::timeout(POLL_SLOT_TIMEOUT, poll)
+            .await
+            .unwrap_or(Ok(()))
     }
 
     async fn poll_followee(
