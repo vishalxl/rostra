@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
 
@@ -14,6 +15,9 @@ use tokio::time::{Duration, interval};
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
+
+#[cfg(test)]
+mod main_tests;
 
 #[derive(Debug, Snafu)]
 pub enum BotError {
@@ -261,26 +265,41 @@ async fn run_bot_loop(
     scrapers: &[Box<dyn rostra_bot::scraper::Scraper + Send + Sync>],
     publisher: &Publisher,
 ) -> BotResult<()> {
-    let mut interval = interval(Duration::from_secs(opts.scrape_interval_minutes * 60));
+    run_bot_loop_with(
+        Duration::from_secs(opts.scrape_interval_minutes * 60),
+        || async {
+            run_one_cycle(
+                opts.hn_min_score,
+                opts.lobsters_min_score,
+                opts.max_articles_per_run,
+                db,
+                scrapers,
+                publisher,
+            )
+            .await
+            .map_err(|source| BotError::RunCycle { source })?;
+
+            info!(target: LOG_TARGET,
+                  next_run_in_minutes = opts.scrape_interval_minutes,
+                  "Cycle complete, waiting for next run"
+            );
+
+            Ok(())
+        },
+    )
+    .await
+}
+
+async fn run_bot_loop_with<F, Fut>(scrape_interval: Duration, mut run_one_cycle: F) -> BotResult<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = BotResult<()>>,
+{
+    let mut interval = interval(scrape_interval);
 
     loop {
-        run_one_cycle(
-            opts.hn_min_score,
-            opts.lobsters_min_score,
-            opts.max_articles_per_run,
-            db,
-            scrapers,
-            publisher,
-        )
-        .await
-        .map_err(|source| BotError::RunCycle { source })?;
-
-        info!(target: LOG_TARGET,
-              next_run_in_minutes = opts.scrape_interval_minutes,
-              "Cycle complete, waiting for next run"
-        );
-
         interval.tick().await;
+        run_one_cycle().await?;
     }
 }
 
