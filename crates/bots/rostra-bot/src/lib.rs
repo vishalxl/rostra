@@ -6,16 +6,66 @@ pub mod tables;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use rostra_core::Timestamp;
 use tracing::{debug, error, info, warn};
 
 use crate::database::BotDatabase;
-use crate::publisher::Publisher;
+use crate::publisher::{Publisher, PublisherResult};
 use crate::scraper::Scraper;
+use crate::tables::Article;
 
 pub const PROJECT_NAME: &str = "rostra-bot";
 pub const LOG_TARGET: &str = "rostra_bot::main";
 pub const MAX_ARTICLE_AGE_SECS: u64 = 30 * 24 * 60 * 60; // ~1 month
+
+#[async_trait]
+trait ArticlePublisher: Send + Sync {
+    async fn publish_article(&self, article: &Article) -> PublisherResult<()>;
+}
+
+#[async_trait]
+impl ArticlePublisher for Publisher {
+    async fn publish_article(&self, article: &Article) -> PublisherResult<()> {
+        Publisher::publish_article(self, article).await
+    }
+}
+
+#[async_trait]
+trait ArticleAcknowledger: Send + Sync {
+    async fn mark_article_published(
+        &self,
+        article: &Article,
+        published_at: Timestamp,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[async_trait]
+impl ArticleAcknowledger for BotDatabase {
+    async fn mark_article_published(
+        &self,
+        article: &Article,
+        published_at: Timestamp,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        BotDatabase::mark_article_published(self, article, published_at)
+            .await
+            .map_err(|error| Box::new(error) as _)
+    }
+}
+
+#[async_trait]
+trait PublicationDelay: Send + Sync {
+    async fn wait(&self);
+}
+
+struct StandardPublicationDelay;
+
+#[async_trait]
+impl PublicationDelay for StandardPublicationDelay {
+    async fn wait(&self) {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+}
 
 pub fn get_min_score_for_article(
     hn_min_score: u32,
@@ -38,6 +88,30 @@ pub async fn run_one_cycle(
     db: &BotDatabase,
     scrapers: &[Box<dyn Scraper + Send + Sync>],
     publisher: &Publisher,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_one_cycle_with(
+        hn_min_score,
+        lobsters_min_score,
+        max_articles_per_run,
+        db,
+        scrapers,
+        publisher,
+        db,
+        &StandardPublicationDelay,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_one_cycle_with(
+    hn_min_score: u32,
+    lobsters_min_score: u32,
+    max_articles_per_run: usize,
+    db: &BotDatabase,
+    scrapers: &[Box<dyn Scraper + Send + Sync>],
+    publisher: &dyn ArticlePublisher,
+    acknowledger: &dyn ArticleAcknowledger,
+    publication_delay: &dyn PublicationDelay,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!(target: LOG_TARGET, "Starting scraping and publishing cycle");
 
@@ -121,32 +195,30 @@ pub async fn run_one_cycle(
             if !articles_to_publish.is_empty() {
                 info!(target: LOG_TARGET, count = articles_to_publish.len(), "Publishing articles to Rostra");
 
-                let results = publisher.publish_articles(&articles_to_publish).await;
-
-                // Mark successful publications as published
-                let published_at = Timestamp::from(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs(),
-                );
-                for (article_id, result) in results {
+                for article in &articles_to_publish {
+                    let result = publisher.publish_article(article).await;
                     match result {
                         Ok(()) => {
-                            if let Some(article) =
-                                articles_to_publish.iter().find(|a| a.id == article_id)
+                            // Publication and acknowledgement remain separate commits. A
+                            // cancellation between them can still replay the article.
+                            let published_at = Timestamp::from(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .expect("Time went backwards")
+                                    .as_secs(),
+                            );
+                            if let Err(e) = acknowledger
+                                .mark_article_published(article, published_at)
+                                .await
                             {
-                                if let Err(e) =
-                                    db.mark_article_published(article, published_at).await
-                                {
-                                    error!(target: LOG_TARGET, error = %e, article_id = %article_id, "Failed to mark article as published in database");
-                                }
+                                error!(target: LOG_TARGET, error = %e, article_id = %article.id, "Failed to mark article as published in database");
                             }
                         }
                         Err(e) => {
-                            error!(target: LOG_TARGET, error = %e, article_id = %article_id, "Failed to publish article");
+                            error!(target: LOG_TARGET, error = %e, article_id = %article.id, "Failed to publish article");
                         }
                     }
+                    publication_delay.wait().await;
                 }
             } else {
                 info!(target: LOG_TARGET, "No articles to publish");
@@ -164,3 +236,6 @@ pub async fn run_one_cycle(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

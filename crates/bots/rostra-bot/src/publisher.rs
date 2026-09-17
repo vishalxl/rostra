@@ -29,6 +29,9 @@ fn escape_link_text(text: &str) -> String {
 pub enum PublisherError {
     #[snafu(display("Failed to post to Rostra: {source}"))]
     Post { source: PostError },
+    #[cfg(test)]
+    #[snafu(display("Injected publication failure"))]
+    Test,
 }
 
 pub type PublisherResult<T> = std::result::Result<T, PublisherError>;
