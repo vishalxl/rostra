@@ -57,6 +57,8 @@ pub struct Opts {
     pub listen: BindAddr,
     pub origin: Option<url::Url>,
     assets_dir: PathBuf,
+    /// Whether assets should be served directly from the source tree.
+    serve_source_assets: bool,
     pub reuseport: bool,
     pub data_dir: PathBuf,
     pub default_profile: Option<RostraId>,
@@ -93,6 +95,7 @@ impl Opts {
             listen,
             origin: origin.map(|o| parse_origin(&o)),
             assets_dir: assets_dir.unwrap_or_else(default_rostra_assets_dir),
+            serve_source_assets: false,
             reuseport,
             data_dir,
             default_profile,
@@ -105,6 +108,12 @@ impl Opts {
 impl Opts {
     pub fn assets_dir(&self) -> &Path {
         &self.assets_dir
+    }
+
+    /// Serve assets directly from the source tree instead of loading them.
+    pub fn with_source_assets(mut self) -> Self {
+        self.serve_source_assets = true;
+        self
     }
 }
 
@@ -338,7 +347,7 @@ async fn build_state_and_session(
     Option<Arc<StaticAssets>>,
     SessionManagerLayer<RedbSessionStore>,
 )> {
-    let assets = if is_rostra_dev_mode_set() {
+    let assets = if opts.serve_source_assets || is_rostra_dev_mode_set() {
         None
     } else {
         Some(Arc::new(

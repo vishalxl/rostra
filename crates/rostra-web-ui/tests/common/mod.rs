@@ -98,14 +98,6 @@ impl TestServer {
         default_profile: Option<RostraId>,
         accounts: Vec<rostra_client_db::PayloadAccount>,
     ) -> Self {
-        // Use dev mode so assets are served from the source tree
-        // (avoids needing compiled/bundled assets).
-        // SAFETY: Integration tests run as separate binaries, so no other
-        // threads are reading env vars at this point during setup.
-        unsafe {
-            std::env::set_var("ROSTRA_DEV_MODE", "1");
-        }
-
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let data_dir = temp_dir.path().to_path_buf();
 
@@ -128,7 +120,8 @@ impl TestServer {
             default_profile,
             10,   // max_clients
             None, // welcome_redirect
-        );
+        )
+        .with_source_assets();
 
         let server = rostra_web_ui::start_ui(opts, clients.clone())
             .await
