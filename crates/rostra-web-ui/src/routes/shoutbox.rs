@@ -128,21 +128,16 @@ pub async fn get_shoutbox(
         div ."o-shoutbox"
             x-data=(ws_url)
         {
-            // Tab bar (same as other timelines)
-            div ."o-mainBarTimeline__tabs"
-                x-data=(badge_counts)
-                "@badges:updated.window"="onUpdate($event.detail)"
-            {
-                a ."o-mainBarTimeline__back"
-                    href="/"
-                    onclick="history.back(); return false;"
-                    aria-label="Back"
-                    title="Back"
-                {
-                    span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
-                }
-                (super::fragment::timeline_tab_links("shoutbox", super::timeline::PendingCounts { messages, ..Default::default() }, true))
-            }
+            (super::fragment::timeline_tab_bar(
+                None,
+                Some(&badge_counts),
+                true,
+                super::fragment::timeline_tab_links(
+                    "shoutbox",
+                    super::timeline::PendingCounts { messages, ..Default::default() },
+                    true,
+                ),
+            ))
 
             // Scrollable messages area (oldest at top, newest at bottom)
             div ."o-shoutbox__messages" id="shoutbox-messages" {

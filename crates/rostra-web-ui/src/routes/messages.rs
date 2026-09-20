@@ -126,16 +126,16 @@ fn page(conversation_panel: Markup, content: Markup, thread_open: bool, unread: 
             }
             main ."o-mainBar" {
               div ."o-mainBarTimeline m-directMessages" {
-                  div id="direct-message-tabs" ."o-mainBarTimeline__tabs" {
-                      a ."o-mainBarTimeline__back" href="/" aria-label="Back" title="Back" {
-                          span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
-                      }
-                      (fragment::timeline_tab_links(
+                    (fragment::timeline_tab_bar(
+                        Some("direct-message-tabs"),
+                        None,
+                        false,
+                        fragment::timeline_tab_links(
                           "messages",
                           super::timeline::PendingCounts { messages: unread, ..Default::default() },
                           false,
-                      ))
-                  }
+                        ),
+                    ))
                     div id="direct-message-thread"
                         ."m-directMessages__thread" ."-open"[thread_open] { (content) }
                 }

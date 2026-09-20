@@ -254,6 +254,21 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
                 document.select(&conversation_panel).next().is_some(),
                 "the conversation panel must remain a sibling of the shared navbar"
             );
+            let timeline_tabs = document
+                .select(
+                    &Selector::parse(
+                        "#direct-message-tabs.o-mainBarTimeline__tabs > .o-mainBarTimeline__back",
+                    )
+                    .unwrap(),
+                )
+                .next()
+                .expect("shared timeline tab bar");
+            assert_eq!(timeline_tabs.value().attr("href"), Some("/"));
+            assert_eq!(
+                timeline_tabs.value().attr("onclick"),
+                None,
+                "private pages must not add the public history-navigation handler"
+            );
             assert_eq!(
                 top_nav_signature(&document),
                 expected_top_nav,

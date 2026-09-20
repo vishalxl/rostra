@@ -8,6 +8,31 @@ use std::collections::BTreeSet;
 use maud::{Markup, html};
 use rostra_core::event::PersonaTag;
 
+/// Render the shared timeline navigation frame around page-specific tabs.
+pub(crate) fn timeline_tab_bar(
+    id: Option<&str>,
+    badge_counts: Option<&str>,
+    history_back: bool,
+    tabs: Markup,
+) -> Markup {
+    html! {
+        div id=[id] ."o-mainBarTimeline__tabs"
+            x-data=[badge_counts]
+            "@badges:updated.window"=[badge_counts.map(|_| "onUpdate($event.detail)")]
+        {
+            a ."o-mainBarTimeline__back"
+                href="/"
+                onclick=[history_back.then_some("history.back(); return false;")]
+                aria-label="Back"
+                title="Back"
+            {
+                span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+            }
+            (tabs)
+        }
+    }
+}
+
 /// Render the shared timeline destinations with static or live unread badges.
 ///
 /// Live callers supply the surrounding `badgeCounts` Alpine component. Private

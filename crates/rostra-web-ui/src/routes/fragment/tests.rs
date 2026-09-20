@@ -1,4 +1,6 @@
-use super::button;
+use maud::html;
+
+use super::{button, timeline_tab_bar};
 
 #[test]
 fn shared_button_preserves_established_sizing_contract() {
@@ -45,4 +47,32 @@ fn javascript_requirement_preserves_button_icon_hook() {
     assert!(button_tag.contains("u-requiresJs"));
     assert!(markup.contains("aria-label=\"Copy secret\""));
     assert!(markup.contains("class=\"m-example__copyButtonIcon u-buttonIcon\""));
+}
+
+#[test]
+fn timeline_tab_bar_shares_framing_without_forcing_history_navigation() {
+    let live = timeline_tab_bar(
+        None,
+        Some("badgeCounts({})"),
+        true,
+        html! { span { "Live" } },
+    )
+    .into_string();
+    assert!(live.contains("class=\"o-mainBarTimeline__tabs\""));
+    assert!(live.contains("x-data=\"badgeCounts({})\""));
+    assert!(live.contains("@badges:updated.window=\"onUpdate($event.detail)\""));
+    assert!(live.contains("onclick=\"history.back(); return false;\""));
+
+    let private = timeline_tab_bar(
+        Some("direct-message-tabs"),
+        None,
+        false,
+        html! { span { "Private" } },
+    )
+    .into_string();
+    assert!(private.contains("id=\"direct-message-tabs\""));
+    assert!(private.contains("class=\"o-mainBarTimeline__tabs\""));
+    assert!(!private.contains("x-data"));
+    assert!(!private.contains("@badges:updated.window"));
+    assert!(!private.contains("onclick"));
 }

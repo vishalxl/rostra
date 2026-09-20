@@ -251,9 +251,16 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     assert!(stylesheet.contains(
         ".o-topNav__item {\n    min-height: 2.75rem;\n    justify-content: center;\n  }"
     ));
+    assert!(stylesheet.contains(
+        ".o-mainBarTimeline__tabs>* {\n  display: inline-flex;\n  flex: 1 1 auto;\n  align-items: center;\n  justify-content: center;\n  gap: 0.25rem;\n  font-weight: 600;\n\n  min-height: 2.75rem;"
+    ));
     assert!(
         !stylesheet.contains(".m-directMessagesLayout > .m-directMessages__sidebar > .o-topNav"),
         "Messages must not carry separate top-navigation sizing"
+    );
+    assert!(
+        !stylesheet.contains(".m-directMessagesLayout .o-mainBarTimeline__tabs"),
+        "Messages must not carry separate timeline-navigation sizing"
     );
     assert!(stylesheet.contains(".o-mainBarTimeline__back {\n  flex: 0 0 auto;\n}"));
     assert!(stylesheet.contains(

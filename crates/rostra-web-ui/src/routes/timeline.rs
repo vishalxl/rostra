@@ -880,47 +880,38 @@ impl UiState {
             div ."o-mainBarTimeline"
                 x-data=(ws_url)
             {
-                div ."o-mainBarTimeline__tabs"
-                    x-data=(badge_counts)
-                    "@badges:updated.window"="onUpdate($event.detail)"
-                {
-                    a ."o-mainBarTimeline__back"
-                        href="/"
-                        onclick="history.back(); return false;"
-                        aria-label="Back"
-                        title="Back"
-                    {
-                        span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
-                    }
-
-                    @if let TimelineMode::Profile(profile_id) = mode {
-                        a ."o-mainBarTimeline__profile"
-                            ."-active"[mode.is_profile()]
-                            href=(mode.to_path())
-                            aria-current=[mode.is_profile().then_some("page")]
-                        {
-                            span ."o-mainBarTimeline__tabIcon -profile" aria-hidden="true" {}
-                            span ."o-mainBarTimeline__tabLabel" { "Profile" }
+                (super::fragment::timeline_tab_bar(
+                    None,
+                    Some(&badge_counts),
+                    true,
+                    html! {
+                        @if let TimelineMode::Profile(profile_id) = mode {
+                            a ."o-mainBarTimeline__profile"
+                                ."-active"[mode.is_profile()]
+                                href=(mode.to_path())
+                                aria-current=[mode.is_profile().then_some("page")]
+                            {
+                                span ."o-mainBarTimeline__tabIcon -profile" aria-hidden="true" {}
+                                span ."o-mainBarTimeline__tabLabel" { "Profile" }
+                            }
+                            a ."o-mainBarTimeline__feedLink"
+                                href=(profile_feed_url(profile_id))
+                                title="Atom feed"
+                                aria-label="Atom feed"
+                            {
+                                span ."o-mainBarTimeline__feedLinkIcon" {}
+                            }
+                        } @else {
+                            (super::fragment::timeline_tab_links(
+                                if mode.is_followees() { "followees" }
+                                else if mode.is_network() { "network" }
+                                else if mode.is_news() { "news" }
+                                else if mode.is_notifications() { "notifications" }
+                                else { "" }, pending_counts, true,
+                            ))
                         }
-                        a ."o-mainBarTimeline__feedLink"
-                            href=(profile_feed_url(profile_id))
-                            title="Atom feed"
-                            aria-label="Atom feed"
-                        {
-                            span ."o-mainBarTimeline__feedLinkIcon" {}
-                        }
-
-                    } @else {
-
-                        (super::fragment::timeline_tab_links(
-                            if mode.is_followees() { "followees" }
-                            else if mode.is_network() { "network" }
-                            else if mode.is_news() { "news" }
-                            else if mode.is_notifications() { "notifications" }
-                            else { "" }, pending_counts, true,
-                        ))
-                    }
-                }
+                    },
+                ))
                 // DEBUG: notification counting info (enable with ROSTRA_DEBUG_NOTIFICATIONS=1)
                 (debug_info.render())
                 div ."o-mainBarTimeline__switches" {
