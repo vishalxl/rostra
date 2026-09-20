@@ -67,3 +67,20 @@ fn absent_json_ld_remains_absent() {
         0
     );
 }
+
+#[test]
+fn viewport_requests_layout_resize_for_interactive_widgets() {
+    let rendered =
+        UiState::render_html_head("Title", None, None, None, false, PageResources::Standard)
+            .into_string();
+    let document = Html::parse_fragment(&rendered);
+    let viewport = document
+        .select(&Selector::parse("meta[name='viewport']").unwrap())
+        .next()
+        .expect("viewport metadata");
+
+    assert_eq!(
+        viewport.value().attr("content"),
+        Some("width=device-width, initial-scale=1.0, interactive-widget=resizes-content")
+    );
+}

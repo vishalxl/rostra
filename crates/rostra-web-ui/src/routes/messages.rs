@@ -658,7 +658,7 @@ async fn render_thread(
                         maxlength="16384" autocomplete="off" disabled[unavailable]
                         autofocus[query.focus_composer_on_open]
                         x-init=[query.focus_composer_on_open.then_some(
-                            "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus({ preventScroll: true }); })"
+                            "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus(); })"
                         )]
                         x-model="text"
                         "@input"="handleInput($event); draftToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')"

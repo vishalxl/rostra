@@ -597,7 +597,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     assert_eq!(
         textarea.value().attr("x-init"),
         Some(
-            "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus({ preventScroll: true }); })"
+            "$nextTick(() => { document.body.scrollTo(0, document.body.scrollHeight); $el.focus(); })"
         )
     );
     let composer = document
