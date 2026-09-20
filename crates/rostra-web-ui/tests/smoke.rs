@@ -252,7 +252,7 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
         ".o-topNav__item {\n    min-height: 2.75rem;\n    justify-content: center;\n  }"
     ));
     assert!(stylesheet.contains(
-        ".o-mainBarTimeline__tabs>* {\n  display: inline-flex;\n  flex: 1 1 auto;\n  align-items: center;\n  justify-content: center;\n  gap: 0.25rem;\n  font-weight: 600;\n\n  min-height: 2.75rem;"
+        ".o-mainBarTimeline__tabs>* {\n  display: inline-flex;\n  flex: 1 1 auto;\n  align-items: center;\n  justify-content: center;\n  gap: 0.25rem;\n  font-weight: 600;\n\n  min-height: 2.5rem;"
     ));
     assert!(
         !stylesheet.contains(".m-directMessagesLayout > .m-directMessages__sidebar > .o-topNav"),
