@@ -248,6 +248,13 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     assert!(stylesheet.contains("@media (max-width: 32rem)"));
     assert!(stylesheet.contains("@container (max-width: 48.75rem)"));
     assert!(stylesheet.contains("clip-path: inset(50%)"));
+    assert!(stylesheet.contains(
+        ".o-topNav__item {\n    min-height: 2.75rem;\n    justify-content: center;\n  }"
+    ));
+    assert!(
+        !stylesheet.contains(".m-directMessagesLayout > .m-directMessages__sidebar > .o-topNav"),
+        "Messages must not carry separate top-navigation sizing"
+    );
     assert!(stylesheet.contains(".o-mainBarTimeline__back {\n  flex: 0 0 auto;\n}"));
     assert!(stylesheet.contains(
         ".o-mainBarTimeline__pendingNotifications,\n.o-mainBarTimeline__newCount {\n  padding: 0 .1rem;\n}"

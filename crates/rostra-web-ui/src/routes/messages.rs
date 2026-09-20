@@ -18,7 +18,7 @@ use self::session::MessageSession;
 pub(super) use self::settings::{get_retirement, get_settings, post_settings};
 use super::url::{RostraPathId, profile_url, redirect_to_canonical};
 use super::{Maud, fragment, recovery, search};
-use crate::layout::{PageResources, render_html_body, render_top_nav};
+use crate::layout::{PageResources, render_app_navbar, render_html_body};
 use crate::util::extractors::AjaxRequest;
 use crate::{SharedState, UiState};
 
@@ -115,14 +115,15 @@ fn page(conversation_panel: Markup, content: Markup, thread_open: bool, unread: 
         "m-directMessagesLayout",
         PageResources::PrivateRich,
         html! {
-          nav ."o-navBar m-directMessages__sidebar" ."-threadOpen"[thread_open]
-              aria-label="Private messages"
-          {
-              (render_top_nav())
-              div id="direct-message-conversations" ."m-directMessages__conversationPanel" {
-                  (conversation_panel)
-              }
-          }
+            div ."m-directMessages__sidebar" ."-threadOpen"[thread_open] {
+                (render_app_navbar(Some("Primary"), html! {}))
+                nav id="direct-message-conversations"
+                    ."m-directMessages__conversationPanel"
+                    aria-label="Conversations"
+                {
+                    (conversation_panel)
+                }
+            }
             main ."o-mainBar" {
               div ."o-mainBarTimeline m-directMessages" {
                   div id="direct-message-tabs" ."o-mainBarTimeline__tabs" {

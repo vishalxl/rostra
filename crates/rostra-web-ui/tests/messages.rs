@@ -167,6 +167,7 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
         Html::parse_document(&writer.get("/settings/profile").await.text().await.unwrap());
     let favicon = Selector::parse("head link[rel=icon]").unwrap();
     let runtime = Selector::parse("head script[src]").unwrap();
+    let top_nav_container = Selector::parse(".o-topNav").unwrap();
     let top_nav = Selector::parse(".o-topNav a").unwrap();
     let tabs = Selector::parse(".o-mainBarTimeline__tabs a").unwrap();
     let settings_nav = Selector::parse(".o-settingsNav a").unwrap();
@@ -176,6 +177,24 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
             .map(|link| link.value().attr("href").unwrap().to_owned())
             .collect::<Vec<_>>()
     };
+    let top_nav_signature = |document: &Html| {
+        document
+            .select(&top_nav_container)
+            .next()
+            .expect("top navigation")
+            .select(&Selector::parse("*").unwrap())
+            .map(|element| {
+                (
+                    element.value().name().to_owned(),
+                    element.value().attr("class").map(str::to_owned),
+                    element.value().attr("href").map(str::to_owned),
+                    element.value().attr("aria-hidden").map(str::to_owned),
+                    element.text().collect::<String>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected_top_nav = top_nav_signature(&following);
     let expected_runtime = following
         .select(&runtime)
         .filter_map(|script| script.value().attr("src"))
@@ -221,6 +240,25 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
                 links(&settings, &settings_nav)
             );
         } else {
+            let message_sidebar =
+                Selector::parse(".m-directMessages__sidebar > nav.o-navBar > .o-topNav").unwrap();
+            let conversation_panel = Selector::parse(
+                ".m-directMessages__sidebar > nav.m-directMessages__conversationPanel",
+            )
+            .unwrap();
+            assert!(
+                document.select(&message_sidebar).next().is_some(),
+                "Messages must preserve the shared navbar box inside its ordering wrapper"
+            );
+            assert!(
+                document.select(&conversation_panel).next().is_some(),
+                "the conversation panel must remain a sibling of the shared navbar"
+            );
+            assert_eq!(
+                top_nav_signature(&document),
+                expected_top_nav,
+                "Messages must use the same rendered top navigation as ordinary pages"
+            );
             assert_eq!(links(&document, &top_nav), links(&following, &top_nav));
             assert_eq!(links(&document, &tabs), links(&following, &tabs));
         }

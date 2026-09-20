@@ -207,11 +207,6 @@ impl UiState {
             }
         }
     }
-
-    /// Renders the top navigation bar with Home, Support, and Settings links
-    pub fn render_top_nav(&self) -> Markup {
-        render_top_nav()
-    }
 }
 
 /// Render the common application body, including AJAX error notifications.
@@ -241,8 +236,18 @@ pub(crate) fn render_html_body(
     }
 }
 
-/// Render the same top navigation for stateful and private-response pages.
-pub(crate) fn render_top_nav() -> Markup {
+/// Render the shared application navbar around page-specific sidebar content.
+pub(crate) fn render_app_navbar(aria_label: Option<&str>, content: Markup) -> Markup {
+    html! {
+        nav ."o-navBar" aria-label=[aria_label] {
+            (render_top_nav())
+            (content)
+        }
+    }
+}
+
+/// Render the common Home, Support, and Settings controls.
+fn render_top_nav() -> Markup {
     html! {
         div ."o-topNav" {
             a ."o-topNav__item" href="/" {

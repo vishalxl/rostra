@@ -377,15 +377,14 @@ impl UiState {
         session: &UserSession,
     ) -> RequestResult<Markup> {
         let ro_mode = self.ro_mode(session.session_token());
-        Ok(html! {
-                nav ."o-navBar" {
-                    (self.render_top_nav())
-
-                    div ."o-navBar__userAccount" {
-                        (self.render_profile_summary(profile_id, session, ro_mode).await?)
-                    }
+        Ok(crate::layout::render_app_navbar(
+            None,
+            html! {
+                div ."o-navBar__userAccount" {
+                    (self.render_profile_summary(profile_id, session, ro_mode).await?)
                 }
-        })
+            },
+        ))
     }
 
     pub async fn render_profile_summary(

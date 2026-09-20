@@ -3664,6 +3664,18 @@ body.-keyboard-nav * {
   width: min(22rem, 100%);
 }
 
+.m-directMessages__sidebar > .o-navBar {
+  position: static;
+}
+
+@media (min-width: 768px) {
+  .m-directMessages__sidebar {
+    position: sticky;
+    top: 0;
+    align-self: start;
+  }
+}
+
 .m-directMessages__conversationPanel {
   min-width: 0;
 }
@@ -3876,7 +3888,8 @@ body.-keyboard-nav * {
 
 @media (max-width: 767px) {
   .o-topNav__item {
-    padding-block: 0.5rem;
+    min-height: 2.75rem;
+    justify-content: center;
   }
 
   .m-directMessagesLayout {
@@ -3887,9 +3900,8 @@ body.-keyboard-nav * {
     display: contents;
   }
 
-  .m-directMessagesLayout > .m-directMessages__sidebar > .o-topNav {
+  .m-directMessagesLayout > .m-directMessages__sidebar > .o-navBar {
     order: 1;
-    padding: 5pt;
   }
 
   .m-directMessagesLayout > .o-mainBar {

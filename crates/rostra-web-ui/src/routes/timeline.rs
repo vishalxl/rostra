@@ -382,10 +382,9 @@ impl UiState {
         let user_id = client_ref.rostra_id();
 
         let ro_mode = self.ro_mode(session.session_token());
-        Ok(html! {
-            nav ."o-navBar" {
-                (self.render_top_nav())
-
+        Ok(crate::layout::render_app_navbar(
+            None,
+            html! {
                 div ."o-navBar__profileSummary" {
                     (self.render_self_profile_summary(session).await?)
                 }
@@ -395,8 +394,8 @@ impl UiState {
                 } @else if !hide_new_post_form {
                     (self.new_post_form(None, ro_mode, Some(user_id)))
                 }
-            }
-        })
+            },
+        ))
     }
 
     async fn handle_get_updates(
