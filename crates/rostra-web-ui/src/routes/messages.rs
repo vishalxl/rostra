@@ -194,7 +194,13 @@ fn error_page(status: StatusCode, message: &str) -> Response {
 
 struct ConversationPanel {
     rows: Vec<(RostraId, String, usize)>,
+    recipient_suggestions: Vec<RecipientSuggestion>,
     unread: usize,
+}
+
+struct RecipientSuggestion {
+    id: RostraId,
+    label: String,
 }
 
 const UNNAMED_PROFILE: &str = "Unnamed profile";
@@ -232,7 +238,31 @@ async fn conversation_panel_data(
         .to_owned();
         rows.push((peer, display_name, pending));
     }
-    Ok(ConversationPanel { rows, unread })
+    let mut seen = std::collections::HashSet::new();
+    let suggestion_ids = rows
+        .iter()
+        .map(|(peer, _, _)| *peer)
+        .chain(db.get_known_identities_bounded(64).await)
+        .filter(|id| *id != session.user.id() && seen.insert(*id))
+        .take(64)
+        .collect::<Vec<_>>();
+    let mut recipient_suggestions = Vec::with_capacity(suggestion_ids.len());
+    for id in suggestion_ids {
+        let label = db
+            .get_social_profile(id)
+            .await
+            .map(|profile| profile.display_name)
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| id.to_short().to_string());
+        recipient_suggestions.push(RecipientSuggestion { id, label });
+    }
+    recipient_suggestions.sort_by_cached_key(|suggestion| suggestion.label.to_lowercase());
+
+    Ok(ConversationPanel {
+        rows,
+        recipient_suggestions,
+        unread,
+    })
 }
 
 fn render_conversation_panel(
@@ -241,6 +271,20 @@ fn render_conversation_panel(
     selected: Option<RostraId>,
 ) -> Markup {
     html! {
+        form ."m-directMessages__start" method="get" action="/messages/open" {
+            label for="message-peer" { "Start a conversation" }
+            div ."m-directMessages__startRow" {
+                input id="message-peer" name="peer" type="text" required
+                    list="message-peer-suggestions" autocomplete="off"
+                    placeholder="Recipient's name or Rostra ID";
+                (fragment::button("m-directMessages__openButton", "Open").call())
+            }
+            datalist id="message-peer-suggestions" {
+                @for suggestion in &panel.recipient_suggestions {
+                    option value=(suggestion.id.to_short()) label=(&suggestion.label) {}
+                }
+            }
+        }
         @if panel.rows.is_empty() {
             p ."m-directMessages__empty" { "No conversations on this installation yet." }
         }

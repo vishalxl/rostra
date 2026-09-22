@@ -113,7 +113,7 @@ async fn replicate_event(
         .unwrap();
 }
 
-fn assert_conversation_panel_has_no_start_form(document: &Html) {
+fn assert_conversation_panel_keeps_start_form(document: &Html) {
     let panel = document
         .select(&Selector::parse(".m-directMessages__conversationPanel").unwrap())
         .next()
@@ -122,8 +122,8 @@ fn assert_conversation_panel_has_no_start_form(document: &Html) {
         panel
             .select(&Selector::parse("form[action='/messages/open']").unwrap())
             .next()
-            .is_none(),
-        "conversation panel should only list existing conversations"
+            .is_some(),
+        "conversation panel should retain the ordinary start-conversation form"
     );
     assert!(
         panel
@@ -558,7 +558,26 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     let path = format!("/messages/{}", bob_id.to_short());
     let page = alice.get("/messages").await.text().await.unwrap();
     let document = Html::parse_document(&page);
-    assert_conversation_panel_has_no_start_form(&document);
+    assert_conversation_panel_keeps_start_form(&document);
+    let open_form = document
+        .select(&Selector::parse("form[action='/messages/open']").unwrap())
+        .next()
+        .expect("start-conversation form");
+    assert_eq!(open_form.value().attr("method"), Some("get"));
+    let peer_input = open_form
+        .select(&Selector::parse("input[name='peer']").unwrap())
+        .next()
+        .expect("recipient input");
+    assert_eq!(
+        peer_input.value().attr("list"),
+        Some("message-peer-suggestions")
+    );
+    let bob_short = bob_id.to_short().to_string();
+    let suggestion = open_form
+        .select(&Selector::parse("datalist option").unwrap())
+        .find(|option| option.value().attr("value") == Some(bob_short.as_str()))
+        .expect("locally known recipient suggestion");
+    assert_eq!(suggestion.value().attr("label"), Some("Bob Example"));
     let response = alice.get(&format!("/messages/open?peer={bob_id}")).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()[header::LOCATION], path);
@@ -590,7 +609,7 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
     assert_eq!(response.status(), StatusCode::OK);
     let page = response.text().await.unwrap();
     let document = Html::parse_document(&page);
-    assert_conversation_panel_has_no_start_form(&document);
+    assert_conversation_panel_keeps_start_form(&document);
     let header = document
         .select(&Selector::parse(".m-directMessages__threadHeader").unwrap())
         .next()
