@@ -568,6 +568,26 @@ async fn plain_http_send_receive_retirement_and_reenrollment() {
         .select(&Selector::parse("input[name='peer']").unwrap())
         .next()
         .expect("recipient input");
+    let peer_label = open_form
+        .select(&Selector::parse("label[for='message-peer']").unwrap())
+        .next()
+        .expect("recipient input label");
+    assert_eq!(
+        peer_label.value().attr("class"),
+        Some("m-directMessages__startLabel")
+    );
+    assert_eq!(
+        peer_label.text().collect::<String>(),
+        "Start a conversation"
+    );
+    let stylesheet = include_str!("../assets/style.css");
+    assert!(stylesheet.contains(
+        ".m-directMessages__startLabel {\n  position: absolute;\n  width: 1px;\n  height: 1px;"
+    ));
+    assert!(
+        stylesheet
+            .contains(".m-directMessages__startRow input {\n  flex: 1 1 auto;\n  min-width: 0;")
+    );
     assert_eq!(
         peer_input.value().attr("list"),
         Some("message-peer-suggestions")

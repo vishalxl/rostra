@@ -272,7 +272,7 @@ fn render_conversation_panel(
 ) -> Markup {
     html! {
         form ."m-directMessages__start" method="get" action="/messages/open" {
-            label for="message-peer" { "Start a conversation" }
+            label ."m-directMessages__startLabel" for="message-peer" { "Start a conversation" }
             div ."m-directMessages__startRow" {
                 input id="message-peer" name="peer" type="text" required
                     list="message-peer-suggestions" autocomplete="off"
