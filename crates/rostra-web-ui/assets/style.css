@@ -4311,3 +4311,78 @@ dialog.o-shortcutsDialog {
     transition: none;
   }
 }
+
+@media (min-width: 768px) {
+  /* make room for the rail, only on pages that have the tab bar */
+  body:has(.o-mainBarTimeline__tabs) { padding-left: 3.5rem; }
+
+  /* container-type creates a containing block that would trap
+     position:fixed, so drop it (it only drove the label hiding) */
+  .o-mainBarTimeline { container-type: normal; }
+
+  .o-mainBarTimeline__tabs {
+    position: fixed;
+    top: 0; left: 0;
+    width: 3.5rem;
+    height: 100dvh;
+    flex-direction: column;
+    justify-content: flex-start;
+    overflow: hidden;
+    border-top: 0;
+    border-right: 1px solid var(--color-timeline-item-border);
+    transition: width 150ms ease;
+  }
+  .o-mainBarTimeline__tabs:hover,
+  .o-mainBarTimeline__tabs:focus-within { width: 12rem; }
+
+  .o-mainBarTimeline__tabs > * {
+    flex: 0 0 auto;
+    justify-content: flex-start;
+    padding: 0.75rem 1rem;
+  }
+  .o-mainBarTimeline__tabs > *.-active {
+    box-shadow: inset 3px 0 0 var(--color-link);
+  }
+
+  /* labels hidden until the rail expands */
+  .o-mainBarTimeline__tabLabel {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  .o-mainBarTimeline__tabs:hover .o-mainBarTimeline__tabLabel,
+  .o-mainBarTimeline__tabs:focus-within .o-mainBarTimeline__tabLabel {
+    position: static; width: auto; height: auto;
+    overflow: visible; clip-path: none;
+  }
+}
+
+/* On wider screens, keep the rail expanded with labels always visible */
+@media (min-width: 1100px) {
+  body:has(.o-mainBarTimeline__tabs) { padding-left: 11rem; }
+
+  .o-mainBarTimeline__tabs,
+  .o-mainBarTimeline__tabs:hover,
+  .o-mainBarTimeline__tabs:focus-within { width: 11rem; }
+
+  .o-mainBarTimeline__tabLabel {
+    position: static; width: auto; height: auto;
+    overflow: visible; clip-path: none;
+  }
+}
+
+@media (min-width: 768px) {
+  .o-mainBarTimeline__tabs {
+    align-items: stretch;           /* fill the rail width instead of centering */
+  }
+  .o-mainBarTimeline__tabs > * {
+    justify-content: flex-start;
+    text-align: left;
+    padding-left: 1.25rem;          /* centers the icon in the narrow 3.5rem rail */
+  }
+}
+
+@media (min-width: 1100px) {
+  .o-mainBarTimeline__tabs > * {
+    padding-left: 1rem;             /* tighter left edge in the wide rail */
+  }
+}
