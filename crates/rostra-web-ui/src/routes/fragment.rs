@@ -8,65 +8,108 @@ use std::collections::BTreeSet;
 use maud::{Markup, html};
 use rostra_core::event::PersonaTag;
 
-/// Render the shared timeline navigation frame around page-specific tabs.
-pub(crate) fn timeline_tab_bar(
-    id: Option<&str>,
-    badge_counts: Option<&str>,
-    history_back: bool,
-    tabs: Markup,
+use super::timeline::PendingCounts;
+
+const DESTINATIONS: [(&str, &str, &str); 6] = [
+    ("followees", "/following", "Following"),
+    ("network", "/network", "Network"),
+    ("news", "/news", "News"),
+    ("notifications", "/notifications", "Notifications"),
+    ("shoutbox", "/shoutbox", "Shoutbox"),
+    ("messages", "/messages", "Messages"),
+];
+
+fn destination_count(key: &str, counts: PendingCounts) -> usize {
+    match key {
+        "followees" => counts.followees,
+        "network" => counts.network,
+        "notifications" => counts.notifications,
+        "shoutbox" => counts.shoutbox,
+        "messages" => counts.messages,
+        _ => 0,
+    }
+}
+
+fn destination_has_badge(key: &str) -> bool {
+    matches!(key, "notifications" | "shoutbox" | "messages")
+}
+
+fn active_label(active: &str) -> &'static str {
+    DESTINATIONS
+        .iter()
+        .find_map(|(key, _, label)| (*key == active).then_some(*label))
+        .unwrap_or("Menu")
+}
+
+/// Render the shared timeline destinations in the left navigation column.
+///
+/// A desktop list is always visible above the mobile breakpoint. Narrow
+/// screens get a no-JavaScript disclosure instead, so the links never push the
+/// reading column below the fold by default.
+///
+/// Live callers supply counts for the surrounding `badgeCounts` Alpine
+/// component. Private pages can use ordinary server counts without opening an
+/// updates connection.
+pub(crate) fn timeline_destination_group(
+    active: &str,
+    counts: PendingCounts,
+    live: bool,
+    feed_url: Option<&str>,
 ) -> Markup {
+    let badge_data = live.then(|| {
+        format!(
+            "badgeCounts({{ followees: {}, network: {}, notifications: {}, shoutbox: {}, messages: {} }})",
+            counts.followees,
+            counts.network,
+            counts.notifications,
+            counts.shoutbox,
+            counts.messages
+        )
+    });
     html! {
-        div id=[id] ."o-mainBarTimeline__tabs"
-            x-data=[badge_counts]
-            "@badges:updated.window"=[badge_counts.map(|_| "onUpdate($event.detail)")]
+        div ."o-appNavGroup"
+            x-data=[badge_data.as_deref()]
+            "@badges:updated.window"=[live.then_some("onUpdate($event.detail)")]
         {
-            a ."o-mainBarTimeline__back"
-                href="/"
-                onclick=[history_back.then_some("history.back(); return false;")]
-                aria-label="Back"
-                title="Back"
-            {
-                span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
+            nav ."o-appNav" ."-desktop" aria-label="Timeline destinations" {
+                h2 ."o-appNav__heading" { "Browse" }
+                (timeline_destination_rows(active, counts, live, feed_url))
             }
-            (tabs)
+            details ."o-appNavDisclosure" {
+                summary ."o-appNavDisclosure__summary" {
+                    span ."o-appNavDisclosure__chevron" aria-hidden="true" {}
+                    span ."o-appNavDisclosure__label" { "Menu" }
+                    span ."o-appNavDisclosure__current" { (active_label(active)) }
+                }
+                nav ."o-appNav" ."-mobile" aria-label="Timeline destinations" {
+                    (timeline_destination_rows(active, counts, live, feed_url))
+                }
+            }
         }
     }
 }
 
-/// Render the shared timeline destinations with static or live unread badges.
-///
-/// Live callers supply the surrounding `badgeCounts` Alpine component. Private
-/// pages can use ordinary server counts without opening an updates connection.
-pub(crate) fn timeline_tab_links(
+fn timeline_destination_rows(
     active: &str,
-    counts: super::timeline::PendingCounts,
+    counts: PendingCounts,
     live: bool,
+    feed_url: Option<&str>,
 ) -> Markup {
     html! {
-        @for (key, path, label, count) in [
-            ("followees", "/following", "Following", counts.followees),
-            ("network", "/network", "Network", counts.network),
-            ("news", "/news", "News", 0),
-            ("notifications", "/notifications", "Notifications", counts.notifications),
-            ("shoutbox", "/shoutbox", "Shoutbox", counts.shoutbox),
-            ("messages", "/messages", "Messages", counts.messages),
-        ] {
-            a .(format!("o-mainBarTimeline__{key}"))
+        @for (key, path, label) in DESTINATIONS {
+            @let count = destination_count(key, counts);
+            @let has_badge = destination_has_badge(key);
+            a ."o-appNav__item"
                 ."-active"[active == key]
-                ."-pending"[count > 0 && matches!(key, "notifications" | "shoutbox" | "messages")]
+                ."-pending"[count > 0 && has_badge]
                 href=(path)
                 aria-current=[(active == key).then_some("page")]
-                ":class"=[(live && matches!(key, "notifications" | "shoutbox" | "messages"))
-                    .then(|| format!("{{ '-pending': {key} > 0 }}"))]
+                ":class"=[(live && has_badge).then(|| format!("{{ '-pending': {key} > 0 }}"))]
             {
-                span ."o-mainBarTimeline__tabIcon" .(format!("-{key}")) aria-hidden="true" {}
-                span ."o-mainBarTimeline__tabLabel" { (label) }
+                span ."o-appNav__icon" .(format!("-{key}")) aria-hidden="true" {}
+                span ."o-appNav__label" { (label) }
                 @if key != "news" {
-                    span .(if key == "notifications" {
-                        "o-mainBarTimeline__pendingNotifications"
-                    } else {
-                        "o-mainBarTimeline__newCount"
-                    })
+                    span ."o-appNav__count"
                         x-text=[live.then(|| format!("formatCount({key})"))]
                     {
                         @if count > 0 {
@@ -75,6 +118,12 @@ pub(crate) fn timeline_tab_links(
                         }
                     }
                 }
+            }
+        }
+        @if let Some(url) = feed_url {
+            a ."o-appNav__item" ."-feed" href=(url) title="Atom feed" aria-label="Atom feed" {
+                span ."o-appNav__icon" ."-feed" aria-hidden="true" {}
+                span ."o-appNav__label" { "Feed" }
             }
         }
     }

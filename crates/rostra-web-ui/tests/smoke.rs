@@ -57,28 +57,18 @@ async fn profile_tab_uses_viewed_profile_summary_name_and_fallback() {
         let response = driver.get(&format!("/profile/{}", id.to_short())).await;
         assert_eq!(response.status(), 200);
         let document = Html::parse_document(&response.text().await.unwrap());
-        let tab = document
-            .select(
-                &Selector::parse(".o-mainBarTimeline__profile .o-mainBarTimeline__tabLabel")
-                    .unwrap(),
-            )
-            .next()
-            .unwrap();
         let summary = document
             .select(&Selector::parse("#profile-summary .m-profileSummary__displayName").unwrap())
             .next()
             .unwrap();
-        assert_eq!(tab.text().collect::<String>(), expected);
-        assert_eq!(
-            tab.text().collect::<String>(),
-            summary.text().collect::<String>()
-        );
-        assert_eq!(tab.child_elements().count(), 0);
-        assert_eq!(
-            document
-                .select(&Selector::parse(".o-mainBarTimeline__feedLink").unwrap())
-                .count(),
-            1
+        assert_eq!(summary.text().collect::<String>(), expected);
+        let feed = document
+            .select(&Selector::parse(".o-appNav.-desktop .o-appNav__item.-feed").unwrap())
+            .next()
+            .expect("profile pages should expose the Atom feed in the destination list");
+        assert!(
+            feed.value().attr("href").unwrap().ends_with("/atom.xml"),
+            "the feed row should link to the profile Atom feed"
         );
     }
 }
@@ -190,7 +180,7 @@ async fn profile_summary_actions_are_only_rendered_on_profile_pages() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
+async fn navigation_destinations_have_icons_and_accessible_labels_without_javascript() {
     let server = TestServer::start().await;
     let driver = server.driver();
     let (id, _) = driver.login_new_identity().await;
@@ -206,12 +196,12 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
             "Support",
         ),
         (".o-topNav__item[href='/settings/profile']", "Settings"),
-        (".o-mainBarTimeline__followees", "Following"),
-        (".o-mainBarTimeline__network", "Network"),
-        (".o-mainBarTimeline__news", "News"),
-        (".o-mainBarTimeline__notifications", "Notifications"),
-        (".o-mainBarTimeline__shoutbox", "Shoutbox"),
-        (".o-mainBarTimeline__messages", "Messages"),
+        (".o-appNav__item[href='/following']", "Following"),
+        (".o-appNav__item[href='/network']", "Network"),
+        (".o-appNav__item[href='/news']", "News"),
+        (".o-appNav__item[href='/notifications']", "Notifications"),
+        (".o-appNav__item[href='/shoutbox']", "Shoutbox"),
+        (".o-appNav__item[href='/messages']", "Messages"),
     ] {
         let item = document
             .select(&Selector::parse(selector).unwrap())
@@ -235,12 +225,12 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     }
 
     let notifications = document
-        .select(&Selector::parse(".o-mainBarTimeline__notifications").unwrap())
+        .select(&Selector::parse(".o-appNav__item[href='/notifications']").unwrap())
         .next()
         .unwrap();
     assert!(
         notifications
-            .select(&Selector::parse(".o-mainBarTimeline__pendingNotifications[x-text]").unwrap())
+            .select(&Selector::parse(".o-appNav__count[x-text]").unwrap())
             .next()
             .is_some(),
         "the dynamic notification count should remain inside the link's accessible name"
@@ -255,24 +245,19 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
         let document = Html::parse_document(&response.text().await.unwrap());
         assert!(
             document
-                .select(&Selector::parse(".o-mainBarTimeline__tabIcon").unwrap())
+                .select(&Selector::parse(".o-appNav__icon").unwrap())
                 .next()
                 .is_some(),
-            "{path} should render tab icons"
+            "{path} should render destination icons"
         );
         if path == "/shoutbox" {
             let messages = document
-                .select(&Selector::parse(".o-mainBarTimeline__messages[href='/messages']").unwrap())
+                .select(&Selector::parse(".o-appNav__item[href='/messages']").unwrap())
                 .next()
                 .expect("shoutbox should link to private messages");
             assert!(
                 messages
-                    .select(
-                        &Selector::parse(
-                            ".o-mainBarTimeline__tabIcon.-messages[aria-hidden='true']",
-                        )
-                        .unwrap(),
-                    )
+                    .select(&Selector::parse(".o-appNav__icon.-messages[aria-hidden='true']").unwrap())
                     .next()
                     .is_some()
             );
@@ -311,11 +296,11 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
         ("/messages", "Messages"),
     ] {
         let selector =
-            Selector::parse(&format!(".o-mainBarTimeline__tabs a[href='{href}']")).unwrap();
+            Selector::parse(&format!(".o-appNav__item[href='{href}']")).unwrap();
         let item = document
             .select(&selector)
             .next()
-            .unwrap_or_else(|| panic!("missing private-message top-level tab {href}"));
+            .unwrap_or_else(|| panic!("missing private-message destination {href}"));
         assert!(item.text().any(|text| text.trim() == label));
     }
     assert!(
@@ -328,7 +313,7 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
         document
             .select(
                 &Selector::parse(
-                    ".o-mainBarTimeline__messages.-active[href='/messages'][aria-current='page']",
+                    ".o-appNav__item.-active[href='/messages'][aria-current='page']",
                 )
                 .unwrap(),
             )
@@ -348,20 +333,6 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
             .is_some()
     );
 
-    let generic_tab_bar =
-        Html::parse_fragment(&rostra_web_ui::UiState::render_page_tab_bar("Post").into_string());
-    let back = generic_tab_bar
-        .select(&Selector::parse(".o-mainBarTimeline__back").unwrap())
-        .next()
-        .unwrap();
-    assert_eq!(back.value().attr("aria-label"), Some("Back"));
-    assert_eq!(back.value().attr("title"), Some("Back"));
-    assert!(
-        back.select(&Selector::parse(".o-mainBarTimeline__tabIcon.-back").unwrap())
-            .next()
-            .is_some()
-    );
-
     let stylesheet = include_str!("../assets/style.css");
     for (tab, icon) in [
         ("followees", "star"),
@@ -371,7 +342,7 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     ] {
         assert!(
             stylesheet.contains(&format!(
-                ".o-mainBarTimeline__tabIcon.-{tab} {{\n  background: url('/assets/icons/{icon}.svg')"
+                ".o-appNav__icon.-{tab} {{\n  background: url('/assets/icons/{icon}.svg')"
             )),
             "{tab} should use the {icon} icon"
         );
@@ -384,14 +355,14 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     }
     assert_ne!(
         stylesheet
-            .split_once(".o-mainBarTimeline__tabIcon.-shoutbox {")
+            .split_once(".o-appNav__icon.-shoutbox {")
             .unwrap()
             .1
             .split_once('}')
             .unwrap()
             .0,
         stylesheet
-            .split_once(".o-mainBarTimeline__tabIcon.-messages {")
+            .split_once(".o-appNav__icon.-messages {")
             .unwrap()
             .1
             .split_once('}')
@@ -401,28 +372,18 @@ async fn navigation_tabs_have_icons_and_accessible_labels_without_javascript() {
     );
     assert!(stylesheet.contains("@container (max-width: 15.625rem)"));
     assert!(stylesheet.contains("@media (max-width: 32rem)"));
-    assert!(stylesheet.contains("@container (max-width: 48.75rem)"));
     assert!(stylesheet.contains("clip-path: inset(50%)"));
     assert!(stylesheet.contains(
         ".o-topNav__item {\n    min-height: 2.75rem;\n    justify-content: center;\n  }"
     ));
+    assert!(stylesheet.contains(".o-appNav__count:empty {"));
     assert!(stylesheet.contains(
-        ".o-mainBarTimeline__tabs>* {\n  display: inline-flex;\n  flex: 1 1 auto;\n  align-items: center;\n  justify-content: center;\n  gap: 0.25rem;\n  font-weight: 600;\n\n  min-height: 2.5rem;"
+        ".o-appNav.-desktop {\n    display: none;\n  }"
     ));
     assert!(
-        !stylesheet.contains(".m-directMessagesLayout > .m-directMessages__sidebar > .o-topNav"),
-        "Messages must not carry separate top-navigation sizing"
+        !stylesheet.contains(".o-mainBarTimeline__tabs"),
+        "the top destination strip must not remain"
     );
-    assert!(
-        !stylesheet.contains(".m-directMessagesLayout .o-mainBarTimeline__tabs"),
-        "Messages must not carry separate timeline-navigation sizing"
-    );
-    assert!(stylesheet.contains(
-        ".o-mainBarTimeline__tabs>.o-mainBarTimeline__back,\n.o-mainBarTimeline__tabs>.o-mainBarTimeline__feedLink {\n  flex: 0 0 auto;\n  padding-inline: 1rem;\n}"
-    ));
-    assert!(stylesheet.contains(
-        ".o-mainBarTimeline__pendingNotifications,\n.o-mainBarTimeline__newCount {\n  padding: 0 .1rem;\n}"
-    ));
     assert!(stylesheet.contains(
         ".o-shoutbox {\n  display: flex;\n  flex-direction: column;\n  container-type: inline-size;"
     ));

@@ -116,7 +116,14 @@ fn page(conversation_panel: Markup, content: Markup, thread_open: bool, unread: 
         PageResources::PrivateRich,
         html! {
             div ."m-directMessages__sidebar" ."-threadOpen"[thread_open] {
-                (render_app_navbar(Some("Primary"), html! {}))
+                (render_app_navbar(Some("Primary"), html! {
+                    (fragment::timeline_destination_group(
+                        "messages",
+                        super::timeline::PendingCounts { messages: unread, ..Default::default() },
+                        false,
+                        None,
+                    ))
+                }))
                 nav id="direct-message-conversations"
                     ."m-directMessages__conversationPanel"
                     aria-label="Conversations"
@@ -128,16 +135,6 @@ fn page(conversation_panel: Markup, content: Markup, thread_open: bool, unread: 
               div ."o-mainBarTimeline m-directMessages"
                   x-data=[thread_open.then_some("websocket('/updates')")]
               {
-                    (fragment::timeline_tab_bar(
-                        Some("direct-message-tabs"),
-                        None,
-                        false,
-                        fragment::timeline_tab_links(
-                          "messages",
-                          super::timeline::PendingCounts { messages: unread, ..Default::default() },
-                          false,
-                        ),
-                    ))
                     div id="direct-message-thread"
                         ."m-directMessages__thread" ."-open"[thread_open] { (content) }
                 }
@@ -170,9 +167,7 @@ fn settings_page(title: &str, content: Markup) -> Response {
             (super::settings::settings_navbar("messages"))
             main ."o-mainBar" {
                 div ."o-mainBarTimeline m-directMessages" {
-                    div ."o-mainBarTimeline__tabs" {
-                        span ."o-mainBarTimeline__settingsTitle" { (title) }
-                    }
+                    h1 ."o-mainBarTimeline__pageTitle" { (title) }
                     div ."o-settingsContent" { (content) }
                 }
             }
@@ -746,7 +741,7 @@ async fn render_thread(
             form method="post" action=(thread_url(peer))
                 x-data=(draft_state)
                 x-init=[clear_draft]
-                x-target="direct-message-thread direct-message-conversations direct-message-tabs"
+                x-target="direct-message-thread direct-message-conversations"
                 "@ajax:before"=(loading.before)
                 "@ajax:after"=(loading.after)
                 "x-on:keyup.enter.ctrl"="if (!$event.repeat && !$event.isComposing && $event.keyCode !== 229) { $el.requestSubmit(); }"

@@ -43,6 +43,15 @@ pub struct PendingCounts {
     pub messages: usize,
 }
 
+/// Which left-navigation column a timeline page should render.
+pub(crate) enum TimelineNavbar {
+    SelfTimeline {
+        hide_new_post_form: bool,
+        show_news_post_form: bool,
+    },
+    Profile(RostraId),
+}
+
 fn news_vote_controls_html_id(post_id: ExternalEventId) -> String {
     format!(
         "news-vote-{}-{}",
@@ -71,15 +80,13 @@ pub async fn get_followees(
         form.event_id
             .map(|event_id| TimelineCursor::EventTime(EventPaginationCursor { ts, event_id }))
     });
-    let navbar = state
-        .timeline_common_navbar()
-        .session(&session)
-        .call()
-        .await?;
     Ok(Maud(
         state
             .render_timeline_page(
-                navbar,
+                TimelineNavbar::SelfTimeline {
+                    hide_new_post_form: false,
+                    show_news_post_form: false,
+                },
                 pagination,
                 &session,
                 &mut cookies,
@@ -103,15 +110,13 @@ pub async fn get_network(
         form.event_id
             .map(|event_id| TimelineCursor::EventTime(EventPaginationCursor { ts, event_id }))
     });
-    let navbar = state
-        .timeline_common_navbar()
-        .session(&session)
-        .call()
-        .await?;
     Ok(Maud(
         state
             .render_timeline_page(
-                navbar,
+                TimelineNavbar::SelfTimeline {
+                    hide_new_post_form: false,
+                    show_news_post_form: false,
+                },
                 pagination,
                 &session,
                 &mut cookies,
@@ -135,17 +140,13 @@ pub async fn get_news(
         form.post_id
             .map(|post_id| TimelineCursor::NewsRank(NewsRankPaginationCursor { score, post_id }))
     });
-    let navbar = state
-        .timeline_common_navbar()
-        .session(&session)
-        .hide_new_post_form(true)
-        .show_news_post_form(true)
-        .call()
-        .await?;
     Ok(Maud(
         state
             .render_timeline_page(
-                navbar,
+                TimelineNavbar::SelfTimeline {
+                    hide_new_post_form: true,
+                    show_news_post_form: true,
+                },
                 pagination,
                 &session,
                 &mut cookies,
@@ -215,15 +216,13 @@ pub async fn get_notifications(
         form.seq
             .map(|seq| TimelineCursor::ReceivedTime(ReceivedAtPaginationCursor { ts, seq }))
     });
-    let navbar = state
-        .timeline_common_navbar()
-        .session(&session)
-        .call()
-        .await?;
     Ok(Maud(
         state
             .render_timeline_page(
-                navbar,
+                TimelineNavbar::SelfTimeline {
+                    hide_new_post_form: false,
+                    show_news_post_form: false,
+                },
                 pagination,
                 &session,
                 &mut cookies,
@@ -366,9 +365,21 @@ pub async fn get_post_replies(
 #[bon::bon]
 impl UiState {
     #[builder]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn timeline_common_navbar(
         &self,
         session: &UserSession,
+        /// Active timeline destination key, if any.
+        #[builder(default)]
+        active: &str,
+        /// Unread counts for the destination list.
+        #[builder(default)]
+        counts: PendingCounts,
+        /// Whether the destination badges should update over the updates socket.
+        #[builder(default)]
+        live: bool,
+        /// Atom feed for the current profile, if any.
+        feed_url: Option<&str>,
         /// If true, the new post form is hidden (e.g., on shoutbox page which
         /// has its own input)
         #[builder(default)]
@@ -385,6 +396,8 @@ impl UiState {
         Ok(crate::layout::render_app_navbar(
             None,
             html! {
+                (fragment::timeline_destination_group(active, counts, live, feed_url))
+
                 div ."o-navBar__profileSummary" {
                     (self.render_self_profile_summary(session).await?)
                 }
@@ -619,7 +632,7 @@ impl UiState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn render_timeline_page(
         &self,
-        navbar: Markup,
+        navbar: TimelineNavbar,
         pagination: Option<TimelineCursor>,
         session: &UserSession,
         cookies: &mut Cookies,
@@ -649,6 +662,37 @@ impl UiState {
         if is_ajax_request {
             return Ok(timeline);
         }
+
+        let navbar = match navbar {
+            TimelineNavbar::SelfTimeline {
+                hide_new_post_form,
+                show_news_post_form,
+            } => {
+                self.timeline_common_navbar()
+                    .session(session)
+                    .active(mode.active_key())
+                    .counts(pending_counts)
+                    .live(true)
+                    .hide_new_post_form(hide_new_post_form)
+                    .show_news_post_form(show_news_post_form)
+                    .call()
+                    .await?
+            }
+            TimelineNavbar::Profile(profile_id) => {
+                let feed_url = profile_feed_url(profile_id);
+                self.render_navbar(
+                    profile_id,
+                    session,
+                    true,
+                    mode.active_key(),
+                    pending_counts,
+                    true,
+                    Some(&feed_url),
+                )
+                .await?
+            }
+        };
+
         // Otherwise return the full page
         let page_layout = self.render_page_layout(navbar, timeline);
 
@@ -900,52 +944,17 @@ impl UiState {
             s = pending_counts.shoutbox,
             m = pending_counts.messages
         );
-        let badge_counts = format!(
-            "badgeCounts({{ followees: {}, network: {}, notifications: {}, shoutbox: {}, messages: {} }})",
-            pending_counts.followees,
-            pending_counts.network,
-            pending_counts.notifications,
-            pending_counts.shoutbox,
-            pending_counts.messages
-        );
 
         Ok(html! {
             div ."o-mainBarTimeline"
                 x-data=(ws_url)
             {
-                (super::fragment::timeline_tab_bar(
-                    None,
-                    Some(&badge_counts),
-                    true,
-                    html! {
-                        @if let TimelineMode::Profile(profile_id) = mode {
-                            @let profile = self.get_social_profile(profile_id, &client_ref).await;
-                            a ."o-mainBarTimeline__profile"
-                                ."-active"[mode.is_profile()]
-                                href=(mode.to_path())
-                                aria-current=[mode.is_profile().then_some("page")]
-                            {
-                                span ."o-mainBarTimeline__tabIcon -profile" aria-hidden="true" {}
-                                span ."o-mainBarTimeline__tabLabel" { (profile.display_name) }
-                            }
-                            a ."o-mainBarTimeline__feedLink"
-                                href=(profile_feed_url(profile_id))
-                                title="Atom feed"
-                                aria-label="Atom feed"
-                            {
-                                span ."o-mainBarTimeline__feedLinkIcon" {}
-                            }
-                        } @else {
-                            (super::fragment::timeline_tab_links(
-                                if mode.is_followees() { "followees" }
-                                else if mode.is_network() { "network" }
-                                else if mode.is_news() { "news" }
-                                else if mode.is_notifications() { "notifications" }
-                                else { "" }, pending_counts, true,
-                            ))
-                        }
-                    },
-                ))
+                @if let TimelineMode::Profile(profile_id) = mode {
+                    @let profile = self.get_social_profile(profile_id, &client_ref).await;
+                    h1 ."o-mainBarTimeline__pageTitle" { (profile.display_name) }
+                } @else {
+                    h1 ."o-mainBarTimeline__pageTitle" { (mode.label()) }
+                }
                 // DEBUG: notification counting info (enable with ROSTRA_DEBUG_NOTIFICATIONS=1)
                 (debug_info.render())
                 div ."o-mainBarTimeline__switches" {
@@ -1158,22 +1167,26 @@ impl TimelineMode {
         }
     }
 
-    fn is_followees(&self) -> bool {
-        *self == TimelineMode::Followees
-    }
-    fn is_network(&self) -> bool {
-        *self == TimelineMode::Network
-    }
-    fn is_notifications(&self) -> bool {
-        *self == TimelineMode::Notifications
-    }
-    fn is_news(&self) -> bool {
-        *self == TimelineMode::News
+    fn active_key(&self) -> &'static str {
+        match self {
+            TimelineMode::Followees => "followees",
+            TimelineMode::Network => "network",
+            TimelineMode::News => "news",
+            TimelineMode::Notifications => "notifications",
+            TimelineMode::Profile(_) => "",
+        }
     }
 
-    fn is_profile(&self) -> bool {
-        matches!(self, TimelineMode::Profile(_))
+    fn label(&self) -> &'static str {
+        match self {
+            TimelineMode::Followees => "Following",
+            TimelineMode::Network => "Network",
+            TimelineMode::News => "News",
+            TimelineMode::Notifications => "Notifications",
+            TimelineMode::Profile(_) => "",
+        }
     }
+
     async fn get_posts(
         self,
         client: &ClientRef<'_>,

@@ -17,6 +17,7 @@ use tracing::debug;
 use url::Url;
 
 use super::unlock::session::{RoMode, UserSession};
+use super::timeline::PendingCounts;
 use super::{Maud, fragment};
 use crate::error::{
     EventContentStorageSnafu, ReadOnlyModeSnafu, RequestError, RequestResult, UserRequestError,
@@ -499,10 +500,20 @@ pub async fn get_single_post(
             (re_typeset())
         };
 
-        let navbar = state.render_navbar(author, &session, false).await?;
+        let navbar = state
+            .render_navbar(
+                author,
+                &session,
+                false,
+                "",
+                PendingCounts::default(),
+                false,
+                None,
+            )
+            .await?;
         let main_content = html! {
             div ."o-mainBarTimeline" {
-                (crate::UiState::render_page_tab_bar("Post"))
+                h1 ."o-mainBarTimeline__pageTitle" { "Post" }
                 (body)
             }
         };

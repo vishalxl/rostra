@@ -85,17 +85,21 @@ the top, between 280px and 440px wide, while the main column is capped at 50rem
 and constrained to leave room for navigation. Below that breakpoint, the normal
 layout stacks and the main column takes the available width.
 
+The left column carries the six timeline destinations (Following, Network, News,
+Notifications, Shoutbox, Messages) as icon-and-label links with right-aligned
+unread counts. They are ordinary navigation links, not a client-only tab widget.
+On narrow screens they collapse into a no-JavaScript “Menu” disclosure so the
+reading column stays above the fold; the desktop list is hidden there. Profile
+pages add an Atom feed row. Settings pages keep only their own grouped settings
+navigation (with the Back link) in the left column and omit the destination
+list. The reading surface uses a plain page heading rather than a sticky
+destination strip.
+
 The timeline is one bordered reading surface with lightly separated entries,
 not a grid of detached cards. Spacing mixes `rem`, `em`, `pt`, and responsive
 `clamp()` values; there is no universal spacing-token scale. Follow neighboring
 components rather than inventing a new scale or opportunistically normalizing
 unrelated styles.
-
-The top of the reading surface uses a shared tab strip with a back affordance,
-destination icons, active state, and unread counts. These are navigation links,
-not a client-only tab widget. Profile pages add the viewed person's display
-name as the current profile tab. Narrow navigation can visually hide labels
-while retaining their accessible text.
 
 Private messages reuse the same palette and controls but have a conversation
 list and thread workspace. At mobile widths, an open thread hides the
@@ -104,9 +108,10 @@ are offset to opposite sides; outgoing messages also use `--color-pre-bg`. Do no
 into the timeline's exact arrangement when an existing workflow has its own
 responsive composition.
 
-When extending a layout, test long display names, identity strings, many tabs,
-wide code, rich media, and narrow viewports. Use wrapping and `min-width: 0`
-where needed; hiding essential content is not a substitute for fitting it.
+When extending a layout, test long display names, identity strings, many
+destinations, wide code, rich media, and narrow viewports. Use wrapping and
+`min-width: 0` where needed; hiding essential content is not a substitute for
+fitting it.
 
 ## Content and component language
 
@@ -163,7 +168,7 @@ coverage, not a claim of a completed accessibility audit.
 
 Preserve native semantics and keyboard operation. Existing patterns include
 `aria-current` on active destinations, accessible names for icon-only back
-links, visually hidden navigation labels at narrow widths, and component-level
+links, a no-JavaScript disclosure for narrow navigation, and component-level
 `:focus-visible` outlines. For new work, check:
 
 1. Focus remains visible and follows a sensible order after full-page or

@@ -13,6 +13,7 @@ use super::super::SharedState;
 use super::super::error::{ReadOnlyModeSnafu, RequestResult};
 use super::cookies::CookiesExt as _;
 use super::unlock::session::UserSession;
+use super::timeline::PendingCounts;
 use super::{Maud, fragment};
 use crate::UiState;
 use crate::html_utils::re_typeset;
@@ -119,26 +120,12 @@ pub async fn get_shoutbox(
     let ws_url = format!(
         "websocket('/updates?followees=0&network=0&notifications=0&shoutbox=0&messages={messages}&on_shoutbox=true')"
     );
-    let badge_counts = format!(
-        "badgeCounts({{ followees: 0, network: 0, notifications: 0, shoutbox: 0, messages: {messages} }})"
-    );
 
     // Render the shoutbox content with chat-like layout
     let shoutbox_content = html! {
         div ."o-shoutbox"
             x-data=(ws_url)
         {
-            (super::fragment::timeline_tab_bar(
-                None,
-                Some(&badge_counts),
-                true,
-                super::fragment::timeline_tab_links(
-                    "shoutbox",
-                    super::timeline::PendingCounts { messages, ..Default::default() },
-                    true,
-                ),
-            ))
-
             // Scrollable messages area (oldest at top, newest at bottom)
             div ."o-shoutbox__messages" id="shoutbox-messages" {
                 // Load older link at top (only if there are more messages to load)
@@ -286,6 +273,12 @@ pub async fn get_shoutbox(
     let navbar = state
         .timeline_common_navbar()
         .session(&session)
+        .active("shoutbox")
+        .counts(PendingCounts {
+            messages,
+            ..Default::default()
+        })
+        .live(true)
         .hide_new_post_form(true)
         .call()
         .await?;

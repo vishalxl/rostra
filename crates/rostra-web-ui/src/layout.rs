@@ -181,7 +181,7 @@ impl UiState {
 
         let main_content = html! {
             div ."o-mainBarTimeline" {
-                (Self::render_page_tab_bar(title))
+                h1 ."o-mainBarTimeline__pageTitle" { (title) }
                 (body)
             }
         };
@@ -189,23 +189,6 @@ impl UiState {
         let page_layout = self.render_page_layout(navbar, main_content);
         self.render_html_page(title, page_layout, None, None, None, false)
             .await
-    }
-
-    /// Renders a tab bar with a back button and a title tab.
-    pub fn render_page_tab_bar(title: &str) -> Markup {
-        html! {
-            div ."o-mainBarTimeline__tabs" {
-                a ."o-mainBarTimeline__back"
-                    href="/"
-                    onclick="history.back(); return false;"
-                    aria-label="Back"
-                    title="Back"
-                {
-                    span ."o-mainBarTimeline__tabIcon -back" aria-hidden="true" {}
-                }
-                span ."-active" { (title) }
-            }
-        }
     }
 }
 

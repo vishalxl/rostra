@@ -382,9 +382,7 @@ impl UiState {
     ) -> RequestResult<Markup> {
         let content = html! {
             div ."o-mainBarTimeline" {
-                div ."o-mainBarTimeline__tabs" {
-                    span ."o-mainBarTimeline__settingsTitle" { (title) }
-                }
+                h1 ."o-mainBarTimeline__pageTitle" { (title) }
                 div ."o-settingsContent" {
                     (content)
                 }

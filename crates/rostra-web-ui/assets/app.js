@@ -869,12 +869,8 @@ document.addEventListener("keydown", (e) => {
     if (selectedEl.classList.contains("m-postContext__postParent")) {
       const scrollTarget =
         selectedEl.closest(".o-mainBarTimeline__item") || selectedEl;
-      const tabs = document.querySelector(".o-mainBarTimeline__tabs");
-      const offset = tabs ? tabs.getBoundingClientRect().bottom : 0;
       const top =
-        scrollTarget.getBoundingClientRect().top +
-        document.body.scrollTop -
-        offset;
+        scrollTarget.getBoundingClientRect().top + document.body.scrollTop;
       document.body.scrollTo({ top, behavior: "instant" });
     } else {
       selectedEl.scrollIntoView({ block: "nearest" });
@@ -936,9 +932,11 @@ document.addEventListener("keydown", (e) => {
 
     // Page-global shortcuts (work on any page)
     if (e.key >= "1" && e.key <= "9") {
-      const tabs = document.querySelector(".o-mainBarTimeline__tabs");
-      if (!tabs) return;
-      const links = [...tabs.querySelectorAll("a[href]:not(.o-mainBarTimeline__back)")];
+      const nav = [...document.querySelectorAll(".o-appNav")].find(
+        (el) => el.offsetParent !== null,
+      );
+      if (!nav) return;
+      const links = [...nav.querySelectorAll("a[href]")];
       const tabIdx = parseInt(e.key, 10) - 1;
       if (tabIdx < links.length) {
         e.preventDefault();
@@ -1059,7 +1057,7 @@ function applyAriaKeyShortcuts() {
     [".m-postView__replyToButton", "r"],
     [".o-previewDialog__submitButton", "Control+Shift+Enter"],
     [".m-personaTagSelect", "j k ArrowDown ArrowUp"],
-    [".o-mainBarTimeline__tabs", "1 2 3 4 5"],
+    [".o-appNav", "1 2 3 4 5 6"],
   ];
   for (const [sel, key] of mappings) {
     document.querySelectorAll(sel).forEach((el) => {

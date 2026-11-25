@@ -1,6 +1,5 @@
-use maud::html;
-
-use super::{button, timeline_tab_bar};
+use super::{button, timeline_destination_group};
+use crate::routes::timeline::PendingCounts;
 
 #[test]
 fn shared_button_preserves_established_sizing_contract() {
@@ -69,29 +68,39 @@ fn javascript_requirement_preserves_button_icon_hook() {
 }
 
 #[test]
-fn timeline_tab_bar_shares_framing_without_forcing_history_navigation() {
-    let live = timeline_tab_bar(
-        None,
-        Some("badgeCounts({})"),
-        true,
-        html! { span { "Live" } },
-    )
-    .into_string();
-    assert!(live.contains("class=\"o-mainBarTimeline__tabs\""));
-    assert!(live.contains("x-data=\"badgeCounts({})\""));
-    assert!(live.contains("@badges:updated.window=\"onUpdate($event.detail)\""));
-    assert!(live.contains("onclick=\"history.back(); return false;\""));
+fn destination_group_renders_both_layouts_with_live_badges() {
+    let counts = PendingCounts {
+        followees: 2,
+        network: 0,
+        notifications: 120,
+        shoutbox: 1,
+        messages: 3,
+    };
+    let markup =
+        timeline_destination_group("notifications", counts, true, Some("/profile/feed.atom"))
+            .into_string();
 
-    let private = timeline_tab_bar(
-        Some("direct-message-tabs"),
-        None,
-        false,
-        html! { span { "Private" } },
-    )
-    .into_string();
-    assert!(private.contains("id=\"direct-message-tabs\""));
-    assert!(private.contains("class=\"o-mainBarTimeline__tabs\""));
-    assert!(!private.contains("x-data"));
-    assert!(!private.contains("@badges:updated.window"));
-    assert!(!private.contains("onclick"));
+    assert!(markup.contains("class=\"o-appNavGroup\""));
+    assert!(markup.contains(
+        "x-data=\"badgeCounts({ followees: 2, network: 0, notifications: 120, shoutbox: 1, messages: 3 })\""
+    ));
+    assert!(markup.contains("@badges:updated.window=\"onUpdate($event.detail)\""));
+    assert!(markup.contains("class=\"o-appNav -desktop\""));
+    assert!(markup.contains("class=\"o-appNavDisclosure\""));
+    assert!(markup.contains("aria-current=\"page\""));
+    assert!(markup.contains("href=\"/following\""));
+    assert!(markup.contains("href=\"/profile/feed.atom\""));
+    assert!(markup.contains("-pending"));
+}
+
+#[test]
+fn destination_group_omits_live_state_and_feed_when_private() {
+    let markup =
+        timeline_destination_group("", PendingCounts::default(), false, None).into_string();
+
+    assert!(markup.contains("class=\"o-appNavGroup\""));
+    assert!(!markup.contains("x-data"));
+    assert!(!markup.contains("@badges:updated.window"));
+    assert!(!markup.contains("aria-current"));
+    assert!(!markup.contains("href=\"/profile/feed.atom\""));
 }

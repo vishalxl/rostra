@@ -14,7 +14,9 @@ use rostra_core::id::RostraId;
 use serde::Deserialize;
 use tower_cookies::Cookies;
 
-use super::timeline::{TimelineCursor, TimelineMode, TimelinePaginationInput};
+use super::timeline::{
+    PendingCounts, TimelineCursor, TimelineMode, TimelineNavbar, TimelinePaginationInput,
+};
 use super::unlock::session::{RoMode, UserSession};
 use super::{Maud, fragment};
 use crate::error::{ReadOnlyModeSnafu, RequestResult, UserRequestError};
@@ -79,7 +81,7 @@ pub async fn get_profile(
     Ok(Maud(
         state
             .render_timeline_page(
-                state.render_navbar(profile_id, &session, true).await?,
+                TimelineNavbar::Profile(profile_id),
                 pagination,
                 &session,
                 &mut cookies,
@@ -372,16 +374,23 @@ fn follow_form_selector(follow_type: &str, personas: &[String]) -> PersonasTagsS
 
 impl UiState {
     /// Render the viewed user's navbar, with actions only on profile pages.
+    #[allow(clippy::too_many_arguments)]
     pub async fn render_navbar(
         &self,
         profile_id: RostraId,
         session: &UserSession,
         show_profile_actions: bool,
+        active: &str,
+        counts: PendingCounts,
+        live: bool,
+        feed_url: Option<&str>,
     ) -> RequestResult<Markup> {
         let ro_mode = self.ro_mode(session.session_token());
         Ok(crate::layout::render_app_navbar(
             None,
             html! {
+                (fragment::timeline_destination_group(active, counts, live, feed_url))
+
                 div ."o-navBar__userAccount" {
                     (self.render_profile_summary(profile_id, session, ro_mode, show_profile_actions).await?)
                 }
