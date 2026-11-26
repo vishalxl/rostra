@@ -1,21 +1,16 @@
 name: Build
 
+# Linux-only cargo checks (fmt, clippy, build, test).
+# Windows and Nix packaging live in ci.yml.
+
 on:
   push:
     branches: [vl_opencode_ds1]
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false          # one OS failing doesn't cancel the others
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: rostra-linux-x86_64
-          - os: windows-latest
-            name: rostra-windows-x86_64
-    runs-on: ${{ matrix.os }}
+  check:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -27,15 +22,12 @@ jobs:
 
       # The repo's rustfmt.toml uses nightly-only options, so format-check on nightly
       - name: Install nightly rustfmt
-        if: matrix.os == 'ubuntu-latest'
         run: rustup toolchain install nightly --profile minimal --component rustfmt
 
       - name: Check formatting
-        if: matrix.os == 'ubuntu-latest'
         run: cargo +nightly fmt --all -- --check
 
       - name: Clippy
-        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build
@@ -43,12 +35,3 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: |
-            target/release/rostra
-            target/release/rostra.exe
-            target/release/rostra-*
-          if-no-files-found: warn
