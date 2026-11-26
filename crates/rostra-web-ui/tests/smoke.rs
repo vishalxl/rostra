@@ -257,7 +257,9 @@ async fn navigation_destinations_have_icons_and_accessible_labels_without_javasc
                 .expect("shoutbox should link to private messages");
             assert!(
                 messages
-                    .select(&Selector::parse(".o-appNav__icon.-messages[aria-hidden='true']").unwrap())
+                    .select(
+                        &Selector::parse(".o-appNav__icon.-messages[aria-hidden='true']").unwrap()
+                    )
                     .next()
                     .is_some()
             );
@@ -295,8 +297,7 @@ async fn navigation_destinations_have_icons_and_accessible_labels_without_javasc
         ("/shoutbox", "Shoutbox"),
         ("/messages", "Messages"),
     ] {
-        let selector =
-            Selector::parse(&format!(".o-appNav__item[href='{href}']")).unwrap();
+        let selector = Selector::parse(&format!(".o-appNav__item[href='{href}']")).unwrap();
         let item = document
             .select(&selector)
             .next()
@@ -312,10 +313,8 @@ async fn navigation_destinations_have_icons_and_accessible_labels_without_javasc
     assert!(
         document
             .select(
-                &Selector::parse(
-                    ".o-appNav__item.-active[href='/messages'][aria-current='page']",
-                )
-                .unwrap(),
+                &Selector::parse(".o-appNav__item.-active[href='/messages'][aria-current='page']",)
+                    .unwrap(),
             )
             .next()
             .is_some()
@@ -377,9 +376,7 @@ async fn navigation_destinations_have_icons_and_accessible_labels_without_javasc
         ".o-topNav__item {\n    min-height: 2.75rem;\n    justify-content: center;\n  }"
     ));
     assert!(stylesheet.contains(".o-appNav__count:empty {"));
-    assert!(stylesheet.contains(
-        ".o-appNav.-desktop {\n    display: none;\n  }"
-    ));
+    assert!(stylesheet.contains(".o-appNav.-desktop {\n    display: none;\n  }"));
     assert!(
         !stylesheet.contains(".o-mainBarTimeline__tabs"),
         "the top destination strip must not remain"
@@ -1247,8 +1244,8 @@ async fn explicit_news_url_remains_available() {
     let active_news = Selector::parse(r#"a[href="/news"][aria-current="page"]"#).unwrap();
     assert_eq!(
         document.select(&active_news).count(),
-        1,
-        "the explicit News URL should keep News selected"
+        2,
+        "the explicit News URL should keep News selected in both destination lists"
     );
 
     let resp = driver.get("/shoutbox").await;

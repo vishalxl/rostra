@@ -16,8 +16,8 @@ use tower_cookies::Cookies;
 use tracing::debug;
 use url::Url;
 
-use super::unlock::session::{RoMode, UserSession};
 use super::timeline::PendingCounts;
+use super::unlock::session::{RoMode, UserSession};
 use super::{Maud, fragment};
 use crate::error::{
     EventContentStorageSnafu, ReadOnlyModeSnafu, RequestError, RequestResult, UserRequestError,

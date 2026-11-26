@@ -90,11 +90,19 @@ async fn ordinary_shoutbox_validation_returns_a_complete_retry_page_without_publ
         assert!(page.starts_with("<!DOCTYPE html>"));
         let document = Html::parse_document(&page);
         assert!(page.contains("Shouts must be between 1 and 1000 bytes."));
+        // An ordinary way back in the body, plus the sidebar destination in
+        // both its desktop and mobile forms.
         assert_eq!(
             document
-                .select(&Selector::parse("a[href='/shoutbox']").unwrap())
+                .select(&Selector::parse("p a[href='/shoutbox']").unwrap())
                 .count(),
             1
+        );
+        assert_eq!(
+            document
+                .select(&Selector::parse(".o-appNav a[href='/shoutbox']").unwrap())
+                .count(),
+            2
         );
     }
 

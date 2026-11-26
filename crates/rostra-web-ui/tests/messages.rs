@@ -277,7 +277,10 @@ async fn private_workspace_uses_the_shared_shell_with_rich_content_resources() {
                 "Messages must use the same rendered top navigation as ordinary pages"
             );
             assert_eq!(links(&document, &top_nav), links(&following, &top_nav));
-            assert_eq!(links(&document, &destinations), links(&following, &destinations));
+            assert_eq!(
+                links(&document, &destinations),
+                links(&following, &destinations)
+            );
         }
         if path == "/messages/not-an-id" {
             assert!(
