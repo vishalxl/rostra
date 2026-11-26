@@ -1,0 +1,44 @@
+name: Build
+
+on:
+  push:
+    branches: [my-rostra-branch]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false          # one OS failing doesn't cancel the others
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: rostra-linux-x86_64
+          - os: windows-latest
+            name: rostra-windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # fmt and clippy only need to run once
+      - if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+
+      - run: cargo build --workspace --release
+      - run: cargo test --workspace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            target/release/rostra
+            target/release/rostra.exe
+            target/release/rostra-*
+          if-no-files-found: warn
