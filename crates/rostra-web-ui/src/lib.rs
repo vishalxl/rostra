@@ -31,7 +31,9 @@ use rostra_util_bind_addr::BindAddr;
 use rostra_util_error::WhateverResult;
 use routes::cache_control;
 use snafu::{ResultExt as _, Snafu, Whatever, ensure};
-use tokio::net::{TcpListener, TcpSocket, UnixListener};
+use tokio::net::{TcpListener, TcpSocket};
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::signal;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -313,6 +315,7 @@ pub async fn get_tcp_listener(addr: SocketAddr, reuseport: bool) -> ServerResult
     Ok(socket.listen(1024)?)
 }
 
+#[cfg(unix)]
 pub async fn get_unix_listener(path: &Path) -> ServerResult<UnixListener> {
     // Remove existing socket file if it exists
     if path.exists() {
@@ -493,6 +496,7 @@ pub async fn run_ui(opts: Opts, clients: MultiClient) -> ServerResult<()> {
             shutdown_signal().await;
             Ok(server.shutdown().await?)
         }
+        #[cfg(unix)]
         BindAddr::Unix(path) => {
             let (state, assets, session_layer) = build_state_and_session(&opts, clients).await?;
 
@@ -520,6 +524,15 @@ pub async fn run_ui(opts: Opts, clients: MultiClient) -> ServerResult<()> {
             .await?;
 
             Ok(())
+        }
+        #[cfg(not(unix))]
+        BindAddr::Unix(path) => {
+            let _ = (path, clients);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unix socket listening is not supported on this platform; use a TCP address",
+            )
+            .into())
         }
     }
 }
