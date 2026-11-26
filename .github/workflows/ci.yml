@@ -2,7 +2,7 @@ name: "Release packages"
 
 on:
   push:
-    branches: [ "main", "master", "devel", "releases/v*" ]
+    branches: [ "main", "master", "devel", "releases/v*", "vl_opencode_ds1" ]
     tags:
       - 'v*'
   pull_request:
@@ -74,6 +74,9 @@ jobs:
             exit 1
           fi
 
+      - name: Bundle single-file binary
+        continue-on-error: true   # arx bundler is currently broken in nixpkgs
+        run: |
           nix bundle --bundler .# ".#rostra" -o "bins/rostra-$BUILD_ID" && sha256sum "bins/rostra-$BUILD_ID"
 
       - name: Upload Binaries

@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [my-rostra-branch]
+    branches: [vl_opencode_ds1]
   workflow_dispatch:
 
 jobs:
