@@ -40,6 +40,8 @@ jobs:
     name: "Build packages"
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write   # needed to create GitHub Releases on tag pushes
     steps:
       - uses: actions/checkout@v4
       - uses: dpc/nix-installer-action@dpc/jj-vqymqvyntouw
@@ -75,15 +77,16 @@ jobs:
           fi
 
       - name: Bundle single-file binary
-        continue-on-error: true   # arx bundler is currently broken in nixpkgs
+        continue-on-error: true   # arx bundler is currently broken in the pinned nixpkgs
         run: |
           nix bundle --bundler .# ".#rostra" -o "bins/rostra-$BUILD_ID" && sha256sum "bins/rostra-$BUILD_ID"
 
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
         with:
-          name: "rostra-linux-x86_64"
+          name: "rostra-linux-x86_64-nix"
           path: "bins/**"
+          if-no-files-found: warn
 
       - name: Release Binaries
         uses: softprops/action-gh-release@v2

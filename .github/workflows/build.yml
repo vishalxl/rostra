@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: ["vl_opencode_ds1"]   # <- replace with your real branch name
+    branches: [vl_opencode_ds1]
   workflow_dispatch:
 
 jobs:
