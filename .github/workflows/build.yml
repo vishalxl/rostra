@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [vl_opencode_ds1]
+    branches: [my-rostra-branch]   # <- replace with your real branch name
   workflow_dispatch:
 
 jobs:
@@ -21,18 +21,28 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
-      # fmt and clippy only need to run once
-      - if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
+      # The repo's rustfmt.toml uses nightly-only options, so format-check on nightly
+      - name: Install nightly rustfmt
+        if: matrix.os == 'ubuntu-latest'
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
 
-      - run: cargo build --workspace --release
-      - run: cargo test --workspace
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo +nightly fmt --all -- --check
+
+      - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --release
+
+      - name: Test
+        run: cargo test --workspace
 
       - uses: actions/upload-artifact@v4
         with:
